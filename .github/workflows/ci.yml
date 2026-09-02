@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Types, tests and build on the Node versions the test runner supports.
+  # `node --import` arrived in 20.6, so the suite cannot run on 18 — which is
+  # exactly why the job below exists.
+  check:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The git-history rule reads history, and its tests build their own
+          # repositories — but a shallow checkout would still be a misleading
+          # environment to run the rest in.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  # package.json claims `engines: node >=18`. A claim nobody checks is a guess,
+  # so the built CLI is run on the oldest version it says it supports.
+  oldest-supported-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - name: The built CLI runs on Node 18
+        run: |
+          node dist/cli.js --version
+          node dist/cli.js test/fixtures/clean-nextjs
+          # The vulnerable fixture must exit exactly 1. Accepting any non-zero would let
+          # a crash or an incomplete scan pass as success.
+          set +e
+          node dist/cli.js test/fixtures/vulnerable-nextjs
+          status=$?
+          set -e
+          if [ "$status" -ne 1 ]; then
+            echo "expected exit code 1 on the vulnerable fixture, got $status"
+            exit 1
+          fi
+
+  # canship has to survive itself. A security scanner that reports its own
+  # source is not one anybody will trust with theirs.
+  dogfood:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: canship does not report its own source
+        run: |
+          set +e
+          node dist/cli.js . --json > self.json
+          status=$?
+          set -e
+          # Exit 2 is expected and is not a failure here. The deliberately
+          # vulnerable fixtures are real findings held at lower confidence, and
+          # the exit code now reflects hidden ones — so this repository can
+          # never reach 0 while those fixtures exist. Asserting 0, which this
+          # step used to do by running the CLI bare, would fail on every push.
+          # 1 or 3 still means something is wrong.
+          if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
+            echo "self-scan exited $status"
+            cat self.json
+            exit 1
+          fi
+          # The property the job actually exists to defend: the default view,
+          # which is certain findings only, stays empty.
+          node --input-type=commonjs -e "
+            const r = JSON.parse(require('fs').readFileSync('self.json', 'utf8'))
+            if (r.findings.length > 0) {
+              console.error(JSON.stringify(r.findings, null, 2))
+              process.exit(1)
+            }
+          "

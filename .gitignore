@@ -1,0 +1,16 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Local scratch space for one-off scripts and throwaway repros.
+.scratch/
+canship-report.html
+
+# The .env files under test/fixtures are committed on purpose: they are test
+# fixtures full of fake keys, used to verify the rules fire correctly.
+# Do not let the patterns below swallow them.
+.env
+.env.local
+.env.*.local
+!test/fixtures/**/.env*

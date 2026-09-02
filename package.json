@@ -1,0 +1,56 @@
+{
+  "name": "canship",
+  "version": "0.1.0",
+  "description": "Static scanner for exposed credentials and open access rules in JS/TS front-end projects. Scans local files without executing project code or making network requests.",
+  "keywords": [
+    "security",
+    "audit",
+    "secrets",
+    "api-key",
+    "supabase",
+    "nextjs",
+    "vibe-coding",
+    "ai-generated-code",
+    "static-analysis",
+    "cli"
+  ],
+  "homepage": "https://github.com/Tasomei/canship#readme",
+  "bugs": {
+    "url": "https://github.com/Tasomei/canship/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tasomei/canship.git"
+  },
+  "author": "Tasomei",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "canship": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/run-tests.mjs",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
+  },
+  "overrides": {
+    "esbuild": "^0.28.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

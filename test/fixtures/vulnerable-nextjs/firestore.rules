@@ -1,0 +1,22 @@
+// Test fixture: Firebase rules left wide open.
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Fatal: unconditional access for everyone.
+    match /posts/{postId} {
+      allow read, write: if true;
+    }
+
+    // Fatal: "test mode" rule, public until a hardcoded date.
+    match /messages/{messageId} {
+      allow read, write: if request.time < timestamp.date(2027, 6, 1);
+    }
+
+    // Correct: a real authorisation check. Must not be reported.
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}
