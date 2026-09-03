@@ -2,9 +2,10 @@
 
 ## Reporting a vulnerability
 
-No public source repository or private reporting address has been announced yet. Do not publish
-credentials, exploit details, or a complete reproduction in a public issue. When the package
-metadata names a repository or security contact, use that private channel.
+Report it privately, through this repository's **Security** tab -> *Report a vulnerability*, so the
+details stay out of public view until there is a fix. If that option is not offered, open an issue
+saying only that you have found something and that you are waiting to be contacted — do not put
+credentials, exploit details, or a complete reproduction in it.
 
 Include the smallest file or directory layout that reproduces it, the version
 (`npx canship --version`), and your OS. **Do not include real credentials** — every behaviour in
@@ -41,5 +42,5 @@ These are ordinary bugs, and they are wanted — open an issue rather than an ad
 
 ## Supported versions
 
-Before the first release, fixes target the current release candidate. After publication, fixes
-target the latest published version only.
+Fixes target the latest published version only. Older versions stay on npm because unpublishing
+breaks anyone who pinned them, not because they are still maintained.
