@@ -26,7 +26,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "canship": "./dist/cli.js"
+    "canship": "dist/cli.js"
   },
   "files": [
     "dist",
