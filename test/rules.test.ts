@@ -975,6 +975,38 @@ describe('places a credential can hide that an extension list never reaches', ()
     )
   })
 
+  /**
+   * The walker already listed .npmrc as a file whose name is the tell, so the
+   * file was being opened and read — and then nothing in the pattern table knew
+   * what an npm token looked like, so the read found nothing. A credential file
+   * canship opens on purpose and cannot describe the contents of is the quietest
+   * kind of gap: every surface reports a clean scan.
+   */
+  test('an npm token in .npmrc is reported', async () => {
+    const { findings } = await scanFiles({
+      '.npmrc': '//registry.npmjs.org/:_authToken=npm_aB3xY9zQ1wE5rT7yU2iO4pA6sD8fG0hJ2kL4\n',
+    })
+    assert.ok(
+      findings.some((f) => f.ruleId === 'secrets/hardcoded/npm-token'),
+      'an npm token can publish packages as you, and went unreported',
+    )
+  })
+
+  test('a template npm token is not', async () => {
+    // The second fixture matters more than the first: CI setup instructions are
+    // copied with the placeholder still in them more often than with a real
+    // token, and a rule that shouts at those gets muted.
+    const { findings } = await scanFiles({
+      '.npmrc': '//registry.npmjs.org/:_authToken=npm_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n',
+      'setup.md': 'Set `npm_yourTokenHereReplaceMe0123456789ab` before publishing.\n',
+    })
+    assert.deepEqual(
+      findings.filter((f) => f.ruleId === 'secrets/hardcoded/npm-token'),
+      [],
+      'a placeholder was reported as a live npm token',
+    )
+  })
+
   test('an extensionless deploy key is found by looking, not by guessing', async () => {
     const { findings } = await scanFiles({ deploy_key: PRIVATE_KEY })
     assert.ok(

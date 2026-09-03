@@ -16,7 +16,7 @@ Node.js 18 or later is required. Git is optional; only commit-history checks req
 
 | Check | Risk | Severity |
 |---|---|---|
-| Hardcoded credentials | A scanned file contains a recognised OpenAI, Anthropic, AWS, Stripe, GitHub, Slack, SendGrid, private-key, or database credential | P0 |
+| Hardcoded credentials | A scanned file contains a recognised OpenAI, Anthropic, AWS, Stripe, GitHub, npm, Slack, SendGrid, private-key, or database credential | P0 |
 | Private values in public environment variables | The value may be included in browser-delivered code | P0 |
 | Supabase `service_role` key reachable from client code | A `service_role` key can bypass Row Level Security (RLS) policies | P0 |
 | Git-tracked `.env` files | Recognised credentials remain in repository history; substantial unrecognised values may also produce a lower-confidence finding | P0 |

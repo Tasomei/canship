@@ -16,7 +16,7 @@ npx canship
 
 | 检查项 | 风险 | 级别 |
 |---|---|---|
-| 硬编码凭据 | 当前扫描文件中包含已识别的 OpenAI、Anthropic、AWS、Stripe、GitHub、Slack、SendGrid、私钥或数据库连接凭据 | P0 |
+| 硬编码凭据 | 当前扫描文件中包含已识别的 OpenAI、Anthropic、AWS、Stripe、GitHub、npm、Slack、SendGrid、私钥或数据库连接凭据 | P0 |
 | 公开环境变量中的私密值 | 私密值可能被打包进浏览器代码 | P0 |
 | 客户端可访问 Supabase `service_role` key | `service_role` 可绕过 Row Level Security（RLS）策略 | P0 |
 | Git 跟踪的 `.env` 文件 | 已识别凭据会留在仓库历史中；未识别但内容仍像真实配置的文件也可能产生低置信度结果 | P0 |

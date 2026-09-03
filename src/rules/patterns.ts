@@ -124,6 +124,21 @@ export const SECRET_PATTERNS: SecretPattern[] = [
     rotateAt: 'https://github.com/settings/tokens',
   },
   {
+    id: 'npm-token',
+    name: 'npm access token',
+    // Shape only, though npm encodes a CRC32 of the token into its last six
+    // characters and this could verify it. The github-token entry above uses
+    // the same scheme and does not verify it either, for the reason that
+    // settles it: if the algorithm ever changes, a checksum test turns a real
+    // leaked token into a silent pass. A false positive costs a glance. This
+    // particular false negative costs the account, and every account that
+    // installs anything published from it afterwards.
+    pattern: /\bnpm_[A-Za-z0-9]{36}\b/g,
+    impact:
+      'Publishes packages under your account. Anyone who installs one afterwards runs whatever that version contains.',
+    rotateAt: 'https://docs.npmjs.com/creating-and-viewing-access-tokens',
+  },
+  {
     id: 'google-api-key',
     name: 'Google API key',
     pattern: /\bAIza[0-9A-Za-z_-]{35}\b/g,
