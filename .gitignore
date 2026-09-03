@@ -1,7 +1,13 @@
 node_modules/
 dist/
 *.log
+*.tgz
 .DS_Store
+
+# `npm config set` without --location=global, and a scoped `npm login`, write a
+# project-level .npmrc — and what they write is an auth token. The user-level
+# file lives outside any repository; this one would live inside this one.
+.npmrc
 
 # Local scratch space for one-off scripts and throwaway repros.
 .scratch/
