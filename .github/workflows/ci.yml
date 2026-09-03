@@ -50,11 +50,21 @@ jobs:
       - name: The built CLI runs on Node 18
         run: |
           node dist/cli.js --version
-          node dist/cli.js test/fixtures/clean-nextjs
+          # Scanned as copies outside the checkout, for the reason the test suite
+          # copies them too: a fixture scanned where it lives inherits the git
+          # state around it, and clean-nextjs holds a committed .env.local. In
+          # place it is correctly reported as a leak, so "the clean fixture exits
+          # 0" was a claim about this repository having no commits.
+          # Named rather than assumed: unset, the copy below would target / and
+          # the failure would read as a missing fixture rather than a missing
+          # variable.
+          : "${RUNNER_TEMP:?RUNNER_TEMP is not set}"
+          cp -r test/fixtures/clean-nextjs test/fixtures/vulnerable-nextjs "$RUNNER_TEMP/"
+          node dist/cli.js "$RUNNER_TEMP/clean-nextjs"
           # The vulnerable fixture must exit exactly 1. Accepting any non-zero would let
           # a crash or an incomplete scan pass as success.
           set +e
-          node dist/cli.js test/fixtures/vulnerable-nextjs
+          node dist/cli.js "$RUNNER_TEMP/vulnerable-nextjs"
           status=$?
           set -e
           if [ "$status" -ne 1 ]; then

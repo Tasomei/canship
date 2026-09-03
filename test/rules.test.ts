@@ -21,11 +21,11 @@
  * that look dangerous but are in fact correct.
  */
 
-import { test, describe } from 'node:test'
+import { test, describe, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { cpSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import type { Finding } from '../src/types.js'
@@ -41,12 +41,65 @@ import {
   looksIntentionallyPublic,
 } from '../src/rules/framework.js'
 import { isPlaceholder } from '../src/rules/patterns.js'
+import { hasGitMetadataAbove } from '../src/git.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const VULNERABLE = join(here, 'fixtures', 'vulnerable-nextjs')
-const CLEAN = join(here, 'fixtures', 'clean-nextjs')
-const PLAIN_POSTGRES = join(here, 'fixtures', 'plain-postgres')
-const MIDDLEWARE_PROTECTED = join(here, 'fixtures', 'middleware-protected')
+
+/** Temporary parents of the fixture copies, removed once the file's tests finish */
+const fixtureCopies: string[] = []
+
+/**
+ * A fixture, copied out of this repository before anything scans it.
+ *
+ * A fixture scanned where it lives inherits the git state of the repository
+ * around it, and that is not a property these tests are written to assert.
+ * `clean-nextjs` holds a committed `.env.local` — it has to, since that file is
+ * what several rules are exercised against — so the moment canship itself
+ * gained a first commit, the git-tracked-env rule fired on it and the *clean*
+ * fixture stopped being clean. Seven tests broke at once, having passed until
+ * then only because this project had never been committed. CI found it on the
+ * first run, which is exactly the shape of bug a local suite cannot see.
+ *
+ * Copying to a directory outside any repository restores what the fixtures are
+ * for: a result that is a fact about the fixture, not about where it is kept.
+ */
+function fixture(name: string): string {
+  const parent = mkdtempSync(join(tmpdir(), 'canship-fixture-'))
+  fixtureCopies.push(parent)
+  const target = join(parent, name)
+  cpSync(join(here, 'fixtures', name), target, { recursive: true })
+  return target
+}
+
+after(() => {
+  for (const parent of fixtureCopies) rmSync(parent, { recursive: true, force: true })
+})
+
+const VULNERABLE = fixture('vulnerable-nextjs')
+const CLEAN = fixture('clean-nextjs')
+const PLAIN_POSTGRES = fixture('plain-postgres')
+const MIDDLEWARE_PROTECTED = fixture('middleware-protected')
+
+describe('the fixtures are scanned as themselves', () => {
+  test('no fixture copy sits inside a git repository', () => {
+    // Guards the property, not the mechanism: pointing the constants back at
+    // test/fixtures/ fails here, and so does a machine whose temporary
+    // directory happens to live under a checkout — the second is the version
+    // nobody would think to look for.
+    for (const [name, path] of Object.entries({
+      CLEAN,
+      VULNERABLE,
+      PLAIN_POSTGRES,
+      MIDDLEWARE_PROTECTED,
+    })) {
+      assert.equal(
+        hasGitMetadataAbove(path),
+        false,
+        `${name} is inside a git repository, so what canship reports about it is partly a fact about that repository`,
+      )
+    }
+  })
+})
 
 /**
  * Build a throwaway git repository with the given files committed.
