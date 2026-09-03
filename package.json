@@ -1,6 +1,6 @@
 {
   "name": "canship",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Static scanner for exposed credentials and open access rules in JS/TS front-end projects. Scans local files without executing project code or making network requests.",
   "keywords": [
     "security",
