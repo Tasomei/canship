@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# Nothing here writes anything back: the jobs check types, run tests and build.
+# Stated rather than inherited, because the repository default is what decides
+# it otherwise, and a token wider than the work is the kind of thing that only
+# matters on the day something else goes wrong.
+permissions:
+  contents: read
+
 jobs:
   # Types, tests and build on the Node versions the test runner supports.
   # `node --import` arrived in 20.6, so the suite cannot run on 18 — which is
