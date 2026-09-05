@@ -22,8 +22,10 @@
 
 import { test, describe, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { join } from 'node:path'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import type { Finding } from '../src/types.js'
 import {
@@ -312,6 +314,149 @@ describe('a baseline is never silent', () => {
     assert.equal(html.includes('verdict clean'), false)
     assert.match(html, /19 findings/)
     assert.match(html, /still exist/)
+  })
+
+  test('writing a baseline says what committing it publishes', () => {
+    // Pinned because this is a security warning, and a security warning is the
+    // kind of line a later tidy-up removes for being wordy. What it guards:
+    // every entry names a file, a rule and an unfixed problem, and canship
+    // searches gitignored credential files on purpose — so an entry can
+    // describe a .env.local the repository does not contain. Recommending
+    // "commit this" without that sentence makes canship's own output the leak
+    // it exists to find.
+    const root = mkdtempSync(join(tmpdir(), 'canship-baseline-cli-'))
+    tempDirs.push(root)
+    mkdirSync(join(root, 'lib'))
+    writeFileSync(
+      join(root, 'lib', 'keys.ts'),
+      'export const a = "sk-proj-Ab3xQ9zK7mNpR2tVwY4hJdLcF8gH1nT6bE0s"\n',
+      'utf8',
+    )
+    const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli.ts')
+    const stdout = execFileSync('node', ['--import', 'tsx', cli, root, '--baseline-write'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    assert.match(stdout, /still exist/)
+    assert.match(stdout, /files git does not track/)
+    assert.match(stdout, /public repository/)
+
+    // And the claim that sentence makes has to stay true.
+    const written = readFileSync(join(root, 'canship-baseline.json'), 'utf8')
+    assert.equal(written.includes('sk-proj-'), false, 'the baseline held a credential value')
+    assert.match(written, /"file": "lib\/keys\.ts"/)
+  })
+
+  test('a bare --baseline-write writes into the scanned project', () => {
+    // Not into the working directory. A baseline belongs to the project, and a
+    // bare --baseline-write has to put the file where a bare --baseline will
+    // look for it — otherwise `npx canship ./app --baseline-write` writes one
+    // place and reads another. This test runs the CLI from somewhere else on
+    // purpose, because running it from inside the project cannot tell the two
+    // behaviours apart.
+    // The working directory stays this repository, which is already a
+    // different place from the scanned root — enough to tell the two
+    // behaviours apart, and it keeps tsx resolvable.
+    const root = mkdtempSync(join(tmpdir(), 'canship-anchor-'))
+    tempDirs.push(root)
+    const cwd = join(dirname(fileURLToPath(import.meta.url)), '..')
+    mkdirSync(join(root, 'lib'))
+    writeFileSync(
+      join(root, 'lib', 'keys.ts'),
+      'export const a = "sk-proj-Ab3xQ9zK7mNpR2tVwY4hJdLcF8gH1nT6bE0s"\n',
+      'utf8',
+    )
+    const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli.ts')
+    execFileSync('node', ['--import', 'tsx', cli, root, '--baseline-write'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    assert.equal(existsSync(join(root, 'canship-baseline.json')), true, 'not written to the project')
+    // The working directory is this repository. A baseline appearing here is
+    // the bug, and it is not gitignored, so it would be one `git add -A` from
+    // being committed.
+    assert.equal(
+      existsSync(join(cwd, 'canship-baseline.json')),
+      false,
+      'written to the working directory instead',
+    )
+
+    // And the bare read form finds what the bare write form left.
+    const out = execFileSync('node', ['--import', 'tsx', cli, root, '--baseline', '--json'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    const report = JSON.parse(out) as { findings: unknown[]; baselineSuppressed: number }
+    assert.equal(report.findings.length, 0)
+    assert.equal(report.baselineSuppressed, 1)
+  })
+
+  test('a config-file baseline path is relative to the project', () => {
+    // Resolving it against the working directory was a real bug, and a quiet
+    // one: `npx canship ./app` looked for the baseline beside the caller, which
+    // either failed with a confusing exit 3 or found a different project's
+    // baseline and suppressed findings with it.
+    const root = mkdtempSync(join(tmpdir(), 'canship-cfgpath-'))
+    tempDirs.push(root)
+    mkdirSync(join(root, 'lib'))
+    writeFileSync(
+      join(root, 'lib', 'keys.ts'),
+      'export const a = "sk-proj-Ab3xQ9zK7mNpR2tVwY4hJdLcF8gH1nT6bE0s"\n',
+      'utf8',
+    )
+    const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli.ts')
+    execFileSync(
+      'node',
+      ['--import', 'tsx', cli, root, `--baseline-write=${join(root, 'accepted.json')}`],
+      { stdio: 'ignore' },
+    )
+    writeFileSync(join(root, 'canship.config.json'), '{"baseline":"accepted.json"}', 'utf8')
+    const out = execFileSync('node', ['--import', 'tsx', cli, root, '--json'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    const report = JSON.parse(out) as { findings: unknown[]; baselineSuppressed: number }
+    assert.equal(report.baselineSuppressed, 1)
+    assert.equal(report.findings.length, 0)
+  })
+
+  test('a config-file baseline path cannot leave the project', () => {
+    // The config file comes out of the directory being scanned, and that
+    // directory is the thing canship is pointed at because it is *not*
+    // trusted. Without this, somebody else's repository could aim the baseline
+    // read at a path outside it: the contents never reach the report, but the
+    // error message names the path and says whether it parsed, which turns a
+    // scan into a file-existence probe.
+    const root = mkdtempSync(join(tmpdir(), 'canship-traversal-'))
+    tempDirs.push(root)
+    mkdirSync(join(root, 'lib'))
+    writeFileSync(join(root, 'lib', 'keys.ts'), 'export const a = 1\n', 'utf8')
+    const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli.ts')
+
+    const run = (config: string): { status: number; stderr: string } => {
+      writeFileSync(join(root, 'canship.config.json'), config, 'utf8')
+      try {
+        execFileSync('node', ['--import', 'tsx', cli, root, '--json'], {
+          encoding: 'utf8',
+          stdio: ['ignore', 'ignore', 'pipe'],
+        })
+        return { status: 0, stderr: '' }
+      } catch (err) {
+        const e = err as { status?: number; stderr?: string }
+        return { status: e.status ?? -1, stderr: e.stderr ?? '' }
+      }
+    }
+
+    for (const escape of ['../../../../../evil.json', '/etc/passwd', 'C:/Windows/win.ini']) {
+      const out = run(JSON.stringify({ baseline: escape }))
+      assert.equal(out.status, 3, `${escape} was not refused`)
+      assert.match(out.stderr, /must stay inside the project/)
+    }
+
+    // A path that stays inside is not refused for that reason. It still fails,
+    // because the file is not there — the message is what separates the two.
+    const inside = run(JSON.stringify({ baseline: 'sub/accepted.json' }))
+    assert.equal(inside.stderr.includes('must stay inside the project'), false)
   })
 
   test('the HTML report reports staleness', () => {

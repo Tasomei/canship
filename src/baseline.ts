@@ -17,6 +17,20 @@
  *   - The baseline is meant to be committed and reviewed, so it must be
  *     readable by a person deciding whether to approve it — rule, file and
  *     title in plain text — and must not itself contain a credential.
+ *
+ * That second point cuts both ways, and the cost is stated here rather than
+ * discovered later. Readable enough to review means readable enough to be a
+ * map: every entry names a file, a rule and a title, and every entry is by
+ * definition a problem nobody has fixed. canship deliberately searches
+ * gitignored credential files, so an entry can describe `.env.local` — a file
+ * the repository does not contain and whose existence and contents are not
+ * otherwise derivable from public source.
+ *
+ * The trade is kept rather than resolved, because both ways out are worse.
+ * Dropping `file` and `title` leaves a list of hashes nobody can approve,
+ * which defeats the reason it is committed at all; not committing it defeats
+ * the feature. So the file stays readable and every surface that recommends
+ * committing it says what committing it publishes.
  */
 
 import { createHash } from 'node:crypto'

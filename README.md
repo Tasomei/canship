@@ -135,6 +135,10 @@ npx canship --baseline         # report only new ones
 
 `--baseline-write` writes `canship-baseline.json` and exits `0` without scanning further. Commit that file: it is the record of what was accepted, and it is meant to be reviewed in the pull request that adds it.
 
+**Consider what committing it publishes.** Each entry names a file path, a rule id, and a finding title, and every entry describes a problem that has not been fixed. canship searches gitignored credential files by design, so an entry may describe a file the repository does not contain — `.env.local` and the name of a variable in it, for example. The file holds no credential values. On a private repository this is the intended use; on a public one, weigh the disclosure before committing.
+
+Paths are resolved where they came from: a path typed on the command line is relative to the working directory, a bare `--baseline` or `--baseline-write` uses the scanned project's own `canship-baseline.json`, and a path in `canship.config.json` is relative to that file. So `npx canship ./app --baseline-write` writes into `./app`, which is where `npx canship ./app --baseline` then looks.
+
 A baseline entry is matched by rule, file, title, and a hash of the excerpt. The line number is deliberately excluded, so editing a file above a finding does not report it as new. Each entry carries the number of times it was seen; an additional occurrence beyond that count is reported.
 
 The baseline stores a SHA-256 hash rather than the excerpt itself, because the file is intended to be committed and canship cannot guarantee that an unrecognised credential is masked.

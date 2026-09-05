@@ -17,7 +17,7 @@
  *       directory is the ordinary mistake. --best-effort opts out.
  */
 
-import { resolve } from 'node:path'
+import { isAbsolute, relative as relative_, resolve } from 'node:path'
 import { existsSync, statSync, writeFileSync } from 'node:fs'
 import { scan, cleanForOutput } from './engine.js'
 import { renderReport } from './report/terminal.js'
@@ -55,10 +55,21 @@ interface Args {
   report: string | null
   /** Treat an incomplete scan as acceptable and exit on the findings alone */
   bestEffort: boolean
-  /** Baseline to suppress already-accepted findings with, or null */
+  /**
+   * Baseline to suppress already-accepted findings with, or null.
+   *
+   * `null` when the flag carried a value the user typed, so it is resolved
+   * where they are standing; the bare flag leaves this null and sets the
+   * `*Default` flag below, so the path is anchored to the scanned project
+   * instead. A baseline belongs to the project, not to the working directory
+   * somebody happened to run from — and `--baseline-write` has to put the file
+   * where `--baseline` will look for it.
+   */
   baseline: string | null
+  baselineDefault: boolean
   /** Where to record the current findings as a new baseline, or null */
   baselineWrite: string | null
+  baselineWriteDefault: boolean
   /** Rule selectors from --only / --skip; empty when not given */
   only: string[]
   skip: string[]
@@ -91,6 +102,32 @@ function optionalValue(arg: string, name: string, fallback: string): string | nu
   return value
 }
 
+/**
+ * Resolve a config-supplied path, refusing to leave the project.
+ *
+ * The path comes out of a file inside the directory being scanned, and that
+ * directory is the thing canship is pointed at *because* it is not trusted —
+ * config.ts says as much about why the format is JSON. So it is input, not
+ * instruction. Without this, a `canship.config.json` in somebody else's
+ * repository could aim the baseline read at `../../../../.ssh/config`: the
+ * contents never reach the report, but the error message names the path and
+ * says whether it parsed, which turns a scan into a file-existence probe.
+ *
+ * The flag form is deliberately not constrained. A path typed on the command
+ * line is the user's own instruction, and a monorepo keeping its baselines in
+ * one shared directory is a real thing to want.
+ */
+function insideProject(root: string, relative: string): string {
+  const target = resolve(root, relative)
+  const inside = relative_(root, target)
+  if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
+    argumentError(
+      `${CONFIG_FILENAME}: "baseline" must stay inside the project, and ${relative} does not`,
+    )
+  }
+  return target
+}
+
 function parseArgs(argv: string[]): Args {
   const args: Args = {
     root: process.cwd(),
@@ -100,7 +137,9 @@ function parseArgs(argv: string[]): Args {
     report: null,
     bestEffort: false,
     baseline: null,
+    baselineDefault: false,
     baselineWrite: null,
+    baselineWriteDefault: false,
     only: [],
     skip: [],
     sarif: null,
@@ -138,9 +177,20 @@ function parseArgs(argv: string[]): Args {
       args.report = report
       continue
     }
+    // The bare form is recorded as "default", not as the literal filename, so
+    // main() can anchor it to the scanned project rather than to the working
+    // directory. An explicitly typed path stays relative to where it was typed.
+    if (arg === '--baseline') {
+      args.baselineDefault = true
+      continue
+    }
     const baseline = optionalValue(arg, '--baseline', DEFAULT_BASELINE_PATH)
     if (baseline !== null) {
       args.baseline = baseline
+      continue
+    }
+    if (arg === '--baseline-write') {
+      args.baselineWriteDefault = true
       continue
     }
     const baselineWrite = optionalValue(arg, '--baseline-write', DEFAULT_BASELINE_PATH)
@@ -247,7 +297,10 @@ async function main(): Promise<void> {
   // Recording a baseline while another one is suppressing findings would write
   // down only what the old one did not already cover, so the accepted set
   // shrinks every time the pair is run. Refuse rather than pick a meaning.
-  if (args.baseline !== null && args.baselineWrite !== null) {
+  if (
+    (args.baseline !== null || args.baselineDefault) &&
+    (args.baselineWrite !== null || args.baselineWriteDefault)
+  ) {
     argumentError('--baseline and --baseline-write are mutually exclusive')
   }
 
@@ -291,7 +344,25 @@ async function main(): Promise<void> {
   }
   const showAll = args.showAll || config.all === true
   const bestEffort = args.bestEffort || config.bestEffort === true
-  const baselinePath = args.baseline ?? config.baseline ?? null
+  // Where a path is resolved from depends on where it came from, and the two
+  // answers are different on purpose:
+  //
+  //   --baseline=x       typed just now, so relative to where you are standing
+  //   --baseline         no path given, so the project's own default location
+  //   config "baseline"  written inside the project, so relative to the project
+  //
+  // Resolving the config value against the working directory was a real bug and
+  // a quiet one: `npx canship ./app` read `./canship-baseline.json` from the
+  // parent, which either failed with a confusing exit 3 or — worse — found a
+  // different project's baseline and suppressed findings with it.
+  const baselinePath =
+    args.baseline !== null
+      ? resolve(args.baseline)
+      : args.baselineDefault
+        ? resolve(args.root, DEFAULT_BASELINE_PATH)
+        : config.baseline !== undefined
+          ? insideProject(args.root, config.baseline)
+          : null
 
   const scanned = await scan(args.root, { only, skip })
 
@@ -301,8 +372,13 @@ async function main(): Promise<void> {
   // just accepted are not a reason to fail the run that accepted them — but
   // they are worth saying out loud, since this is the moment someone decides
   // to stop being told about a live credential.
-  if (args.baselineWrite !== null) {
-    const target = resolve(args.baselineWrite)
+  if (args.baselineWrite !== null || args.baselineWriteDefault) {
+    // Same rule, and it has to be: a bare --baseline-write must put the file
+    // where a bare --baseline will go looking for it.
+    const target =
+      args.baselineWrite !== null
+        ? resolve(args.baselineWrite)
+        : resolve(args.root, DEFAULT_BASELINE_PATH)
     const baseline = buildBaseline(scanned.findings)
     try {
       writeBaseline(target, baseline)
@@ -313,10 +389,20 @@ async function main(): Promise<void> {
       return process.exit(3)
     }
     const accepted = scanned.findings.length
+    // The disclosure warning is not optional politeness. This file names the
+    // location and nature of problems that are, by definition, still unfixed —
+    // and canship deliberately searches gitignored credential files, so those
+    // entries can describe a file the repository does not contain. Telling
+    // someone to commit that without saying what it publishes would make
+    // canship's own output the leak it exists to find.
     process.stdout.write(
       `\n  ${bold('Baseline written to')} ${cyan(cleanForOutput(target))}\n` +
         `  ${dim(`${accepted} ${accepted === 1 ? 'finding is' : 'findings are'} now accepted and will not be reported.`)}\n` +
-        `  ${yellow('These problems still exist. Commit this file so the decision is reviewable.')}\n\n`,
+        `  ${yellow('These problems still exist.')}\n` +
+        `  ${dim('The file names the path, rule and title of each one — including findings')}\n` +
+        `  ${dim('in files git does not track, such as .env.local. It holds no credential')}\n` +
+        `  ${dim('values. Commit it so the decision is reviewable; on a public repository,')}\n` +
+        `  ${dim('weigh what that publishes first.')}\n\n`,
     )
     // A baseline recorded from an incomplete scan accepts a state nobody saw
     // in full: the findings that were never produced are absent from the file,
@@ -334,7 +420,7 @@ async function main(): Promise<void> {
   let baselineStale = 0
   let result = scanned
   if (baselinePath !== null) {
-    const source = resolve(baselinePath)
+    const source = baselinePath
     try {
       const applied = applyBaseline(scanned.findings, readBaseline(source))
       result = { ...scanned, findings: applied.kept }
@@ -407,7 +493,7 @@ async function main(): Promise<void> {
           hiddenLikely,
           baselineSuppressed,
           baselineStale,
-          baselinePath: baselinePath === null ? null : cleanForOutput(resolve(baselinePath)),
+          baselinePath: baselinePath === null ? null : cleanForOutput(baselinePath),
         },
       )}\n`,
     )
@@ -450,7 +536,7 @@ async function main(): Promise<void> {
             hiddenLikely,
             baselineSuppressed,
             baselineStale,
-            baselinePath: baselinePath === null ? null : cleanForOutput(resolve(baselinePath)),
+            baselinePath: baselinePath === null ? null : cleanForOutput(baselinePath),
           },
         ),
         'utf8',
