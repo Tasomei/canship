@@ -174,6 +174,36 @@ export type SkipReason =
   /** A nested worktree or submodule, which git reports as one opaque entry */
   | 'nested-repository'
 
+/**
+ * Which rules a scan was told to run.
+ *
+ * Selectors name finding rule ids — the ones `--json` prints — rather than the
+ * `id` on a Rule, because those are two different naming schemes and only the
+ * first is visible anywhere. See RULE_IDS in rules/index.ts.
+ */
+export interface ScanOptions {
+  /** Run only rules these selectors name. Mutually exclusive with `skip`. */
+  only?: string[]
+  /** Run everything except rules these selectors name. */
+  skip?: string[]
+}
+
+/** Rule selection that was in force, and what it cost the report */
+export interface RuleSelection {
+  only: string[]
+  skip: string[]
+  /** How many findings the selection removed */
+  removed: number
+}
+
+/** A finding the user silenced with a line marker, and where */
+export interface IgnoredFinding {
+  file: string
+  /** 1-based line the finding was on, which is the line after the marker */
+  line: number
+  ruleId: string
+}
+
 /** A file or directory that was found but not examined */
 export interface SkippedFile {
   path: string
@@ -225,6 +255,28 @@ export interface ScanResult {
    * a security scan is the same problem in a friendlier costume.
    */
   ignored: string[]
+  /**
+   * Findings a canship-ignore-next-line marker removed from this report.
+   *
+   * Recorded rather than counted, because the reader has a different question
+   * here than for an excluded file. An excluded file is one decision about one
+   * path; a suppressed finding is a decision about a specific rule at a
+   * specific place, and "three findings were silenced" is not reviewable
+   * without knowing which three.
+   *
+   * The finding itself is deliberately not kept. Its excerpt is a line of the
+   * user's source, and the point of the marker is that they have already
+   * decided it should not be reproduced in reports.
+   */
+  ignoredFindings: IgnoredFinding[]
+  /**
+   * Rule selection that was in force, or null when every rule ran.
+   *
+   * A turned-off rule is a check that did not happen, and the reader has to be
+   * able to see that from the report alone — otherwise a config file committed
+   * a year ago decides what "clean" means and says nothing about it.
+   */
+  ruleSelection: RuleSelection | null
   /**
    * How many listed paths were dropped for running through a dependency tree.
    *

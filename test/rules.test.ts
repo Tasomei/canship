@@ -803,6 +803,8 @@ describe('an incomplete scan must not look like a clean one', () => {
       errors: [{ ruleId: 'x/y', file: null, message: 'boom', kind: 'crashed' as const }],
       skipped: [],
       ignored: [],
+      ignoredFindings: [],
+      ruleSelection: null,
       vendored: 0,
       partial: true,
     }
@@ -2335,7 +2337,8 @@ describe('HTML report', () => {
     }
     const html = renderHtml(
       { findings: [hostile], filesScanned: 1, durationMs: 1, errors: [], skipped: [], ignored: [],
-    vendored: 0, partial: false },
+    ignoredFindings: [],
+      ruleSelection: null, vendored: 0, partial: false },
       opts,
     )
     // Check that no new element can be created from user data. Testing for the

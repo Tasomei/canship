@@ -24,6 +24,51 @@ export interface RenderOptions {
   showingLikely: boolean
   /** How many likely findings are hidden */
   hiddenLikely: number
+  /**
+   * How many findings a baseline removed from this report.
+   *
+   * Optional so the renderer keeps working for callers that do not use one, but
+   * once it is non-zero it is not optional to *print*: a baseline is the second
+   * thing in canship that can empty this report without the project being
+   * clean, and the first one (--all hiding likely findings) already has a line
+   * in the footer for exactly this reason.
+   */
+  baselineSuppressed?: number
+  /** Baselined findings that no longer occur, so the file can be pruned */
+  baselineStale?: number
+  /** Which file did the suppressing, so the reader can go and read it */
+  baselinePath?: string | null
+}
+
+/**
+ * What the baseline did, for the reader.
+ *
+ * Printed on both the clean and the non-clean path, because the clean one is
+ * where it matters most: a report saying "no findings" over a baseline holding
+ * a live service_role key is the single most misleading thing this tool could
+ * produce.
+ */
+function renderBaseline(opts: RenderOptions): string[] {
+  const suppressed = opts.baselineSuppressed ?? 0
+  const stale = opts.baselineStale ?? 0
+  if (suppressed === 0 && stale === 0) return []
+
+  const out: string[] = []
+  if (suppressed > 0) {
+    const where = opts.baselinePath ? ` (${opts.baselinePath})` : ''
+    out.push(
+      `${INDENT}${yellow(`${suppressed} ${plural(suppressed, 'finding')} hidden by the baseline${where}`)}`,
+    )
+    out.push(`${INDENT}${dim('These problems still exist. Re-run without --baseline to see them.')}`)
+  }
+  if (stale > 0) {
+    out.push(
+      // Not plural() — that helper only appends an s, and "entrys" is not a
+      // word. The irregular ones have to be written out.
+      `${INDENT}${dim(`${stale} baseline ${stale === 1 ? 'entry' : 'entries'} no longer ${stale === 1 ? 'matches' : 'match'} anything — re-run --baseline-write to prune.`)}`,
+    )
+  }
+  return out
 }
 
 export function renderReport(result: ScanResult, opts: RenderOptions): string {
@@ -73,6 +118,7 @@ export function renderReport(result: ScanResult, opts: RenderOptions): string {
     out.push('')
   }
   out.push(...renderIgnored(result))
+  out.push(...renderBaseline(opts))
   if (!opts.showingLikely && opts.hiddenLikely > 0) {
     out.push(
       `${INDENT}${dim(`${opts.hiddenLikely} lower-confidence ${plural(opts.hiddenLikely, 'finding')} hidden. Run with --all to see ${opts.hiddenLikely === 1 ? 'it' : 'them'}.`)}`,
@@ -187,10 +233,21 @@ function renderClean(result: ScanResult, opts: RenderOptions): string[] {
     out.push(
       `${INDENT}${yellow(bold(`! No certain findings — ${opts.hiddenLikely} lower-confidence ${plural(opts.hiddenLikely, 'finding')} hidden`))}`,
     )
+  } else if ((opts.baselineSuppressed ?? 0) > 0) {
+    // The green tick is a promise about the project, not about the diff. With a
+    // baseline in force it would be describing a repository whose findings were
+    // filed away rather than fixed — which is the whole reason this branch
+    // exists above the tick rather than beside it.
+    const suppressed = opts.baselineSuppressed ?? 0
+    out.push(
+      `${INDENT}${yellow(bold(`! No new findings — ${suppressed} ${plural(suppressed, 'finding')} accepted by the baseline`))}`,
+    )
   } else {
     out.push(`${INDENT}${green(bold('✓ No exposed credentials found'))}`)
   }
   out.push('')
+  out.push(...renderBaseline(opts))
+  if ((opts.baselineSuppressed ?? 0) > 0 || (opts.baselineStale ?? 0) > 0) out.push('')
   // This block is deliberate: a user must never walk away thinking
   // "it passed, therefore I am secure".
   out.push(`${INDENT}${dim('canship checked for:')}`)
@@ -205,8 +262,18 @@ function renderClean(result: ScanResult, opts: RenderOptions): string[] {
   out.push('')
   out.push(`${INDENT}${dim('It does not check rate limiting, injection, or whether the checks it')}`)
   out.push(`${INDENT}${dim('did find are the right ones.')}`)
+  // The closing sentence is the one people quote back. It must not say the
+  // checks passed when something was found and then silenced — by --all hiding
+  // it, or by a marker in the source. The tick above stays either way, matching
+  // how canship-ignore-file has always behaved: the user made this call
+  // deliberately, in their own file, and a line marker hides strictly less than
+  // the file marker that already keeps it.
   if (opts.hiddenLikely > 0) {
     out.push(`${INDENT}${dim('This is not a finding-free result. Review the hidden items with --all.')}`)
+  } else if (result.ignoredFindings.length > 0) {
+    out.push(
+      `${INDENT}${dim('This is not a finding-free result — some were silenced in the source. See below.')}`,
+    )
   } else {
     out.push(`${INDENT}${dim('A clean result means these checks passed — not that your app is secure.')}`)
   }
@@ -242,6 +309,30 @@ function renderIgnored(result: ScanResult): string[] {
     const more = result.ignored.length > 3 ? `, and ${result.ignored.length - 3} more` : ''
     out.push(
       `${INDENT}${dim(`${result.ignored.length} ${plural(result.ignored.length, 'file')} excluded by canship-ignore-file: ${shown}${more}`)}`,
+    )
+  }
+  // A rule that was turned off is a check that did not happen, and the reader
+  // has to see it from the report alone — otherwise a config file committed a
+  // year ago decides what "clean" means and never says so.
+  if (result.ruleSelection !== null) {
+    const { only, skip, removed } = result.ruleSelection
+    const which =
+      only.length > 0 ? `only ${only.join(', ')}` : `everything except ${skip.join(', ')}`
+    const cost = removed > 0 ? `, hiding ${removed} ${plural(removed, 'finding')}` : ''
+    out.push(`${INDENT}${dim(`Rule selection in force: ${which}${cost}`)}`)
+  }
+  // A silenced finding is a decision about a specific rule at a specific
+  // place, so the locations are named rather than counted. "Three findings
+  // were silenced" is not something a reviewer can check.
+  if (result.ignoredFindings.length > 0) {
+    const n = result.ignoredFindings.length
+    const shown = result.ignoredFindings
+      .slice(0, 3)
+      .map((f) => `${f.file}:${f.line} (${f.ruleId})`)
+      .join(', ')
+    const more = n > 3 ? `, and ${n - 3} more` : ''
+    out.push(
+      `${INDENT}${dim(`${n} ${plural(n, 'finding')} silenced by canship-ignore-next-line: ${shown}${more}`)}`,
     )
   }
   // canship's decision, not the user's, so it says so. Dependency trees are

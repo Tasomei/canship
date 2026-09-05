@@ -2,9 +2,20 @@
  * Scan engine: schedules rules, deduplicates and sorts the results.
  */
 
-import type { Finding, ScanContext, ScanError, ScanFile, ScanResult, SkippedFile } from './types.js'
-import { FILE_RULES, PROJECT_RULES } from './rules/index.js'
-import { collectFiles, detectGitRepo } from './walker.js'
+import type {
+  Finding,
+  IgnoredFinding,
+  ScanContext,
+  ScanError,
+  ScanFile,
+  ScanOptions,
+  ScanResult,
+  RuleSelection,
+  SkippedFile,
+} from './types.js'
+import { FILE_RULES, PROJECT_RULES, ruleMatches } from './rules/index.js'
+import { collectFiles, detectGitRepo, ignoredLinesOf } from './walker.js'
+import type { IgnoredLines } from './walker.js'
 import { resolveGitExecutable } from './git.js'
 import { redactAll, truncate } from './redact.js'
 
@@ -202,6 +213,84 @@ function downgradeExampleContext(findings: Finding[], files: ScanFile[]): Findin
   )
 }
 
+/**
+ * Remove the findings a line marker silenced, and record what went.
+ *
+ * Applied here for the same reason the policy above is: a suppression every
+ * rule has to remember is a suppression some rule will forget, and the one
+ * that forgets is the one whose false positive sent the user looking for an
+ * escape hatch in the first place.
+ *
+ * Only findings that have a line can be silenced this way. A project-wide
+ * finding — git history, an RLS gap spanning migrations — is not attached to a
+ * place a marker could sit next to, and pretending otherwise would let a marker
+ * anywhere in the repository turn one of those off.
+ *
+ * The markers are read only for files that actually produced a finding. Nothing
+ * else needs the answer, and the alternative is a pass over every line of every
+ * file to serve the handful that have one.
+ */
+function suppressIgnoredLines(
+  findings: Finding[],
+  files: ScanFile[],
+): { kept: Finding[]; ignored: IgnoredFinding[] } {
+  const byPath = new Map(files.map((f) => [f.path, f]))
+  /** Parsed once per file, and only for files with something to suppress */
+  const markers = new Map<string, IgnoredLines>()
+
+  const kept: Finding[] = []
+  const ignored: IgnoredFinding[] = []
+  for (const f of findings) {
+    if (f.file === null || f.line === null) {
+      kept.push(f)
+      continue
+    }
+    let lines = markers.get(f.file)
+    if (lines === undefined) {
+      const file = byPath.get(f.file)
+      lines = file === undefined ? new Map() : ignoredLinesOf(file.lines)
+      markers.set(f.file, lines)
+    }
+    if (!lines.has(f.line)) {
+      kept.push(f)
+      continue
+    }
+    const rules = lines.get(f.line)
+    // null means a bare marker, which covers every rule on that line.
+    if (rules !== null && rules !== undefined && !rules.has(f.ruleId)) {
+      kept.push(f)
+      continue
+    }
+    ignored.push({ file: f.file, line: f.line, ruleId: f.ruleId })
+  }
+  return { kept, ignored }
+}
+
+/**
+ * Drop the findings a rule selection turned off.
+ *
+ * Applied to findings rather than to the rules themselves, which is a real
+ * trade and worth stating: the rules still run, so `skip` costs nothing back
+ * in scan time. The alternative is selecting on the registry ids, and those
+ * appear in no output canship produces — asking someone to type
+ * `exposure/public-env` to silence a finding labelled
+ * `exposure/secret-in-public-env` is a guessing game.
+ */
+function applyRuleSelection(
+  findings: Finding[],
+  options: ScanOptions,
+): { kept: Finding[]; selection: RuleSelection | null } {
+  const only = options.only ?? []
+  const skip = options.skip ?? []
+  if (only.length === 0 && skip.length === 0) return { kept: findings, selection: null }
+
+  const kept = findings.filter((f) => {
+    if (only.length > 0) return only.some((s) => ruleMatches(s, f.ruleId))
+    return !skip.some((s) => ruleMatches(s, f.ruleId))
+  })
+  return { kept, selection: { only, skip, removed: findings.length - kept.length } }
+}
+
 /** Most severe and most certain first — people often read only the first few */
 function sortFindings(findings: Finding[]): Finding[] {
   return [...findings].sort((a, b) => {
@@ -218,7 +307,7 @@ function sortFindings(findings: Finding[]): Finding[] {
  * Deciding what to display is the caller's job — we scan once and never repeat
  * the work just to produce a count.
  */
-export async function scan(root: string): Promise<ScanResult> {
+export async function scan(root: string, options: ScanOptions = {}): Promise<ScanResult> {
   const started = Date.now()
 
   const gitExecutable = resolveGitExecutable(root)
@@ -277,8 +366,22 @@ export async function scan(root: string): Promise<ScanResult> {
     }
   }
 
+  // Suppressed after dedupe, so one marker silences one finding rather than
+  // being spent on a duplicate the reader would never have seen anyway — and
+  // before sanitize, because what gets recorded here is a location and a rule
+  // id, not the finding's text.
+  const { kept, ignored: ignoredFindings } = suppressIgnoredLines(
+    dedupe(downgradeExampleContext(findings, files)),
+    files,
+  )
+  // Rule selection last of the three, so its count answers the question a
+  // reader actually has — how many findings this setting is keeping from me —
+  // rather than counting duplicates and example-context entries that would
+  // never have been shown.
+  const selected = applyRuleSelection(kept, options)
+
   return {
-    findings: sanitize(sortFindings(dedupe(downgradeExampleContext(findings, files)))),
+    findings: sanitize(sortFindings(selected.kept)),
     filesScanned: files.length,
     durationMs: Date.now() - started,
     errors: errors.map((e) => ({
@@ -288,6 +391,20 @@ export async function scan(root: string): Promise<ScanResult> {
     })),
     skipped: sanitizeSkippedForOutput(skipped),
     ignored: ignored.map(clean),
+    // The path goes through the boundary like every other path that reaches a
+    // reader: a filename is chosen by whoever can add a file to the repository,
+    // and one holding a credential would otherwise print it here in full.
+    ignoredFindings: ignoredFindings.map((f) => ({ ...f, file: clean(f.file) })),
+    // Selectors come from a config file or the command line, both of which are
+    // text canship prints back, so both go through the boundary.
+    ruleSelection:
+      selected.selection === null
+        ? null
+        : {
+            only: selected.selection.only.map(clean),
+            skip: selected.selection.skip.map(clean),
+            removed: selected.selection.removed,
+          },
     vendored,
     // A deliberate opt-out is not an incomplete scan: the user made that call
     // knowingly. It is listed in the report, not treated as a failure.

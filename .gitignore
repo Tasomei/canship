@@ -11,7 +11,13 @@ dist/
 
 # Local scratch space for one-off scripts and throwaway repros.
 .scratch/
+
+# canship's own output, written into whatever directory it was pointed at.
+# Both name findings and the files they are in; neither is meant to be
+# committed. canship-baseline.json is deliberately absent — that one *is*
+# meant to be committed, since it is the record of what a project accepted.
 canship-report.html
+canship.sarif
 
 # The .env files under test/fixtures are committed on purpose: they are test
 # fixtures full of fake keys, used to verify the rules fire correctly.

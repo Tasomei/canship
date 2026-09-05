@@ -200,6 +200,74 @@ function hasIgnoreMarker(lines: string[]): boolean {
   return lines.some((line) => IGNORE_FILE_MARKER.test(line))
 }
 
+/**
+ * The same escape hatch, narrowed to one line.
+ *
+ * The file-level marker above was the only way out, and it is far too big a
+ * hammer for what people actually hit: one false positive on line 40 of a
+ * 500-line file, whose only remedies were to change correct code or to stop
+ * scanning the whole file. The second is what someone picks when they are in a
+ * hurry, and it takes the other 499 lines with it.
+ *
+ * Same wrapper syntax and the same whole-line rule as the file marker, for the
+ * same reason — a substring search once had walker.ts and secrets.ts excluding
+ * themselves because they *mention* the marker in a comment. That trap is worse
+ * here, not better: documentation about this feature naturally shows the marker
+ * on a line of its own, so anything written about it must keep other text on
+ * the line.
+ *
+ * A trailing form on the offending line itself was considered and left out.
+ * It reads better, and it can only work by searching inside a line that also
+ * holds code — which is the substring search this rule exists to refuse.
+ *
+ * The optional rule id narrows the suppression to one rule, so a line with a
+ * known false positive does not also go blind to a real finding from a
+ * different rule. It is optional because the reports do not print rule ids;
+ * requiring one would mean re-running under --json to silence anything.
+ */
+const IGNORE_LINE_MARKER =
+  /^\s*(?:\/\/|#|--|\*\/?|\/\*|<!--)?\s*canship-ignore-next-line(?:\s+([\w./-]+))?\s*(?:\*\/|-->)?\s*$/
+
+/**
+ * What each marked line suppresses: a set of rule ids, or null for every rule.
+ *
+ * Keyed by the 1-based number of the line the marker *governs* — the one after
+ * it — so a caller holding a finding can ask about it directly rather than
+ * reconstructing the offset.
+ */
+export type IgnoredLines = Map<number, Set<string> | null>
+
+/**
+ * Which lines of a file carry a suppression, and for which rules.
+ *
+ * Blank lines are not skipped: a marker governs the very next line and nothing
+ * else. Predictable beats clever here — if it silently reached past blank lines
+ * and comments, the line it finally landed on would be one the author never
+ * looked at.
+ */
+export function ignoredLinesOf(lines: string[]): IgnoredLines {
+  const found: IgnoredLines = new Map()
+  lines.forEach((line, index) => {
+    const match = IGNORE_LINE_MARKER.exec(line)
+    if (match === null) return
+    // `index` is 0-based and names the marker; the governed line is the next
+    // one, which in 1-based numbering is `index + 2`.
+    const governed = index + 2
+    const ruleId = match[1]
+    if (ruleId === undefined) {
+      // A bare marker covers everything, and overrides any narrower marker
+      // already recorded for the same line.
+      found.set(governed, null)
+      return
+    }
+    if (found.has(governed) && found.get(governed) === null) return
+    const rules = found.get(governed) ?? new Set<string>()
+    rules.add(ruleId)
+    found.set(governed, rules)
+  })
+  return found
+}
+
 /** Bun's lockfile is binary and cannot be read as text; every other lockfile is text and is scanned like anything else */
 const SKIP_FILENAMES = new Set(['bun.lockb'])
 

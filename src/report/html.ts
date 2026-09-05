@@ -73,11 +73,25 @@ export interface HtmlOptions {
   generatedAt: string
   /** How many lower-confidence findings the default report does not expand */
   hiddenLikely?: number
+  /**
+   * How many findings a baseline removed from this report.
+   *
+   * This report is the shareable one — it gets handed to someone who was not
+   * at the terminal. If a baseline emptied it, that reader has no other way to
+   * find out, so the number travels with the document.
+   */
+  baselineSuppressed?: number
+  /** Baselined findings that no longer occur */
+  baselineStale?: number
+  /** Which file did the suppressing */
+  baselinePath?: string | null
 }
 
 export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
   const { findings } = result
   const hiddenLikely = opts.hiddenLikely ?? 0
+  const baselineSuppressed = opts.baselineSuppressed ?? 0
+  const baselineStale = opts.baselineStale ?? 0
   // Severity decides the verdict; confidence decides how sure it is. See the
   // note on Severity in types.ts for why those were once the same number.
   const { blocking: certain, minor, unsure } = verdictOf(findings)
@@ -95,7 +109,13 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
               : `<div class="verdict warn">No findings &mdash; but not everything was checked</div>`
           : hiddenLikely > 0
             ? `<div class="verdict warn">No certain findings &mdash; ${hiddenLikely} lower-confidence ${plural(hiddenLikely, 'finding')} hidden</div>`
-            : `<div class="verdict clean">No exposed credentials found</div>`
+            : // The green banner is a statement about the project. A baseline
+              // makes it a statement about the diff instead, and this document
+              // outlives the run that produced it — whoever opens it later has
+              // only the banner to go on.
+              baselineSuppressed > 0
+              ? `<div class="verdict warn">No new findings &mdash; ${baselineSuppressed} ${plural(baselineSuppressed, 'finding')} accepted by the baseline</div>`
+              : `<div class="verdict clean">No exposed credentials found</div>`
       : certain > 0
         ? `<div class="verdict bad">${certain} critical ${plural(certain, 'issue')} &mdash; do not deploy</div>`
         : minor > 0
@@ -120,7 +140,13 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
              ${hiddenLikely} lower-confidence ${plural(hiddenLikely, 'finding')}.</p>
              <p>Re-run with <code>--all --report</code> to include ${hiddenLikely === 1 ? 'it' : 'them'} in the report.</p>
            </div>`
-          : `<div class="clean-note">
+          : baselineSuppressed > 0
+            ? `<div class="clean-note">
+             <p><strong>This is not a finding-free result.</strong> A baseline is hiding
+             ${baselineSuppressed} ${plural(baselineSuppressed, 'finding')}${opts.baselinePath ? ` (<code>${esc(opts.baselinePath)}</code>)` : ''}.</p>
+             <p>Those problems still exist. Re-run without <code>--baseline</code> to see ${baselineSuppressed === 1 ? 'it' : 'them'}.</p>
+           </div>`
+            : `<div class="clean-note">
            <p>canship checked for hardcoded API keys, server secrets exposed to the browser,
             Supabase tables without Row Level Security, open Firebase rules, API routes that reach
             the database with no sign-in check, CORS that lets other sites use your visitors&rsquo;
@@ -136,9 +162,42 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
       ? `<p class="opted-out">${result.ignored.length} ${plural(result.ignored.length, 'file')} excluded by <code>canship-ignore-file</code>: ${result.ignored.map((f) => `<code>${esc(f)}</code>`).join(', ')}</p>`
       : ''
 
+  // Travels with the document, because whoever opens this later has no other
+  // way to learn that some checks were switched off before it was written.
+  const selection = result.ruleSelection
+  const ruleSelection =
+    selection === null
+      ? ''
+      : `<p class="opted-out">Rule selection in force: ${
+          selection.only.length > 0
+            ? `only <code>${selection.only.map(esc).join('</code>, <code>')}</code>`
+            : `everything except <code>${selection.skip.map(esc).join('</code>, <code>')}</code>`
+        }${selection.removed > 0 ? `, hiding ${selection.removed} ${plural(selection.removed, 'finding')}` : ''}.</p>`
+
+  // Named rather than counted, and every location escaped: a path is chosen by
+  // whoever can add a file to the repository.
+  const silenced =
+    result.ignoredFindings.length > 0
+      ? `<p class="opted-out">${result.ignoredFindings.length} ${plural(result.ignoredFindings.length, 'finding')} silenced by <code>canship-ignore-next-line</code>: ${result.ignoredFindings
+          .map((f) => `<code>${esc(f.file)}:${f.line}</code> (${esc(f.ruleId)})`)
+          .join(', ')}</p>`
+      : ''
+
   const hiddenNotice =
     hiddenLikely > 0 && findings.length > 0
       ? `<p class="opted-out">${hiddenLikely} lower-confidence ${plural(hiddenLikely, 'finding')} hidden. Re-run with <code>--all --report</code> to include ${hiddenLikely === 1 ? 'it' : 'them'}.</p>`
+      : ''
+
+  // Only when there *are* findings — with none, the clean-note above already
+  // carries this, and saying it twice in one document reads as two baselines.
+  const baselineNotice =
+    baselineSuppressed > 0 && findings.length > 0
+      ? `<p class="opted-out">${baselineSuppressed} ${plural(baselineSuppressed, 'finding')} hidden by the baseline${opts.baselinePath ? ` (<code>${esc(opts.baselinePath)}</code>)` : ''}. Those problems still exist.</p>`
+      : ''
+
+  const staleNotice =
+    baselineStale > 0
+      ? `<p class="opted-out">${baselineStale} baseline ${baselineStale === 1 ? 'entry' : 'entries'} no longer ${baselineStale === 1 ? 'matches' : 'match'} anything &mdash; re-run <code>--baseline-write</code> to prune.</p>`
       : ''
 
   // Shown whether or not there were findings: "we did not look at these" is
@@ -258,6 +317,10 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
   ${body}
   ${incomplete}
   ${hiddenNotice}
+  ${baselineNotice}
+  ${staleNotice}
+  ${silenced}
+  ${ruleSelection}
   ${optedOut}
   <footer>
     Generated by canship. Everything ran locally; nothing was uploaded.

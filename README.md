@@ -46,6 +46,11 @@ The current directory is scanned when no path is provided.
 | `--fix-prompt` | Write remediation instructions for a coding assistant |
 | `--report[=file]` | Write a self-contained HTML report; defaults to `canship-report.html` |
 | `--best-effort` | Allow exit `0` when the scan is incomplete and has no findings; does not change the status of existing findings |
+| `--baseline[=file]` | Hide findings recorded in the baseline, so only new ones are reported; defaults to `canship-baseline.json` |
+| `--baseline-write[=file]` | Record the current findings as a baseline and exit; defaults to `canship-baseline.json` |
+| `--only=ids` | Report only these rules; comma-separated and repeatable |
+| `--skip=ids` | Report everything except these rules; comma-separated and repeatable |
+| `--sarif[=file]` | Write a SARIF 2.1.0 log for CI code scanning; defaults to `canship.sarif` |
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show the version |
 
@@ -67,6 +72,80 @@ The default view expands only `certain` findings. Hidden `likely` findings still
 ### Excluding a file
 
 Add `canship-ignore-file` on a line by itself to exclude the entire file. The marker may be wrapped only in `//`, `#`, `--`, `*`, `/* */`, or `<!-- -->` comment syntax. Intentionally excluded files are listed in the report and do not make the scan incomplete.
+
+### Excluding a single line
+
+Add `canship-ignore-next-line` on the line above a finding to suppress it there. The same comment syntax applies, and the marker must be the whole content of its line — a line that also holds code or prose does not suppress anything.
+
+```ts
+// canship-ignore-next-line
+const documentedExample = "sk-proj-not-a-real-key"
+```
+
+A bare marker suppresses every rule on the following line. A rule id after it narrows the suppression to that rule, so a line with one known false positive is not also blind to a different finding:
+
+```ts
+// canship-ignore-next-line secrets/hardcoded/openai
+const key = process.env.OPENAI_KEY
+```
+
+Rule ids appear in `--json` output; the terminal and HTML reports do not print them, which is why the bare form exists.
+
+The marker governs the line immediately after it, with no allowance for blank lines. Suppressed findings are listed by file, line, and rule in the terminal, the HTML report, and the `ignoredFindings` field of `--json`. They do not make the scan incomplete, and the report states that the result is not finding-free.
+
+### Configuration
+
+Settings a project makes once can be committed to `canship.config.json` in the scanned directory. A command-line flag always overrides the file.
+
+```json
+{
+  "baseline": "canship-baseline.json",
+  "skip": ["cors/wildcard-with-credentials"],
+  "all": false,
+  "bestEffort": false
+}
+```
+
+| Setting | Equivalent flag |
+|---|---|
+| `baseline` | `--baseline=file` |
+| `only` | `--only=ids` |
+| `skip` | `--skip=ids` |
+| `all` | `--all` |
+| `bestEffort` | `--best-effort` |
+
+The format is JSON and not JavaScript. A `canship.config.js` would be project code, and the scan does not execute project code.
+
+An unknown setting, a wrong type, a rule id that names no rule, or `only` and `skip` together are all errors and exit `3`. A missing config file is not an error.
+
+### Selecting rules
+
+`--only` and `--skip` take the rule ids that appear in `--json` output, comma-separated and repeatable. A selector matches an id exactly, or matches every id beneath it at a `/` boundary — `secrets` covers every credential format, `secrets/hardcoded/openai` covers one. A partial id such as `secrets/hardcoded/open` matches nothing and is rejected, so a mistyped id cannot quietly disable a rule.
+
+`--only` and `--skip` cannot be combined. Selection filters findings rather than skipping the rules themselves, so it does not reduce scan time. Every report states which selection was in force and how many findings it hid.
+
+### Baseline
+
+An existing project usually has findings on the first run. A baseline records them so that subsequent runs report only what appeared afterwards, which is what makes canship usable in continuous integration for a project that did not start with it.
+
+```bash
+npx canship --baseline-write   # accept the current findings
+npx canship --baseline         # report only new ones
+```
+
+`--baseline-write` writes `canship-baseline.json` and exits `0` without scanning further. Commit that file: it is the record of what was accepted, and it is meant to be reviewed in the pull request that adds it.
+
+A baseline entry is matched by rule, file, title, and a hash of the excerpt. The line number is deliberately excluded, so editing a file above a finding does not report it as new. Each entry carries the number of times it was seen; an additional occurrence beyond that count is reported.
+
+The baseline stores a SHA-256 hash rather than the excerpt itself, because the file is intended to be committed and canship cannot guarantee that an unrecognised credential is masked.
+
+A baseline hides real findings. Every output states how many:
+
+- the terminal and HTML report never show a clean result while a baseline is suppressing findings, and name the count and the file
+- `--json` reports `baselineSuppressed`
+- baseline entries that no longer match anything are reported as `baselineStale`; they do not affect the exit status
+
+Findings of every confidence are recorded. A baseline that cannot be read — missing, malformed, or written by a different format version — exits `3` rather than proceeding with no suppression. `--baseline` and `--baseline-write` cannot be combined.
 
 ### Remediation instructions
 

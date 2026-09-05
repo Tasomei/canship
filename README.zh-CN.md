@@ -46,6 +46,11 @@ npx canship [路径]
 | `--fix-prompt` | 输出可交给编程助手的修复说明 |
 | `--report[=文件]` | 生成自包含的 HTML 报告；默认写入 `canship-report.html` |
 | `--best-effort` | 扫描不完整且没有任何结果时允许退出 `0`；不会改变已有结果对应的退出码 |
+| `--baseline[=文件]` | 隐藏基线中已记录的结果，只报告新增项；默认读取 `canship-baseline.json` |
+| `--baseline-write[=文件]` | 将当前结果记录为基线后退出；默认写入 `canship-baseline.json` |
+| `--only=规则` | 只报告这些规则；逗号分隔，可重复传入 |
+| `--skip=规则` | 报告除这些规则以外的全部；逗号分隔，可重复传入 |
+| `--sarif[=文件]` | 生成 SARIF 2.1.0 日志供 CI 代码扫描使用；默认写入 `canship.sarif` |
 | `-h`, `--help` | 显示帮助 |
 | `-v`, `--version` | 显示版本 |
 
@@ -67,6 +72,80 @@ npx canship [路径]
 ### 排除文件
 
 在文件中单独添加一行 `canship-ignore-file` 可以排除整个文件。标记前后只允许出现 `//`、`#`、`--`、`*`、`/* */` 或 `<!-- -->` 注释符。被主动排除的文件会列入报告，但不会使扫描标记为不完整。
+
+### 排除单行
+
+在某条结果所在行的上一行添加 `canship-ignore-next-line` 可以只抑制该行。注释符规则与上面相同，且标记必须独占整行——同时含有代码或说明文字的行不会产生任何抑制作用。
+
+```ts
+// canship-ignore-next-line
+const documentedExample = "sk-proj-not-a-real-key"
+```
+
+不带参数的标记会抑制下一行上的所有规则。在标记后写出规则 id 可将抑制范围收窄到该规则，使得一行上已知的误报不会同时让另一条规则失明：
+
+```ts
+// canship-ignore-next-line secrets/hardcoded/openai
+const key = process.env.OPENAI_KEY
+```
+
+规则 id 可从 `--json` 输出中获得；终端与 HTML 报告不显示规则 id，不带参数的形式正是为此保留的。
+
+标记只作用于紧接其后的那一行，不会跳过空行。被抑制的结果会在终端、HTML 报告以及 `--json` 的 `ignoredFindings` 字段中按文件、行号和规则列出。它们不会使扫描标记为不完整，报告也会声明该结果并非"没有任何问题"。
+
+### 配置文件
+
+项目一次性确定的设置可以提交到被扫描目录下的 `canship.config.json`。命令行参数始终覆盖配置文件。
+
+```json
+{
+  "baseline": "canship-baseline.json",
+  "skip": ["cors/wildcard-with-credentials"],
+  "all": false,
+  "bestEffort": false
+}
+```
+
+| 设置项 | 等价参数 |
+|---|---|
+| `baseline` | `--baseline=文件` |
+| `only` | `--only=规则` |
+| `skip` | `--skip=规则` |
+| `all` | `--all` |
+| `bestEffort` | `--best-effort` |
+
+格式是 JSON 而非 JavaScript。`canship.config.js` 属于项目代码，而扫描不执行项目代码。
+
+未知设置项、类型错误、指向不存在规则的 id，以及同时设置 `only` 和 `skip`，都会报错并以 `3` 退出。配置文件不存在不算错误。
+
+### 选择规则
+
+`--only` 和 `--skip` 接受 `--json` 输出中出现的规则 id，逗号分隔，可重复传入。选择器可精确匹配某个 id，也可按 `/` 边界匹配其下的全部 id——`secrets` 覆盖所有凭据格式，`secrets/hardcoded/openai` 只覆盖一种。像 `secrets/hardcoded/open` 这样的半截 id 不匹配任何规则并会被拒绝，因此拼错的 id 不会悄悄关掉一条规则。
+
+`--only` 与 `--skip` 不能同时使用。规则选择过滤的是结果而非跳过规则本身，因此不会缩短扫描时间。每个报告都会说明当前生效的选择以及它隐藏了多少条结果。
+
+### 基线
+
+已有项目首次扫描通常会产生若干结果。基线记录这些结果，使后续扫描只报告此后新增的问题——这是让 canship 能够接入一个并非从零开始使用它的项目的持续集成的前提。
+
+```bash
+npx canship --baseline-write   # 接受当前结果
+npx canship --baseline         # 只报告新增项
+```
+
+`--baseline-write` 写入 `canship-baseline.json` 后以 `0` 退出，不再继续输出扫描结果。该文件应当提交：它是"接受了哪些问题"的记录，本身就是供人在引入它的合并请求中审阅的。
+
+基线条目按规则、文件、标题以及摘录的哈希匹配。行号被刻意排除在外，因此在某条结果上方编辑文件不会使其被报告为新增项。每个条目记录出现次数；超出该次数的额外出现会被报告。
+
+基线保存的是 SHA-256 哈希而非摘录原文，因为该文件应当被提交，而 canship 无法保证它无法识别的凭据一定被遮蔽。
+
+基线会隐藏真实结果，因此每个输出都会说明隐藏了多少：
+
+- 基线正在隐藏结果时，终端与 HTML 报告不会显示"干净"结论，并会给出数量和基线文件路径
+- `--json` 通过 `baselineSuppressed` 给出数量
+- 不再匹配任何结果的基线条目通过 `baselineStale` 报告，不影响退出码
+
+所有置信度的结果都会被记录。基线文件无法读取时——缺失、格式损坏，或由不同格式版本写入——以 `3` 退出，而不是在不做任何抑制的情况下继续。`--baseline` 与 `--baseline-write` 不能同时使用。
 
 ### 修复说明
 
