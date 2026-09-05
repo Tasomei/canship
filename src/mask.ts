@@ -19,6 +19,66 @@
  */
 
 /**
+ * The characters the maskers compare against, as UTF-16 code units.
+ *
+ * Every masker used to ask its questions with string comparisons — `src[i]`
+ * against `'/'`, and `src.slice(i, i + 2)` against `'//'`. The second one
+ * allocates a two-character string at *every character of every file*, and the
+ * buffer those maskers wrote into was `src.split('')`, one string object per
+ * character on top of that. Masking was 37% of the CPU of a whole scan, and
+ * most of it was garbage.
+ *
+ * Comparing code units removes both. It is the same algorithm with the same
+ * offsets; only the representation of "one character" changed.
+ */
+const SLASH = 0x2f
+const STAR = 0x2a
+const DOUBLE_QUOTE = 0x22
+const SINGLE_QUOTE = 0x27
+const BACKTICK = 0x60
+const BACKSLASH = 0x5c
+const DOLLAR = 0x24
+const OPEN_BRACE = 0x7b
+const CLOSE_BRACE = 0x7d
+const NEWLINE = 0x0a
+const SPACE = 0x20
+
+/**
+ * The working buffer: one UTF-16 code unit per character of the source.
+ *
+ * A Uint16Array rather than an array of one-character strings, for the reason
+ * above. The round trip is exact — `charCodeAt` and `fromCharCode` are inverses
+ * over every code unit, surrogate halves included — so a file holding emoji or
+ * lone surrogates comes back byte for byte.
+ */
+export type MaskBuffer = Uint16Array
+
+/** Copy the source into a buffer the maskers can blank in place */
+export function codesOf(src: string): MaskBuffer {
+  const out = new Uint16Array(src.length)
+  for (let i = 0; i < src.length; i++) out[i] = src.charCodeAt(i)
+  return out
+}
+
+/**
+ * How many code units are handed to `fromCharCode` at once.
+ *
+ * It takes them as arguments, and an argument list is bounded by the stack, so
+ * a whole file cannot go in one call.
+ */
+const CHUNK = 8192
+
+/** Turn the buffer back into a string of exactly the same length */
+export function stringOf(out: MaskBuffer): string {
+  let text = ''
+  for (let i = 0; i < out.length; i += CHUNK) {
+    const end = i + CHUNK < out.length ? i + CHUNK : out.length
+    text += String.fromCharCode.apply(null, out.subarray(i, end) as unknown as number[])
+  }
+  return text
+}
+
+/**
  * Blank a range, leaving newlines so line numbers survive.
  *
  * Exported because every masker in the codebase needs exactly this primitive
@@ -26,9 +86,10 @@
  * the whole reason masking is used instead of deleting, so it is the one piece
  * that must not exist twice.
  */
-export function blank(out: string[], from: number, to: number): void {
-  for (let i = from; i < to && i < out.length; i++) {
-    if (out[i] !== '\n') out[i] = ' '
+export function blank(out: MaskBuffer, from: number, to: number): void {
+  const end = to < out.length ? to : out.length
+  for (let i = from; i < end; i++) {
+    if (out[i] !== NEWLINE) out[i] = SPACE
   }
 }
 
@@ -36,37 +97,41 @@ export function blank(out: string[], from: number, to: number): void {
  * Skip a quoted string starting at `start`, returning the index just past it.
  * Handles backslash escapes.
  */
-function endOfString(src: string, start: number, quote: string): number {
+function endOfString(src: string, start: number, quote: number): number {
+  const length = src.length
   let i = start + 1
-  while (i < src.length) {
-    if (src[i] === '\\') {
+  while (i < length) {
+    const ch = src.charCodeAt(i)
+    if (ch === BACKSLASH) {
       i += 2
       continue
     }
-    if (src[i] === quote) return i + 1
+    if (ch === quote) return i + 1
     i++
   }
-  return src.length
+  return length
 }
 
 /**
  * Blank a template literal's text while preserving its `${...}` expressions.
  * Returns the index just past the closing backtick.
  */
-function maskTemplate(src: string, out: string[], start: number): number {
+function maskTemplate(src: string, out: MaskBuffer, start: number): number {
+  const length = src.length
   let i = start + 1
   let literalFrom = i
 
-  while (i < src.length) {
-    if (src[i] === '\\') {
+  while (i < length) {
+    const ch = src.charCodeAt(i)
+    if (ch === BACKSLASH) {
       i += 2
       continue
     }
-    if (src[i] === '`') {
+    if (ch === BACKTICK) {
       blank(out, literalFrom, i)
       return i + 1
     }
-    if (src[i] === '$' && src[i + 1] === '{') {
+    if (ch === DOLLAR && src.charCodeAt(i + 1) === OPEN_BRACE) {
       blank(out, literalFrom, i)
       // Walk to the matching brace. The expression inside is code and stays —
       // but the strings and comments *within* it are noise like any other, and
@@ -75,36 +140,38 @@ function maskTemplate(src: string, out: string[], start: number): number {
       // check. Both were enough to mark an unauthenticated route protected.
       let depth = 0
       let j = i + 1
-      while (j < src.length) {
-        const ch = src[j]!
-        const pair = src.slice(j, j + 2)
-        if (pair === '//') {
-          const end = src.indexOf('\n', j)
-          const stop = end === -1 ? src.length : end
-          blank(out, j, stop)
-          j = stop
-          continue
+      while (j < length) {
+        const inner = src.charCodeAt(j)
+        if (inner === SLASH) {
+          const next = src.charCodeAt(j + 1)
+          if (next === SLASH) {
+            const end = src.indexOf('\n', j)
+            const stop = end === -1 ? length : end
+            blank(out, j, stop)
+            j = stop
+            continue
+          }
+          if (next === STAR) {
+            const close = src.indexOf('*/', j + 2)
+            const stop = close === -1 ? length : close + 2
+            blank(out, j, stop)
+            j = stop
+            continue
+          }
         }
-        if (pair === '/*') {
-          const close = src.indexOf('*/', j + 2)
-          const stop = close === -1 ? src.length : close + 2
-          blank(out, j, stop)
-          j = stop
-          continue
-        }
-        if (ch === '"' || ch === "'") {
-          const stop = endOfString(src, j, ch)
+        if (inner === DOUBLE_QUOTE || inner === SINGLE_QUOTE) {
+          const stop = endOfString(src, j, inner)
           blank(out, j + 1, stop - 1)
           j = stop
           continue
         }
-        if (ch === '`') {
+        if (inner === BACKTICK) {
           // A nested template. Recursing keeps its expressions readable too.
           j = maskTemplate(src, out, j)
           continue
         }
-        if (ch === '{') depth++
-        else if (ch === '}') {
+        if (inner === OPEN_BRACE) depth++
+        else if (inner === CLOSE_BRACE) {
           depth--
           if (depth === 0) {
             j++
@@ -120,8 +187,8 @@ function maskTemplate(src: string, out: string[], start: number): number {
     i++
   }
 
-  blank(out, literalFrom, src.length)
-  return src.length
+  blank(out, literalFrom, length)
+  return length
 }
 
 /**
@@ -135,35 +202,38 @@ function maskTemplate(src: string, out: string[], start: number): number {
  * entire API.
  */
 export function maskJsComments(src: string): string {
-  const out = src.split('')
+  const length = src.length
+  const out = codesOf(src)
   let i = 0
-  while (i < src.length) {
-    const ch = src[i]!
-    const two = src.slice(i, i + 2)
+  while (i < length) {
+    const ch = src.charCodeAt(i)
 
-    if (two === '//') {
-      const end = src.indexOf('\n', i)
-      const stop = end === -1 ? src.length : end
-      blank(out, i, stop)
-      i = stop
-      continue
-    }
-    if (two === '/*') {
-      const close = src.indexOf('*/', i + 2)
-      const stop = close === -1 ? src.length : close + 2
-      blank(out, i, stop)
-      i = stop
-      continue
+    if (ch === SLASH) {
+      const next = src.charCodeAt(i + 1)
+      if (next === SLASH) {
+        const end = src.indexOf('\n', i)
+        const stop = end === -1 ? length : end
+        blank(out, i, stop)
+        i = stop
+        continue
+      }
+      if (next === STAR) {
+        const close = src.indexOf('*/', i + 2)
+        const stop = close === -1 ? length : close + 2
+        blank(out, i, stop)
+        i = stop
+        continue
+      }
     }
     // Step over strings without touching them, so a `//` inside one — the `//`
     // of a URL, most often — does not start a comment.
-    if (ch === '"' || ch === "'" || ch === '`') {
+    if (ch === DOUBLE_QUOTE || ch === SINGLE_QUOTE || ch === BACKTICK) {
       i = endOfString(src, i, ch)
       continue
     }
     i++
   }
-  return out.join('')
+  return stringOf(out)
 }
 
 /**
@@ -173,30 +243,32 @@ export function maskJsComments(src: string): string {
  * syntax and the same quoting.
  */
 export function maskJsNoise(src: string): string {
-  const out = src.split('')
+  const length = src.length
+  const out = codesOf(src)
   let i = 0
 
-  while (i < src.length) {
-    const ch = src[i]!
-    const two = src.slice(i, i + 2)
+  while (i < length) {
+    const ch = src.charCodeAt(i)
 
-    if (two === '//') {
-      const end = src.indexOf('\n', i)
-      const stop = end === -1 ? src.length : end
-      blank(out, i, stop)
-      i = stop
-      continue
+    if (ch === SLASH) {
+      const next = src.charCodeAt(i + 1)
+      if (next === SLASH) {
+        const end = src.indexOf('\n', i)
+        const stop = end === -1 ? length : end
+        blank(out, i, stop)
+        i = stop
+        continue
+      }
+      if (next === STAR) {
+        const close = src.indexOf('*/', i + 2)
+        const stop = close === -1 ? length : close + 2
+        blank(out, i, stop)
+        i = stop
+        continue
+      }
     }
 
-    if (two === '/*') {
-      const close = src.indexOf('*/', i + 2)
-      const stop = close === -1 ? src.length : close + 2
-      blank(out, i, stop)
-      i = stop
-      continue
-    }
-
-    if (ch === '"' || ch === "'") {
+    if (ch === DOUBLE_QUOTE || ch === SINGLE_QUOTE) {
       const stop = endOfString(src, i, ch)
       // Blank the contents but leave the quotes, so patterns anchored on a
       // quoted position still see the shape of the code.
@@ -205,7 +277,7 @@ export function maskJsNoise(src: string): string {
       continue
     }
 
-    if (ch === '`') {
+    if (ch === BACKTICK) {
       i = maskTemplate(src, out, i)
       continue
     }
@@ -213,7 +285,7 @@ export function maskJsNoise(src: string): string {
     i++
   }
 
-  return out.join('')
+  return stringOf(out)
 }
 
 /**

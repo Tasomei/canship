@@ -33,7 +33,7 @@ import type { Finding, ProjectRule, ScanContext, ScanFile } from '../types.js'
 import { isSupabaseProject } from './framework.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { MAX_FINDINGS_PER_FILE } from './limits.js'
-import { blank } from '../mask.js'
+import { blank, codesOf, stringOf } from '../mask.js'
 
 /** Schemas that are not reachable through the public PostgREST API */
 const INTERNAL_SCHEMAS = new Set([
@@ -98,8 +98,36 @@ interface SqlEvent {
 /** `DO $$ … $$` and `DO LANGUAGE plpgsql $$ … $$` — executed, not declared */
 const IS_DO_BLOCK = /\bdo\s+(?:language\s+\w+\s+)?$/i
 
+/**
+ * The code units this masker compares against. See mask.ts for why the
+ * comparisons are code units and not one-character strings.
+ */
+const DASH = 0x2d
+const SLASH = 0x2f
+const STAR = 0x2a
+const SINGLE_QUOTE = 0x27
+const DOUBLE_QUOTE = 0x22
+const DOLLAR = 0x24
+const NEWLINE = 0x0a
+const UNDERSCORE = 0x5f
+
+/**
+ * `/\s/` for a single code unit, without building a string to test.
+ *
+ * Spelled as the ASCII cases plus a fallback rather than as a hand-written list
+ * of every code point `\s` covers: that list runs from U+00A0 through U+FEFF and
+ * getting it wrong here would silently change which identifiers the masker
+ * rewrites. The fallback is the regex itself, so the two cannot disagree, and it
+ * only runs for the non-ASCII characters that reach it.
+ */
+function isSpaceCode(code: number): boolean {
+  if (code === 0x20 || (code >= 0x09 && code <= 0x0d)) return true
+  return code > 0x7f && /\s/.test(String.fromCharCode(code))
+}
+
 export function maskSqlNoise(sql: string): string {
-  const out = sql.split('')
+  const length = sql.length
+  const out = codesOf(sql)
   // Offset-preserving blanking is the primitive every masker in the codebase
   // shares, and it had been written twice. Preserving offsets is the entire
   // reason masking is used instead of deleting, so it is the one piece that
@@ -107,28 +135,28 @@ export function maskSqlNoise(sql: string): string {
   const erase = (from: number, to: number): void => blank(out, from, to)
 
   let i = 0
-  while (i < sql.length) {
-    const ch = sql[i]!
-    const two = sql.slice(i, i + 2)
+  while (i < length) {
+    const ch = sql.charCodeAt(i)
 
-    if (two === '--') {
+    if (ch === DASH && sql.charCodeAt(i + 1) === DASH) {
       const end = sql.indexOf('\n', i)
-      erase(i, end === -1 ? sql.length : end)
-      i = end === -1 ? sql.length : end
+      erase(i, end === -1 ? length : end)
+      i = end === -1 ? length : end
       continue
     }
 
-    if (two === '/*') {
+    if (ch === SLASH && sql.charCodeAt(i + 1) === STAR) {
       // Postgres block comments nest, so a naive search for the first */ ends
       // one level too early and leaves the rest of the comment looking like code.
       let depth = 0
       let j = i
-      while (j < sql.length) {
-        const pair = sql.slice(j, j + 2)
-        if (pair === '/*') {
+      while (j < length) {
+        const first = sql.charCodeAt(j)
+        const second = sql.charCodeAt(j + 1)
+        if (first === SLASH && second === STAR) {
           depth++
           j += 2
-        } else if (pair === '*/') {
+        } else if (first === STAR && second === SLASH) {
           depth--
           j += 2
           if (depth === 0) break
@@ -141,17 +169,18 @@ export function maskSqlNoise(sql: string): string {
       continue
     }
 
-    if (ch === "'") {
+    if (ch === SINGLE_QUOTE) {
       // E'...' takes backslash escapes; a plain '...' only doubles the quote.
       const escaped = i > 0 && /[Ee]/.test(sql[i - 1] ?? '') && !/[A-Za-z0-9_]/.test(sql[i - 2] ?? '')
       let j = i + 1
-      while (j < sql.length) {
-        if (escaped && sql[j] === '\\') {
+      while (j < length) {
+        const inner = sql.charCodeAt(j)
+        if (escaped && inner === 0x5c) {
           j += 2
           continue
         }
-        if (sql[j] === "'") {
-          if (sql[j + 1] === "'") {
+        if (inner === SINGLE_QUOTE) {
+          if (sql.charCodeAt(j + 1) === SINGLE_QUOTE) {
             j += 2
             continue
           }
@@ -165,7 +194,7 @@ export function maskSqlNoise(sql: string): string {
       continue
     }
 
-    if (ch === '"') {
+    if (ch === DOUBLE_QUOTE) {
       // A quoted identifier is a table name, not noise, so its text survives —
       // but only after the spaces inside it are turned into underscores.
       //
@@ -176,21 +205,30 @@ export function maskSqlNoise(sql: string): string {
       // Postgres column name could contain a DROP statement that the replay
       // then obeyed, retiring the real table it was declared in.
       let j = i + 1
-      while (j < sql.length && sql[j] !== '"') {
-        if (/\s/.test(out[j] ?? '') && out[j] !== '\n') out[j] = '_'
+      while (j < length && sql.charCodeAt(j) !== DOUBLE_QUOTE) {
+        const code = out[j]
+        if (code !== undefined && code !== NEWLINE && isSpaceCode(code)) out[j] = UNDERSCORE
         j++
       }
       i = j + 1
       continue
     }
 
-    if (ch === '$') {
+    if (ch === DOLLAR) {
       // $$ … $$ or $tag$ … $tag$. A bare $1 placeholder does not match,
       // because the pattern requires the closing dollar.
+      //
+      // The slice here looks like an O(n²) trap — it runs at every dollar sign,
+      // and a generated migration is full of `$1, $2, $3`. It is not one.
+      // V8 returns a SlicedString that shares the original buffer rather than
+      // copying, so this is a small constant per dollar regardless of file
+      // size: 20,000 dollar positions in a 300 KB migration measured under a
+      // millisecond, and a sticky-regex rewrite that removes the allocation
+      // entirely measured no faster. Left alone deliberately.
       const tag = /^\$(?:[A-Za-z_]\w*)?\$/.exec(sql.slice(i))?.[0]
       if (tag) {
         const close = sql.indexOf(tag, i + tag.length)
-        const end = close === -1 ? sql.length : close + tag.length
+        const end = close === -1 ? length : close + tag.length
         // A function body is a definition; a DO block is a statement that runs
         // the moment the migration does. Masking both meant
         // `DO $$ BEGIN CREATE TABLE … END $$;` created a real table that the
@@ -204,7 +242,7 @@ export function maskSqlNoise(sql: string): string {
     i++
   }
 
-  return out.join('')
+  return stringOf(out)
 }
 
 /**
