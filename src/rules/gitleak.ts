@@ -16,7 +16,7 @@ import { basename } from 'node:path'
 import { findKnownSecret, isPlaceholder } from './patterns.js'
 import { looksClearlyPrivate, looksIntentionallyPublic, publicPrefixOf } from './framework.js'
 import { parseEnvLine } from './envfile.js'
-import { execGitSync, hasContainedGitMetadata } from '../git.js'
+import { execGitBatch, execGitSync, hasContainedGitMetadata } from '../git.js'
 
 /**
  * Template files are meant to be committed and are not a leak.
@@ -158,6 +158,66 @@ function git(root: string, gitExecutable: string | null, args: string[]): string
   }
 }
 
+/**
+ * Read many blobs from one git process, in the order they were asked for.
+ *
+ * `cat-file --batch` answers each line of stdin with either
+ *
+ *     <sha> <type> <size>\n<size bytes>\n
+ *
+ * or, when the object is not there, a line ending in ` missing`. Both are
+ * parsed here rather than by splitting on newlines, because a blob contains
+ * newlines of its own — the byte count in the header is the only thing that
+ * says where one object stops.
+ *
+ * Returns one entry per requested revision, `null` where git had nothing, so
+ * the caller can still count what it could not read.
+ */
+function batchBlobs(
+  root: string,
+  gitExecutable: string | null,
+  specs: string[],
+): (string | null)[] {
+  if (gitExecutable === null || specs.length === 0) return specs.map(() => null)
+  let out: Buffer
+  try {
+    out = execGitBatch(
+      gitExecutable,
+      root,
+      ['cat-file', '--batch', '--buffer'],
+      `${specs.join('\n')}\n`,
+    )
+  } catch {
+    // One failed batch is every revision unread, which is what the caller
+    // already knows how to report.
+    return specs.map(() => null)
+  }
+
+  const blobs: (string | null)[] = []
+  let at = 0
+  for (let i = 0; i < specs.length; i++) {
+    const newline = out.indexOf(0x0a, at)
+    if (newline === -1) break
+    const header = out.toString('utf8', at, newline)
+    at = newline + 1
+    // "<name> missing", and also "<name> ambiguous" — anything git could not
+    // resolve to exactly one object. The size field is what distinguishes a
+    // real answer, so its absence is the test rather than the word itself.
+    const size = Number(header.slice(header.lastIndexOf(' ') + 1))
+    if (!Number.isInteger(size) || size < 0) {
+      blobs.push(null)
+      continue
+    }
+    blobs.push(out.toString('utf8', at, at + size))
+    // The body is followed by a newline git adds itself, which is not part of
+    // the object and must not be counted into the next header's offset.
+    at += size + 1
+  }
+  // A truncated stream leaves the tail unanswered rather than misaligned.
+  while (blobs.length < specs.length) blobs.push(null)
+  return blobs
+}
+
 /** Run a git command the rule cannot work without; a failure becomes the engine's incomplete-scan record */
 function gitOrThrow(root: string, gitExecutable: string | null, args: string[]): string {
   const out = git(root, gitExecutable, args)
@@ -297,20 +357,23 @@ function historicalEvidence(
   if (all.length === 0) return null
   const revs = all.slice(0, MAX_HISTORY_REVISIONS)
 
+  // One process for every revision, rather than one process per revision.
+  // This loop used to spawn `git show` up to MAX_HISTORY_REVISIONS times, and
+  // it is the loop that runs to the end precisely when the history is clean —
+  // so the common good case was the expensive one. A hundred revisions of a
+  // single .env file measured about 3.6 seconds that way and 64ms as a batch.
+  //
+  // Nothing about textconv or external diffs is passed now because `cat-file`
+  // does not have those doors: it prints the object, never a rendering of it.
+  const bodies = batchBlobs(
+    root,
+    gitExecutable,
+    revs.map((rev) => `${rev}:${entry.repoPath}`),
+  )
+
   let best: Evidence = 'none'
   let unreadable = 0
-  for (const rev of revs) {
-    // git does not run textconv or an external diff when it prints a blob, so
-    // these change nothing today. They are here because the two `log` calls
-    // above carry them and this one reads the same repository's objects: a
-    // defence that is applied in two places out of three reads, later, as a
-    // decision that the third place did not need it.
-    const body = git(root, gitExecutable, [
-      'show',
-      '--no-ext-diff',
-      '--no-textconv',
-      `${rev}:${entry.repoPath}`,
-    ])
+  for (const body of bodies) {
     if (body === null) {
       unreadable++
       continue

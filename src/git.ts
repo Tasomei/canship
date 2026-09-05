@@ -255,34 +255,72 @@ export interface GitExecOptions {
   stderr?: 'ignore' | 'pipe'
 }
 
+/**
+ * The `-c` settings every git invocation is hardened with.
+ *
+ * Shared rather than written per call site, because this list is a security
+ * boundary: `core.hooksPath` pointing at nothing is what stops a repository
+ * canship was pointed at from executing its own hook during a read-only scan.
+ * A second copy is a second place for one of these to be left out.
+ */
+function hardeningArgs(root: string): string[] {
+  const worktree = gitRootAbove(root) ?? root
+  const noHooks = process.platform === 'win32' ? 'NUL' : '/dev/null'
+  return [
+    '-c',
+    `core.worktree=${worktree}`,
+    '-c',
+    'core.bare=false',
+    '-c',
+    'core.fsmonitor=false',
+    '-c',
+    `core.hooksPath=${noHooks}`,
+  ]
+}
+
 export function execGitSync(
   executable: string,
   root: string,
   args: string[],
   options: GitExecOptions = {},
 ): string {
-  const worktree = gitRootAbove(root) ?? root
-  const noHooks = process.platform === 'win32' ? 'NUL' : '/dev/null'
-  return execFileSync(
-    executable,
-    [
-      '-c',
-      `core.worktree=${worktree}`,
-      '-c',
-      'core.bare=false',
-      '-c',
-      'core.fsmonitor=false',
-      '-c',
-      `core.hooksPath=${noHooks}`,
-      ...args,
-    ],
-    {
-      cwd: root,
-      encoding: 'utf8',
-      maxBuffer: options.maxBuffer ?? MAX_GIT_OUTPUT,
-      stdio: ['ignore', 'pipe', options.stderr ?? 'ignore'],
-      windowsHide: true,
-      env: gitEnvironment(),
-    },
-  )
+  return execFileSync(executable, [...hardeningArgs(root), ...args], {
+    cwd: root,
+    encoding: 'utf8',
+    maxBuffer: options.maxBuffer ?? MAX_GIT_OUTPUT,
+    stdio: ['ignore', 'pipe', options.stderr ?? 'ignore'],
+    windowsHide: true,
+    env: gitEnvironment(),
+  })
+}
+
+/**
+ * Run one git command, feeding it `input` on stdin, and return raw bytes.
+ *
+ * Exists for `cat-file --batch`, which is the only reader here that wants to
+ * ask many questions of one process. The alternative it replaces was a process
+ * per revision: reading the hundred-revision ceiling of a single .env file
+ * spawned a hundred `git show` calls and took about three and a half seconds,
+ * against sixty-odd milliseconds for one batch.
+ *
+ * Bytes rather than a string, and that is not incidental. `cat-file --batch`
+ * frames each object with a byte count, so decoding to UTF-16 before splitting
+ * would put the offsets in the wrong units the moment a file contains a
+ * non-ASCII character — and .env files hold comments in every language.
+ */
+export function execGitBatch(
+  executable: string,
+  root: string,
+  args: string[],
+  input: string,
+  options: GitExecOptions = {},
+): Buffer {
+  return execFileSync(executable, [...hardeningArgs(root), ...args], {
+    cwd: root,
+    input,
+    maxBuffer: options.maxBuffer ?? MAX_GIT_OUTPUT,
+    stdio: ['pipe', 'pipe', options.stderr ?? 'ignore'],
+    windowsHide: true,
+    env: gitEnvironment(),
+  })
 }
