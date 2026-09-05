@@ -163,15 +163,41 @@ export function isClientCode(file: ScanFile): boolean {
  * positive. So the RLS rule must not run until we are confident Supabase is in
  * play.
  */
-export function isSupabaseProject(ctx: ScanContext): boolean {
+/**
+ * The one word every content-based branch of isSupabaseProject needs.
+ *
+ * Not global, so it carries no lastIndex between calls and is safe to share.
+ */
+const MENTIONS_SUPABASE = /supabase/i
+
+/**
+ * @param files  The files to consider; defaults to every file in the scan.
+ * @param scope  A path prefix to read the paths relative to, for asking this
+ *   question about one package of a monorepo rather than the whole tree.
+ *
+ * The scope is a string rather than pre-rebased files, and that is the point.
+ * The caller used to hand over `{ ...file, path: relative }` copies, which are
+ * new objects — and the mask cache in mask.ts is a WeakMap keyed on the file
+ * object, so every scope re-masked from scratch what the previous one had just
+ * masked. Rebasing the path here instead lets the real ScanFile reach the
+ * cache, so a file examined under three scopes is masked once.
+ */
+export function isSupabaseProject(
+  ctx: ScanContext,
+  files: ScanFile[] = ctx.files,
+  scope = '',
+): boolean {
   const isSupabaseUrlName = (name: string): boolean =>
     name === 'SUPABASE_URL' || name.endsWith('_SUPABASE_URL')
 
-  for (const file of ctx.files) {
-    if (file.path === 'supabase' || file.path.startsWith('supabase/')) return true
-    if (file.path.includes('/supabase/migrations/')) return true
+  for (const file of files) {
+    // Every path test below is about position inside the scope, so they read
+    // the rebased path — while the mask lookups further down read `file`.
+    const path = scope === '' ? file.path : file.path.slice(scope.length + 1)
+    if (path === 'supabase' || path.startsWith('supabase/')) return true
+    if (path.includes('/supabase/migrations/')) return true
 
-    const name = file.path.slice(file.path.lastIndexOf('/') + 1)
+    const name = path.slice(path.lastIndexOf('/') + 1)
     if (isEnvFile(name)) {
       for (const line of file.lines) {
         const entry = parseEnvLine(line)
@@ -199,6 +225,24 @@ export function isSupabaseProject(ctx: ScanContext): boolean {
       }
       continue
     }
+
+    // Two full masking passes, asked of every file in the project — and every
+    // test below them needs the word "supabase" to be somewhere in this file.
+    // The import specifier carries `@supabase/`, both env checks want
+    // `SUPABASE_URL`, and the createServerClient branch tests for `supabase`
+    // outright. So the cheap question is asked first.
+    //
+    // It cannot lose a match. Masking only ever replaces a character with a
+    // space or leaves it alone; it never inserts one. So if the masked copy
+    // contains "supabase" at some offset, none of those eight characters can be
+    // a space that masking wrote, and the original holds the same eight
+    // characters at the same offset. A file this rejects had nothing to find.
+    //
+    // The gate is the difference between masking every file in a repository and
+    // masking the few that mention Supabase at all. On a 1,333-file project that
+    // does not use Supabase, this call sat at 41% of the entire scan, and every
+    // masking pass the scan performed was reached through it.
+    if (!MENTIONS_SUPABASE.test(file.content)) continue
 
     const commentsRemoved = commentsMaskedOf(file)
     const code = noiseMaskedOf(file)

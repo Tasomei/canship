@@ -419,12 +419,19 @@ function projectScopeOf(path: string, scopes: string[]): string {
   return best
 }
 
-/** Ask the existing Supabase evidence check inside one boundary rather than across the monorepo */
+/**
+ * Ask the existing Supabase evidence check inside one boundary rather than
+ * across the monorepo.
+ *
+ * The scope travels as a string. It used to travel as rebased copies of every
+ * ScanFile — `{ ...file, path: relative }` — and those copies defeated the mask
+ * cache completely: it is a WeakMap keyed on the file object, so each scope
+ * re-masked files the previous scope had already done. Measured on two
+ * identical projects laid out flat and as a monorepo, the monorepo took 1.8x
+ * as long for exactly this reason, independent of how many packages it had.
+ */
 function isActiveSupabaseScope(ctx: ScanContext, files: ScanFile[], scope: string): boolean {
-  const rebased = files.map((file) =>
-    scope === '' ? file : { ...file, path: file.path.slice(scope.length + 1) },
-  )
-  return isSupabaseProject({ ...ctx, files: rebased })
+  return isSupabaseProject(ctx, files, scope)
 }
 
 /**
