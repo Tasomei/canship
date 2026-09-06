@@ -2901,3 +2901,55 @@ describe('bounds and precedence, decided rather than inherited', () => {
     }
   })
 })
+
+describe('the fix prompt is not silent either', () => {
+  // The fifth output surface, and the one that gets *acted on*: it is pasted
+  // into an assistant, which reads "no findings" and tells somebody their
+  // project is clear while a live key sits in the file a marker was written
+  // above. The header on renderFixPrompt already said "nothing to fix" is a
+  // claim and an incomplete scan makes it the wrong one; a baseline, a rule
+  // selection and a line marker each make it the wrong one too.
+  test('a baseline that emptied the list is named', () => {
+    const out = renderFixPrompt([], { partial: false, baselineSuppressed: 3 })
+    assert.notEqual(out, null)
+    assert.match(out ?? '', /3 findings were hidden by a baseline/)
+    assert.match(out ?? '', /still exist/)
+  })
+
+  test('a line marker is named with its location', () => {
+    const out = renderFixPrompt([], {
+      partial: false,
+      silenced: ['lib/keys.ts:2 (secrets/hardcoded/stripe-live)'],
+    })
+    assert.match(out ?? '', /silenced by a canship-ignore-next-line marker/)
+    assert.match(out ?? '', /lib\/keys\.ts:2/)
+  })
+
+  test('a rule selection is named', () => {
+    const out = renderFixPrompt([], {
+      partial: false,
+      ruleSelection: 'everything except secrets, hiding 1',
+    })
+    assert.match(out ?? '', /rules were selected before this list was produced/)
+  })
+
+  test('the notes come before the paste marker', () => {
+    // What follows that marker is addressed to an assistant and will be acted
+    // on. This is addressed to the person deciding whether the list is whole.
+    const out =
+      renderFixPrompt([{ ruleId: "secrets/hardcoded/openai", severity: "P0", confidence: "certain", title: "t", file: "lib/db.ts", line: 1, excerpt: null, why: ["w"], fix: ["f"] }], {
+        partial: false,
+        silenced: ['lib/keys.ts:2 (secrets/hardcoded/openai)'],
+      }) ?? ''
+    assert.ok(
+      out.indexOf('silenced by a canship-ignore-next-line') < out.indexOf('Paste everything below'),
+      'the suppression note came after the paste marker',
+    )
+  })
+
+  test('a genuinely clean scan still says nothing', () => {
+    // The note has to stay meaningful; always printing one is the same as
+    // printing none.
+    assert.equal(renderFixPrompt([], { partial: false }), null)
+  })
+})

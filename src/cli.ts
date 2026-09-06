@@ -20,6 +20,7 @@
 import { isAbsolute, relative as relative_, resolve } from 'node:path'
 import { existsSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { scan, cleanForOutput } from './engine.js'
+import type { RuleSelection } from './types.js'
 import { renderReport } from './report/terminal.js'
 import { renderFixPrompt } from './report/prompt.js'
 import { renderHtml } from './report/html.js'
@@ -180,6 +181,21 @@ const MAX_REAL_PATH_DEPTH = 64
  * default this branch is able to produce.
  */
 const UNREACHABLE_DEFAULT = ''
+
+/**
+ * Rule selection in one phrase, for the outputs that report it as prose.
+ *
+ * Written once because two of them now need it, and a second copy is where the
+ * SARIF log and the fix prompt start describing the same setting differently.
+ */
+function selectionPhrase(selection: RuleSelection | null): string | null {
+  if (selection === null) return null
+  const which =
+    selection.only.length > 0
+      ? `only ${selection.only.join(', ')}`
+      : `everything except ${selection.skip.join(', ')}`
+  return `${which}, hiding ${selection.removed}`
+}
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
@@ -521,6 +537,9 @@ async function main(): Promise<void> {
       partial: result.partial,
       filesScanned: result.filesScanned,
       hiddenLikely,
+      baselineSuppressed,
+      silenced: result.ignoredFindings.map((f) => `${f.file}:${f.line} (${f.ruleId})`),
+      ruleSelection: selectionPhrase(result.ruleSelection),
     })
     process.stdout.write(
       prompt === null ? 'Nothing to fix — no findings.\n' : `${prompt}\n`,
@@ -587,12 +606,7 @@ async function main(): Promise<void> {
             version: VERSION,
             baselineSuppressed,
             hiddenLikely,
-            ruleSelection:
-              result.ruleSelection === null
-                ? null
-                : result.ruleSelection.only.length > 0
-                  ? `only ${result.ruleSelection.only.join(', ')}, hiding ${result.ruleSelection.removed}`
-                  : `everything except ${result.ruleSelection.skip.join(', ')}, hiding ${result.ruleSelection.removed}`,
+            ruleSelection: selectionPhrase(result.ruleSelection),
           },
         ),
         'utf8',

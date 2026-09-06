@@ -100,6 +100,21 @@ export interface PromptContext {
   filesScanned?: number
   /** How many lower-confidence findings the default view left out */
   hiddenLikely?: number
+  /**
+   * Everything else that removed findings before they reached this prompt.
+   *
+   * The header below says "nothing to fix" is a claim, and that an incomplete
+   * scan makes it the wrong one. A baseline, a rule selection and a
+   * canship-ignore-next-line marker each make it the wrong one too, and this
+   * surface is the one that gets *acted on*: it is pasted into an assistant,
+   * which will read "no findings" and tell somebody their project is clear
+   * while a live key sits in the file the marker was written above.
+   */
+  baselineSuppressed?: number
+  /** Findings a line marker silenced, as `file:line (rule)` */
+  silenced?: string[]
+  /** Rule selection in force, described in one phrase */
+  ruleSelection?: string | null
 }
 
 /**
@@ -128,8 +143,28 @@ export function renderFixPrompt(findings: Finding[], ctx?: PromptContext): strin
       : `Note: ${hiddenLikely} lower-confidence ${hiddenLikely === 1 ? 'finding was' : 'findings were'} hidden by the default view. ` +
         'Do not treat this as a finding-free result. Re-run with --all --fix-prompt to review them.'
 
+  const baselineSuppressed = ctx?.baselineSuppressed ?? 0
+  const silenced = ctx?.silenced ?? []
+  const suppressedNotes = [
+    baselineSuppressed === 0
+      ? null
+      : `Note: ${baselineSuppressed} ${baselineSuppressed === 1 ? 'finding was' : 'findings were'} hidden by a baseline. ` +
+        'Those problems still exist and are not listed below. Re-run without --baseline to see them.',
+    silenced.length === 0
+      ? null
+      : `Note: ${silenced.length} ${silenced.length === 1 ? 'finding was' : 'findings were'} silenced by a ` +
+        `canship-ignore-next-line marker in the source, at ${defuseMarkers(silenced.join(', '))}. ` +
+        'Those problems still exist and are not listed below.',
+    !ctx?.ruleSelection
+      ? null
+      : `Note: rules were selected before this list was produced — ${defuseMarkers(ctx.ruleSelection)}. ` +
+        'Findings from the rules that did not run are not listed below.',
+  ].filter((note): note is string => note !== null)
+
   if (findings.length === 0) {
-    const notes = [incompleteNote, hiddenNote].filter((note): note is string => note !== null)
+    const notes = [incompleteNote, hiddenNote, ...suppressedNotes].filter(
+      (note): note is string => note !== null,
+    )
     return notes.length === 0 ? null : `${notes.join('\n\n')}\n`
   }
 
@@ -147,6 +182,14 @@ export function renderFixPrompt(findings: Finding[], ctx?: PromptContext): strin
   }
   if (hiddenNote !== null) {
     out.push(hiddenNote)
+    out.push('')
+  }
+
+  // Above the paste marker on purpose. What follows it is addressed to an
+  // assistant and will be acted on; this is addressed to the person deciding
+  // whether the list below is the whole list.
+  for (const note of suppressedNotes) {
+    out.push(note)
     out.push('')
   }
 
