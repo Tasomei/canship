@@ -447,7 +447,15 @@ describe('a baseline is never silent', () => {
       }
     }
 
-    for (const escape of ['../../../../../evil.json', '/etc/passwd', 'C:/Windows/win.ini']) {
+    // A drive letter is only a drive letter on Windows. Everywhere else
+    // `C:/Windows/win.ini` is an ordinary relative path — `resolve` puts it
+    // *inside* the project, where refusing it would be wrong — so asserting it
+    // is refused is a claim about the platform rather than about the check.
+    // The first two escape on both.
+    const escapes = ['../../../../../evil.json', '/etc/passwd']
+    if (process.platform === 'win32') escapes.push('C:/Windows/win.ini')
+
+    for (const escape of escapes) {
       const out = run(JSON.stringify({ baseline: escape }))
       assert.equal(out.status, 3, `${escape} was not refused`)
       assert.match(out.stderr, /must stay inside the project/)
