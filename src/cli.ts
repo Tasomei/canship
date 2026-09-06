@@ -18,7 +18,7 @@
  */
 
 import { isAbsolute, relative as relative_, resolve } from 'node:path'
-import { existsSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { scan, cleanForOutput } from './engine.js'
 import { renderReport } from './report/terminal.js'
 import { renderFixPrompt } from './report/prompt.js'
@@ -75,6 +75,16 @@ interface Args {
   skip: string[]
   /** Path to write a SARIF log to, or null when not requested */
   sarif: string | null
+  /**
+   * Ignore any canship.config.json in the scanned directory.
+   *
+   * The recourse for the case canship is built for: pointing it at code you do
+   * not control. That file comes out of the tree being examined, so a project
+   * can use it to turn off the rules that would report it. Its own maintainers
+   * writing it is the intended use and stays the default; this is how someone
+   * auditing a dependency, a fork or an unreviewed pull request says no.
+   */
+  noConfig: boolean
   help: boolean
   version: boolean
 }
@@ -119,7 +129,10 @@ function optionalValue(arg: string, name: string, fallback: string): string | nu
  */
 function insideProject(root: string, relative: string): string {
   const target = resolve(root, relative)
-  const inside = relative_(root, target)
+  // Compared after resolving symlinks. `resolve` is lexical, so a link inside
+  // the project pointing out of it reads as an ordinary child and walks
+  // straight past a check done on the written path.
+  const inside = relative_(realPathOf(root), realPathOf(target))
   if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
     argumentError(
       `${CONFIG_FILENAME}: "baseline" must stay inside the project, and ${relative} does not`,
@@ -127,6 +140,37 @@ function insideProject(root: string, relative: string): string {
   }
   return target
 }
+
+/**
+ * The path with every symlink resolved, as far as the filesystem can say.
+ *
+ * `realpathSync` throws when the path does not exist, which is the ordinary
+ * case for a baseline nobody has written yet — so this walks up to the nearest
+ * ancestor that does exist and reattaches the rest. Falling back to the lexical
+ * path can only make the containment check stricter, never looser.
+ */
+function realPathOf(path: string): string {
+  let at = path
+  const rest: string[] = []
+  for (;;) {
+    try {
+      const real = realpathSync(at)
+      return rest.length === 0 ? real : resolve(real, ...rest)
+    } catch {
+      const parent = resolve(at, '..')
+      if (parent === at) return path
+      rest.unshift(relative_(parent, at))
+      at = parent
+    }
+  }
+}
+
+/**
+ * The fallback for a flag whose bare form is handled before optionalValue sees
+ * it. Never returned; named so that reading the call site does not suggest a
+ * default this branch is able to produce.
+ */
+const UNREACHABLE_DEFAULT = ''
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
@@ -143,6 +187,7 @@ function parseArgs(argv: string[]): Args {
     only: [],
     skip: [],
     sarif: null,
+    noConfig: false,
     help: false,
     version: false,
   }
@@ -184,7 +229,10 @@ function parseArgs(argv: string[]): Args {
       args.baselineDefault = true
       continue
     }
-    const baseline = optionalValue(arg, '--baseline', DEFAULT_BASELINE_PATH)
+    // The bare form is handled above, so only `--baseline=value` reaches here
+    // and the fallback is unreachable. Passing one anyway would read as a
+    // default this branch can produce, which it cannot.
+    const baseline = optionalValue(arg, '--baseline', UNREACHABLE_DEFAULT)
     if (baseline !== null) {
       args.baseline = baseline
       continue
@@ -193,7 +241,7 @@ function parseArgs(argv: string[]): Args {
       args.baselineWriteDefault = true
       continue
     }
-    const baselineWrite = optionalValue(arg, '--baseline-write', DEFAULT_BASELINE_PATH)
+    const baselineWrite = optionalValue(arg, '--baseline-write', UNREACHABLE_DEFAULT)
     if (baselineWrite !== null) {
       args.baselineWrite = baselineWrite
       continue
@@ -217,6 +265,9 @@ function parseArgs(argv: string[]): Args {
         break
       case '--best-effort':
         args.bestEffort = true
+        break
+      case '--no-config':
+        args.noConfig = true
         break
       case '--help':
       case '-h':
@@ -261,6 +312,7 @@ const HELP = `
         --skip=IDS    Report everything except these rules
         --sarif[=F]   Write a SARIF 2.1.0 log for CI code scanning
                       (default canship.sarif)
+        --no-config   Ignore canship.config.json in the scanned directory
     -h, --help        Show this help
     -v, --version     Show version
 
@@ -316,7 +368,7 @@ async function main(): Promise<void> {
   // has to mean the same thing as running it from inside ./app.
   let config
   try {
-    config = loadConfig(args.root).config
+    config = args.noConfig ? {} : loadConfig(args.root).config
   } catch (err) {
     if (err instanceof ConfigError) {
       process.stderr.write(`${red('canship:')} ${cleanForOutput(err.message)}\n`)
@@ -343,7 +395,11 @@ async function main(): Promise<void> {
     argumentError('rule selection cannot use both only and skip')
   }
   const showAll = args.showAll || config.all === true
-  const bestEffort = args.bestEffort || config.bestEffort === true
+  // Not `|| config.bestEffort`. Accepting an incomplete scan is the one setting
+  // the scanned project may not make on the caller's behalf — see REFUSED_KEYS
+  // in config.ts. config.ts rejects the key outright; this line is the second
+  // half of the same rule, so that re-adding the field cannot quietly work.
+  const bestEffort = args.bestEffort
   // Where a path is resolved from depends on where it came from, and the two
   // answers are different on purpose:
   //
@@ -410,6 +466,15 @@ async function main(): Promise<void> {
     if (scanned.partial) {
       process.stderr.write(
         `${yellow('canship:')} the scan was incomplete, so this baseline may be missing findings.\n`,
+      )
+    }
+    // The other way a baseline gets written from a partial view of the project.
+    // Findings a disabled rule never produced are absent from the file, so they
+    // arrive as "new" the first time somebody runs without the selection —
+    // which reads as a regression rather than as a bookkeeping gap.
+    if (scanned.ruleSelection !== null) {
+      process.stderr.write(
+        `${yellow('canship:')} rule selection was in force, so this baseline covers only the rules that ran.\n`,
       )
     }
     return process.exit(0)
@@ -507,7 +572,20 @@ async function main(): Promise<void> {
     try {
       writeFileSync(
         target,
-        renderSarif({ ...result, findings: shown }, { version: VERSION }),
+        renderSarif(
+          { ...result, findings: shown },
+          {
+            version: VERSION,
+            baselineSuppressed,
+            hiddenLikely,
+            ruleSelection:
+              result.ruleSelection === null
+                ? null
+                : result.ruleSelection.only.length > 0
+                  ? `only ${result.ruleSelection.only.join(', ')}, hiding ${result.ruleSelection.removed}`
+                  : `everything except ${result.ruleSelection.skip.join(', ')}, hiding ${result.ruleSelection.removed}`,
+          },
+        ),
         'utf8',
       )
       if (!args.json && !args.fixPrompt) {

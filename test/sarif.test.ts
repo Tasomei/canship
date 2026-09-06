@@ -168,3 +168,66 @@ describe('an incomplete scan is not a successful one', () => {
     assert.match(notes[0].message.text, /boom/)
   })
 })
+
+describe('SARIF is not the one silent surface', () => {
+  // The terminal, the HTML report and --json all name what was hidden. SARIF is
+  // the only one a machine reads, and it said none of it: results: [] and
+  // executionSuccessful: true, with nothing anywhere to say that nineteen
+  // findings had been filed away in a baseline. A code-scanning dashboard
+  // showing a clean bill of health for a repository whose service_role key is
+  // in a baseline is the most expensive way this tool could be wrong.
+  const notes = (log: any): string[] =>
+    (log.runs[0].invocations[0].toolExecutionNotifications ?? []).map(
+      (n: { message: { text: string } }) => n.message.text,
+    )
+
+  test('a baseline that emptied the log is named in it', () => {
+    const log = JSON.parse(
+      renderSarif(result({ findings: [] }), { version: '1', baselineSuppressed: 19 }),
+    )
+    assert.equal(log.runs[0].results.length, 0)
+    assert.match(notes(log).join('\n'), /19 findings hidden by a baseline/)
+  })
+
+  test('a line marker that silenced a finding is named', () => {
+    const log = JSON.parse(
+      renderSarif(
+        result({
+          findings: [],
+          ignoredFindings: [{ file: 'lib/db.ts', line: 4, ruleId: 'secrets/hardcoded/openai' }],
+        }),
+        { version: '1' },
+      ),
+    )
+    assert.match(notes(log).join('\n'), /canship-ignore-next-line: lib\/db\.ts:4/)
+  })
+
+  test('rule selection is named', () => {
+    const log = JSON.parse(
+      renderSarif(result({ findings: [] }), {
+        version: '1',
+        ruleSelection: 'everything except secrets, hiding 9',
+      }),
+    )
+    assert.match(notes(log).join('\n'), /Rule selection in force: everything except secrets/)
+  })
+
+  test('excluded files and hidden likely findings are named', () => {
+    const log = JSON.parse(
+      renderSarif(result({ findings: [], ignored: ['test/fake.ts'] }), {
+        version: '1',
+        hiddenLikely: 3,
+      }),
+    )
+    const text = notes(log).join('\n')
+    assert.match(text, /canship-ignore-file: test\/fake\.ts/)
+    assert.match(text, /3 lower-confidence findings not included/)
+  })
+
+  test('a clean scan with nothing hidden carries no notifications', () => {
+    // The field has to stay meaningful. If it were always present, nobody would
+    // read it.
+    const log = JSON.parse(renderSarif(result({ findings: [] }), { version: '1' }))
+    assert.equal(log.runs[0].invocations[0].toolExecutionNotifications, undefined)
+  })
+})

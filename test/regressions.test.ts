@@ -1469,7 +1469,12 @@ describe('Git history read failures are visible', () => {
     assert.equal(result.partial, true)
     assert.ok(
       result.errors.some(
-        (e) => e.ruleId === 'gitleak/env-in-history' && /could not be read with git show/.test(e.message),
+        (e) =>
+          e.ruleId === 'gitleak/env-in-history' &&
+          // Wording follows the mechanism: this used to say "with git show",
+          // which stopped being true when the history read moved to one
+          // `cat-file --batch` process for every revision.
+          /could not be read from the repository/.test(e.message),
       ),
     )
   })

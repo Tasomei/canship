@@ -19,7 +19,8 @@ import { test, describe, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { cpSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { cpSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { scan } from '../src/engine.js'
 import { ConfigError, parseConfig, loadConfig, CONFIG_FILENAME } from '../src/config.js'
@@ -84,15 +85,15 @@ describe('parsing a config file', () => {
 
   test('every supported setting round-trips', () => {
     const config = parseConfig(
-      JSON.stringify({ baseline: 'b.json', skip: ['secrets'], all: true, bestEffort: true }),
+      JSON.stringify({ baseline: 'b.json', skip: ['secrets'], all: true }),
       at,
     )
-    assert.deepEqual(config, {
-      baseline: 'b.json',
-      skip: ['secrets'],
-      all: true,
-      bestEffort: true,
-    })
+    assert.deepEqual(config, { baseline: 'b.json', skip: ['secrets'], all: true })
+  })
+
+  test('a refused setting is named rather than ignored', () => {
+    // Silently dropping it is how somebody keeps believing it is in force.
+    assert.throws(() => parseConfig('{"bestEffort":true}', at), ConfigError)
   })
 
   test('an unknown setting is an error, not something to ignore', () => {
@@ -219,5 +220,68 @@ describe('RULE_IDS covers every id a scan can produce', () => {
 
   test('the list has no duplicates', () => {
     assert.equal(new Set(RULE_IDS).size, RULE_IDS.length)
+  })
+
+  test('every hand-written id is one a rule can actually emit', () => {
+    // The guard above only sees ids the fixture happens to trigger, so a
+    // hand-written id that is a typo of a real one would sail through it. This
+    // half checks the other direction: every literal in the list appears in the
+    // rule source that emits it. The secrets ids are derived from
+    // SECRET_PATTERNS rather than written out, so they cannot drift and are
+    // excluded here.
+    const sources = ['apiauth', 'cors', 'exposure', 'firebase', 'gitleak', 'supabase']
+      .map((name) => readFileSync(join(here, '..', 'src', 'rules', `${name}.ts`), 'utf8'))
+      .join('\n')
+    for (const id of RULE_IDS) {
+      if (id.startsWith('secrets/hardcoded/')) continue
+      assert.ok(sources.includes(`'${id}'`), `${id} is in RULE_IDS but no rule emits it`)
+    }
+  })
+})
+
+describe('the scanned project cannot lower the exit code', () => {
+  /** A project holding one certain P0 and, optionally, a config file */
+  function project(config?: string): string {
+    const root = tempDir()
+    mkdirSync(join(root, 'lib'))
+    writeFileSync(join(root, 'lib', 'keys.ts'), `export const a = "${OPENAI}"\n`, 'utf8')
+    if (config !== undefined) writeFileSync(join(root, CONFIG_FILENAME), config, 'utf8')
+    return root
+  }
+
+  const cli = join(here, '..', 'src', 'cli.ts')
+  const run = (root: string, args: string[] = []): { status: number; stderr: string } => {
+    try {
+      execFileSync('node', ['--import', 'tsx', cli, root, ...args], {
+        stdio: ['ignore', 'ignore', 'pipe'],
+        encoding: 'utf8',
+      })
+      return { status: 0, stderr: '' }
+    } catch (err) {
+      const e = err as { status?: number; stderr?: string }
+      return { status: e.status ?? -1, stderr: e.stderr ?? '' }
+    }
+  }
+
+  test('bestEffort is refused in the config file', () => {
+    // It turns an incomplete scan from exit 3 into exit 0, and exit 3 is the
+    // whole point of canship's exit codes. A file inside the repository being
+    // scanned must not be able to switch off the signal that says the scan
+    // could not finish — arranging for a scan to be incomplete is easy.
+    const out = run(project('{"bestEffort":true}'))
+    assert.equal(out.status, 3)
+    assert.match(out.stderr, /"bestEffort" is not allowed here/)
+  })
+
+  test('the flag still works', () => {
+    // Refusing the setting must not break the switch it belongs to.
+    assert.equal(run(project(), ['--best-effort']).status, 1, 'findings still exit 1')
+  })
+
+  test('--no-config ignores a config that would hide the finding', () => {
+    // The recourse for scanning code you do not control.
+    const root = project('{"skip":["secrets"]}')
+    assert.equal(run(root).status, 0, 'the config should hide it by default')
+    assert.equal(run(root, ['--no-config']).status, 1, '--no-config should restore it')
   })
 })

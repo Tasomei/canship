@@ -179,6 +179,16 @@ function batchBlobs(
   specs: string[],
 ): (string | null)[] {
   if (gitExecutable === null || specs.length === 0) return specs.map(() => null)
+  // `cat-file --batch` reads one request per line, so a path containing a
+  // newline splits into two and every answer after it is off by one. Filenames
+  // may legally contain newlines — this file says so a hundred lines up, about
+  // a different hazard from the same fact — and the `git show` this replaced
+  // was immune, because there the path was an argv element rather than a line
+  // of input. Falling back keeps that immunity for the paths that need it and
+  // the single process for the ones that do not.
+  if (specs.some((spec) => spec.includes('\n') || spec.includes('\r'))) {
+    return specs.map((spec) => git(root, gitExecutable, ['show', '--no-ext-diff', '--no-textconv', spec]))
+  }
   let out: Buffer
   try {
     out = execGitBatch(
@@ -543,7 +553,7 @@ export const gitleakRule: ProjectRule = {
         ctx.reportIncomplete(
           'gitleak/env-in-history',
           `${history.unreadable} historical ${history.unreadable === 1 ? 'version' : 'versions'} of ${path} ` +
-            `could not be read with git show; ` +
+            `could not be read from the repository; ` +
             `the repository may be incomplete or the file may exceed the Git output limit`,
         )
       }

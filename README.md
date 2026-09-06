@@ -51,6 +51,7 @@ The current directory is scanned when no path is provided.
 | `--only=ids` | Report only these rules; comma-separated and repeatable |
 | `--skip=ids` | Report everything except these rules; comma-separated and repeatable |
 | `--sarif[=file]` | Write a SARIF 2.1.0 log for CI code scanning; defaults to `canship.sarif` |
+| `--no-config` | Ignore `canship.config.json` in the scanned directory |
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show the version |
 
@@ -101,8 +102,7 @@ Settings a project makes once can be committed to `canship.config.json` in the s
 {
   "baseline": "canship-baseline.json",
   "skip": ["cors/wildcard-with-credentials"],
-  "all": false,
-  "bestEffort": false
+  "all": false
 }
 ```
 
@@ -112,11 +112,14 @@ Settings a project makes once can be committed to `canship.config.json` in the s
 | `only` | `--only=ids` |
 | `skip` | `--skip=ids` |
 | `all` | `--all` |
-| `bestEffort` | `--best-effort` |
 
 The format is JSON and not JavaScript. A `canship.config.js` would be project code, and the scan does not execute project code.
 
-An unknown setting, a wrong type, a rule id that names no rule, or `only` and `skip` together are all errors and exit `3`. A missing config file is not an error.
+An unknown setting, a wrong type, a rule id that names no rule, or `only` and `skip` together are all errors and exit `3`. A missing config file is not an error. A `baseline` path must stay inside the scanned project; the `--baseline` flag is not restricted that way.
+
+**The config file comes out of the directory being scanned.** When that directory is code you control, this is the point of the feature. When it is not — a dependency, a fork, an unreviewed pull request — the project can use it to switch off the rules that would report it. `--no-config` ignores the file entirely.
+
+`bestEffort` is deliberately not a setting. It turns an incomplete scan from exit `3` into exit `0`, and that is a judgement for whoever runs canship rather than a property of the project being scanned. Naming it in the file is an error rather than something quietly ignored. Use `--best-effort`.
 
 ### Selecting rules
 

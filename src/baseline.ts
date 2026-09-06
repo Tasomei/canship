@@ -34,7 +34,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import type { Finding } from './types.js'
 
 /**
@@ -187,11 +187,30 @@ function isEntry(value: unknown): value is BaselineEntry {
  * someone who believes their baseline is in force, and the next person to look
  * at the green build would be reading a claim nobody made.
  */
+/**
+ * How large a baseline may be.
+ *
+ * Read from the directory being scanned, so its size is chosen by whoever wrote
+ * it rather than by canship — the same reason the walker caps the files it
+ * reads. Generous enough that no real project reaches it: at roughly 200 bytes
+ * an entry this is about fifty thousand accepted findings.
+ */
+const MAX_BASELINE_BYTES = 10 * 1024 * 1024
+
 export function readBaseline(path: string): BaselineFile {
   let text: string
   try {
+    const size = statSync(path).size
+    if (size > MAX_BASELINE_BYTES) {
+      throw new BaselineError(
+        `baseline ${path} is ${size} bytes, over the ${MAX_BASELINE_BYTES}-byte limit`,
+      )
+    }
     text = readFileSync(path, 'utf8')
   } catch (err) {
+    // The size refusal is already the right message; only a filesystem failure
+    // needs wrapping.
+    if (err instanceof BaselineError) throw err
     throw new BaselineError(
       `could not read baseline ${path}: ${err instanceof Error ? err.message : String(err)}`,
     )

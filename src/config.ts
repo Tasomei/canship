@@ -42,15 +42,40 @@ export interface Config {
   skip?: string[]
   /** Show likely findings, as if --all had been passed */
   all?: boolean
-  /** Accept an incomplete scan, as if --best-effort had been passed */
-  bestEffort?: boolean
 }
+
+/**
+ * Settings this file is deliberately not allowed to carry.
+ *
+ * `bestEffort` was here for one commit and is the reason this list exists. It
+ * turns an incomplete scan from exit 3 into exit 0 — and exit 3 is the whole
+ * point of canship's exit codes: "found nothing" and "checked nothing" must not
+ * share one. A file inside the scanned repository could therefore switch off
+ * the signal that says the scan could not finish, and arranging for a scan to
+ * be incomplete is easy (an unreadable file, a nested repository, anything over
+ * the size cap).
+ *
+ * The others below hide findings, which is what they are for, and a project's
+ * own maintainers writing them is the intended use. Accepting an incomplete
+ * scan is different in kind: it is a judgement the person running canship makes
+ * about their own tolerance, not a property of the project being scanned. So it
+ * stays a flag.
+ *
+ * Named rather than silently ignored, because a setting that stops working
+ * without saying so is how someone keeps believing it is in force.
+ */
+const REFUSED_KEYS = new Map([
+  [
+    'bestEffort',
+    'accepting an incomplete scan is a decision for whoever runs canship, not for the project being scanned — pass --best-effort instead',
+  ],
+])
 
 /** An unusable config file. Distinct so the CLI can name the file that is wrong. */
 export class ConfigError extends Error {}
 
 /** The keys this version understands */
-const KNOWN_KEYS = new Set(['baseline', 'only', 'skip', 'all', 'bestEffort'])
+const KNOWN_KEYS = new Set(['baseline', 'only', 'skip', 'all'])
 
 /** Read and check a list of rule selectors */
 function selectors(value: unknown, field: string, path: string): string[] {
@@ -99,6 +124,10 @@ export function parseConfig(text: string, path: string): Config {
   // An unknown key is an error rather than something to ignore. Ignoring it is
   // how "skipp" spends a year looking like it works.
   for (const key of Object.keys(raw)) {
+    const refused = REFUSED_KEYS.get(key)
+    if (refused !== undefined) {
+      throw new ConfigError(`${path}: "${key}" is not allowed here — ${refused}`)
+    }
     if (!KNOWN_KEYS.has(key)) {
       throw new ConfigError(`${path}: unknown setting "${key}"`)
     }
@@ -114,9 +143,6 @@ export function parseConfig(text: string, path: string): Config {
   if (raw['only'] !== undefined) config.only = selectors(raw['only'], 'only', path)
   if (raw['skip'] !== undefined) config.skip = selectors(raw['skip'], 'skip', path)
   if (raw['all'] !== undefined) config.all = boolean(raw['all'], 'all', path)
-  if (raw['bestEffort'] !== undefined) {
-    config.bestEffort = boolean(raw['bestEffort'], 'bestEffort', path)
-  }
 
   // Refused rather than resolved in some order, because both orders are
   // defensible and neither is guessable from the file.

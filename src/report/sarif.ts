@@ -23,6 +23,73 @@ const INFORMATION_URI = 'https://github.com/Tasomei/canship'
 export interface SarifOptions {
   /** canship's version, reported as the tool version */
   version: string
+  /** How many findings a baseline removed from this log */
+  baselineSuppressed?: number
+  /** Rule selection in force, described for a reader of the log */
+  ruleSelection?: string | null
+  /** How many lower-confidence findings the default view left out */
+  hiddenLikely?: number
+}
+
+/**
+ * Everything that emptied this log without the project being clean.
+ *
+ * SARIF was the one output surface that said none of it. The terminal, the HTML
+ * report and --json all name what a baseline hid, what a marker silenced and
+ * which rules were switched off — and SARIF, the only one a machine reads, had
+ * `results: []` and `executionSuccessful: true` with nothing anywhere to say
+ * that nineteen findings had been filed away. A code-scanning dashboard showing
+ * a clean bill of health for a repository whose service_role key is in a
+ * baseline is the most expensive way this tool could be wrong.
+ *
+ * They travel as `toolExecutionNotifications`, which is where SARIF puts things
+ * the run wants to tell you about itself rather than about the code. `warning`
+ * rather than `error`: none of this failed, and grading a deliberate baseline
+ * as a failure would train people to ignore the field.
+ */
+function suppressionNotes(result: ScanResult, opts: SarifOptions): unknown[] {
+  const notes: unknown[] = []
+  const baseline = opts.baselineSuppressed ?? 0
+  const hidden = opts.hiddenLikely ?? 0
+  if (baseline > 0) {
+    notes.push({
+      level: 'warning',
+      message: {
+        text: `${baseline} finding${baseline === 1 ? '' : 's'} hidden by a baseline. Those problems still exist.`,
+      },
+    })
+  }
+  if (result.ignoredFindings.length > 0) {
+    const where = result.ignoredFindings
+      .map((f) => `${f.file}:${f.line} (${f.ruleId})`)
+      .join(', ')
+    notes.push({
+      level: 'warning',
+      message: {
+        text: `${result.ignoredFindings.length} finding${result.ignoredFindings.length === 1 ? '' : 's'} silenced by canship-ignore-next-line: ${where}`,
+      },
+    })
+  }
+  if (result.ignored.length > 0) {
+    notes.push({
+      level: 'warning',
+      message: {
+        text: `${result.ignored.length} file${result.ignored.length === 1 ? '' : 's'} excluded by canship-ignore-file: ${result.ignored.join(', ')}`,
+      },
+    })
+  }
+  if (opts.ruleSelection) {
+    notes.push({ level: 'warning', message: { text: `Rule selection in force: ${opts.ruleSelection}` } })
+  }
+  if (hidden > 0) {
+    notes.push({
+      level: 'warning',
+      message: {
+        text: `${hidden} lower-confidence finding${hidden === 1 ? '' : 's'} not included; re-run with --all.`,
+      },
+    })
+  }
+  return notes
 }
 
 /**
@@ -112,6 +179,13 @@ function resultsOf(findings: Finding[]): unknown[] {
  */
 export function renderSarif(result: ScanResult, opts: SarifOptions): string {
   const { findings } = result
+  const notifications = [
+    ...result.errors.map((e) => ({
+      level: e.kind === 'crashed' ? 'error' : 'warning',
+      message: { text: `${e.ruleId}: ${e.message}` },
+    })),
+    ...suppressionNotes(result, opts),
+  ]
   const log = {
     $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
     version: '2.1.0',
@@ -132,13 +206,8 @@ export function renderSarif(result: ScanResult, opts: SarifOptions): string {
             // about whether findings exist — a scan that finds problems and
             // completes was a successful invocation.
             executionSuccessful: !result.partial,
-            ...(result.errors.length > 0
-              ? {
-                  toolExecutionNotifications: result.errors.map((e) => ({
-                    level: e.kind === 'crashed' ? 'error' : 'warning',
-                    message: { text: `${e.ruleId}: ${e.message}` },
-                  })),
-                }
+            ...(notifications.length > 0
+              ? { toolExecutionNotifications: notifications }
               : {}),
           },
         ],

@@ -51,6 +51,7 @@ npx canship [路径]
 | `--only=规则` | 只报告这些规则；逗号分隔，可重复传入 |
 | `--skip=规则` | 报告除这些规则以外的全部；逗号分隔，可重复传入 |
 | `--sarif[=文件]` | 生成 SARIF 2.1.0 日志供 CI 代码扫描使用；默认写入 `canship.sarif` |
+| `--no-config` | 忽略被扫描目录下的 `canship.config.json` |
 | `-h`, `--help` | 显示帮助 |
 | `-v`, `--version` | 显示版本 |
 
@@ -101,8 +102,7 @@ const key = process.env.OPENAI_KEY
 {
   "baseline": "canship-baseline.json",
   "skip": ["cors/wildcard-with-credentials"],
-  "all": false,
-  "bestEffort": false
+  "all": false
 }
 ```
 
@@ -112,11 +112,14 @@ const key = process.env.OPENAI_KEY
 | `only` | `--only=规则` |
 | `skip` | `--skip=规则` |
 | `all` | `--all` |
-| `bestEffort` | `--best-effort` |
 
 格式是 JSON 而非 JavaScript。`canship.config.js` 属于项目代码，而扫描不执行项目代码。
 
-未知设置项、类型错误、指向不存在规则的 id，以及同时设置 `only` 和 `skip`，都会报错并以 `3` 退出。配置文件不存在不算错误。
+未知设置项、类型错误、指向不存在规则的 id，以及同时设置 `only` 和 `skip`，都会报错并以 `3` 退出。配置文件不存在不算错误。`baseline` 路径必须位于被扫描项目之内；`--baseline` 参数不受此限制。
+
+**配置文件来自被扫描的目录本身。** 当该目录是你自己的代码时，这正是这个功能的意义；当它不是——某个依赖、某个 fork、某个尚未审阅的合并请求——项目就可以用它关掉本会报告它的规则。`--no-config` 会完全忽略该文件。
+
+`bestEffort` 被刻意排除在设置项之外。它会把不完整扫描的退出码从 `3` 变成 `0`，而这是运行 canship 的人对自身容忍度的判断，不是被扫描项目的属性。在配置文件中写出该键会直接报错，而不是被悄悄忽略。请改用 `--best-effort`。
 
 ### 选择规则
 
