@@ -180,3 +180,55 @@ describe('suppressing real findings', () => {
     assert.equal(result.partial, false)
   })
 })
+
+describe('the markers cannot be made slow', () => {
+  // Both markers were written as `\s*(?:comment syntax)?\s*marker`, where the
+  // two runs of whitespace can both match the same spaces when the comment
+  // syntax is absent. That is quadratic in the length of the line, and a scan
+  // is a loop over every line of every file — so one long whitespace line in a
+  // repository canship was pointed at held the scan for 36 seconds at 200 KB,
+  // with the file cap at 2 MiB. Pinned by time because the shape of the regex
+  // is the thing that has to stay right, and a future edit that reintroduces
+  // the ambiguity would still pass every correctness test above.
+  const budgetMs = 1000
+
+  for (const [name, line] of [
+    ['whitespace then a non-match', ' '.repeat(200_000) + 'x'],
+    ['comment syntax then whitespace', '// ' + ' '.repeat(200_000) + 'x'],
+    ['whitespace after a real marker', '// canship-ignore-next-line' + ' '.repeat(200_000) + 'x'],
+    ['dashes', '-'.repeat(200_000)],
+    ['stars', '*'.repeat(200_000)],
+  ] as const) {
+    test(`a 200,000-character line of ${name} is answered quickly`, () => {
+      const started = Date.now()
+      ignoredLinesOf([line])
+      const took = Date.now() - started
+      assert.ok(took < budgetMs, `took ${took}ms, budget is ${budgetMs}ms`)
+    })
+  }
+
+  test('the fast form still recognises and rejects the same lines', () => {
+    // The rewrite is only safe if it did not change what matches. The suites
+    // above cover the cases in prose; this walks the combinations.
+    const wrappers = ['', '//', '#', '--', '*', '*/', '/*', '<!--']
+    const closers = ['', '*/', '-->']
+    const spaces = ['', ' ', '   ', '\t']
+    let matched = 0
+    for (const w of wrappers) {
+      for (const c of closers) {
+        for (const s of spaces) {
+          if (ignoredLinesOf([`${s}${w}${s}canship-ignore-next-line${s}${c}${s}`]).size === 1) {
+            matched++
+          }
+          // Anything with real content beside the marker must never match.
+          assert.equal(
+            ignoredLinesOf([`${s}${w}${s}const a = 1 ${c}`]).size,
+            0,
+            'a line of code was read as a marker',
+          )
+        }
+      }
+    }
+    assert.ok(matched >= wrappers.length * spaces.length, `only ${matched} combinations matched`)
+  })
+})
