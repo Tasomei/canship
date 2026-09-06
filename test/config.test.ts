@@ -285,3 +285,58 @@ describe('the scanned project cannot lower the exit code', () => {
     assert.equal(run(root, ['--no-config']).status, 1, '--no-config should restore it')
   })
 })
+
+describe('the config file is bounded', () => {
+  // It is read out of the directory being scanned with no flag asking for it,
+  // which makes it the most reachable attacker-controlled input canship has.
+  // The baseline beside it was capped and this was not, which is the kind of
+  // gap that only shows up when somebody goes looking for it.
+  test('an oversized config is refused rather than read', () => {
+    const root = tempDir()
+    mkdirSync(join(root, 'lib'))
+    writeFileSync(join(root, 'lib', 'x.ts'), 'export const a = 1\n', 'utf8')
+    // Just over the megabyte cap, without building anything enormous.
+    writeFileSync(
+      join(root, CONFIG_FILENAME),
+      `{"baseline":"${'a'.repeat(1024 * 1024 + 16)}"}`,
+      'utf8',
+    )
+    assert.throws(() => loadConfig(root), ConfigError)
+    try {
+      loadConfig(root)
+    } catch (err) {
+      assert.match((err as Error).message, /over the \d+-byte limit/)
+    }
+  })
+
+  test('a config at a normal size still loads', () => {
+    const root = tempDir()
+    writeFileSync(join(root, CONFIG_FILENAME), '{"all":true}', 'utf8')
+    assert.equal(loadConfig(root).config.all, true)
+  })
+
+  test('a very deep baseline path is answered quickly', () => {
+    // Resolving symlinks walks up one ancestor at a time when the path does not
+    // exist, and each turn is a failed filesystem call. Two thousand levels
+    // measured 2.4 seconds before the walk was bounded. Pinned by time, since
+    // the bound is the only thing keeping it fast and nothing else would notice
+    // its removal.
+    const root = tempDir()
+    mkdirSync(join(root, 'lib'))
+    writeFileSync(join(root, 'lib', 'x.ts'), 'export const a = 1\n', 'utf8')
+    writeFileSync(
+      join(root, CONFIG_FILENAME),
+      JSON.stringify({ baseline: `${'a/'.repeat(20_000)}b.json` }),
+      'utf8',
+    )
+    const cli = join(here, '..', 'src', 'cli.ts')
+    const started = Date.now()
+    try {
+      execFileSync('node', ['--import', 'tsx', cli, root, '--json'], { stdio: 'ignore' })
+    } catch {
+      /* exits 3 because the baseline is not there, which is the point */
+    }
+    const took = Date.now() - started
+    assert.ok(took < 15_000, `took ${took}ms`)
+  })
+})

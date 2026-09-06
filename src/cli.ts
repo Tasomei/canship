@@ -152,7 +152,12 @@ function insideProject(root: string, relative: string): string {
 function realPathOf(path: string): string {
   let at = path
   const rest: string[] = []
-  for (;;) {
+  // Bounded because each turn of this loop is a failed filesystem call, and the
+  // path can come out of a config file in the tree being scanned: a baseline
+  // named `a/a/a/…` two thousand levels deep spent 2.4 seconds here. Deeper
+  // than this is not a path anyone meant, and giving up returns the lexical
+  // form, which only makes the containment check stricter.
+  for (let depth = 0; depth < MAX_REAL_PATH_DEPTH; depth++) {
     try {
       const real = realpathSync(at)
       return rest.length === 0 ? real : resolve(real, ...rest)
@@ -163,7 +168,11 @@ function realPathOf(path: string): string {
       at = parent
     }
   }
+  return path
 }
+
+/** Comfortably past the deepest real directory tree, and far short of costly */
+const MAX_REAL_PATH_DEPTH = 64
 
 /**
  * The fallback for a flag whose bare form is handled before optionalValue sees

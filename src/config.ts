@@ -18,7 +18,7 @@
  * ideas of what a broken file means.
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { isKnownSelector } from './rules/index.js'
 
@@ -153,6 +153,22 @@ export function parseConfig(text: string, path: string): Config {
 }
 
 /**
+ * How large this file may be.
+ *
+ * It is read out of the directory being scanned, with no flag asking for it,
+ * which makes it the most reachable attacker-controlled input canship has —
+ * more so than the baseline, which at least requires --baseline. Uncapped, a
+ * 200 MB config was read and parsed in full before the first validation
+ * rejected it: eleven seconds and two hundred megabytes to reach an error
+ * message. It also fed the `baseline` path, which is walked one ancestor at a
+ * time when it does not exist.
+ *
+ * A megabyte is far more than any real config needs — the whole schema is four
+ * keys — and small enough that reading it is never the expensive part of a scan.
+ */
+const MAX_CONFIG_BYTES = 1024 * 1024
+
+/**
  * Load the config from a scanned directory, or an empty config if there is none.
  *
  * Absence is normal and silent. A file that exists and cannot be read is not:
@@ -164,8 +180,17 @@ export function loadConfig(root: string): { config: Config; path: string | null 
   if (!existsSync(path)) return { config: {}, path: null }
   let text: string
   try {
+    const size = statSync(path).size
+    if (size > MAX_CONFIG_BYTES) {
+      throw new ConfigError(
+        `${path} is ${size} bytes, over the ${MAX_CONFIG_BYTES}-byte limit`,
+      )
+    }
     text = readFileSync(path, 'utf8')
   } catch (err) {
+    // The size refusal already says the right thing; only a filesystem failure
+    // needs wrapping.
+    if (err instanceof ConfigError) throw err
     throw new ConfigError(
       `could not read ${path}: ${err instanceof Error ? err.message : String(err)}`,
     )
