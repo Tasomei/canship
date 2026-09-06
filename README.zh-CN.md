@@ -1,6 +1,8 @@
 # canship
 
-canship 是面向 JavaScript/TypeScript Web 项目的只读静态扫描工具，用于发现凭据泄露、公开环境变量误用和访问控制配置错误。支持 Next.js、Vite、Nuxt、Create React App、Expo，以及使用 Supabase 或 Firebase 的项目。
+canship 是面向 JavaScript/TypeScript Web 项目的只读静态扫描工具。它检测硬编码凭据、经公开环境变量前缀进入浏览器代码的私密值（Next.js、Vite、Nuxt、Create React App、Expo、Gatsby、Vue CLI、SvelteKit）、未启用 Row Level Security 的 Supabase 表、被放开的 Firebase 规则，以及未验证调用方身份就访问数据的 API route。
+
+最后一项仅覆盖 Next.js —— `app/api/**` 和 `pages/api/**` 下的处理函数。SvelteKit 的 `+server.ts` 或 Nuxt 的 `server/api/` 处理函数会被扫描其余所有检查项，但不会被检查是否缺少鉴权。其余检查均不依赖具体框架。
 
 扫描过程不会执行被扫描项目的代码，不会上传内容或主动访问网络，也没有运行时 npm 依赖。扫描 Git 仓库时，只读取本地工作区和本地提交历史。
 

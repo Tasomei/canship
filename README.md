@@ -1,6 +1,8 @@
 # canship
 
-canship is a read-only static scanner for JavaScript and TypeScript web projects. It detects exposed credentials, misuse of public environment variables, and access-control misconfigurations in Next.js, Vite, Nuxt, Create React App, Expo, Supabase, and Firebase projects.
+canship is a read-only static scanner for JavaScript and TypeScript web projects. It detects exposed credentials, private values carried into browser-delivered code by a public environment prefix (Next.js, Vite, Nuxt, Create React App, Expo, Gatsby, Vue CLI, SvelteKit), Supabase tables without Row Level Security, Firebase rules left open, and API routes that reach data without checking who is calling.
+
+That last check covers Next.js only — handlers under `app/api/**` and `pages/api/**`. A SvelteKit `+server.ts` or a Nuxt `server/api/` handler is scanned for everything else and is not checked for a missing authentication check. Every other check is framework-independent.
 
 The scan does not execute project code, upload content, or initiate network requests. The npm package has no runtime dependencies. When scanning a Git repository, canship reads only the local working tree and local commit history.
 
