@@ -134,14 +134,14 @@ describe('fingerprints', () => {
     // line moving. Two schemes for one question eventually disagree about
     // whether a finding is new.
     const f = finding()
-    assert.equal(sarif().runs[0].results[0].partialFingerprints.canshipFindingV1, fingerprintOf(f))
+    assert.equal(sarif().runs[0].results[0].partialFingerprints.canshipFindingV2, fingerprintOf(f))
   })
 
   test('do not change when a line moves', () => {
     const moved = sarif({ findings: [finding({ line: 400 })] })
     assert.equal(
-      moved.runs[0].results[0].partialFingerprints.canshipFindingV1,
-      sarif().runs[0].results[0].partialFingerprints.canshipFindingV1,
+      moved.runs[0].results[0].partialFingerprints.canshipFindingV2,
+      sarif().runs[0].results[0].partialFingerprints.canshipFindingV2,
     )
   })
 })

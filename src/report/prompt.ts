@@ -113,6 +113,8 @@ export interface PromptContext {
   baselineSuppressed?: number
   /** Findings a line marker silenced, as `file:line (rule)` */
   silenced?: string[]
+  /** 被整文件标记排除的路径，不能当作已检查且无问题。 */
+  ignoredFiles?: string[]
   /** Rule selection in force, described in one phrase */
   ruleSelection?: string | null
 }
@@ -146,6 +148,11 @@ export function renderFixPrompt(findings: Finding[], ctx?: PromptContext): strin
   const baselineSuppressed = ctx?.baselineSuppressed ?? 0
   const silenced = ctx?.silenced ?? []
   const suppressedNotes = [
+    !ctx?.ignoredFiles?.length
+      ? null
+      : `Note: ${ctx.ignoredFiles.length} file(s) excluded by canship-ignore-file: ` +
+        `${defuseMarkers(ctx.ignoredFiles.join(', '))}. Their contents were not checked. ` +
+        'Do not treat this as a clean result.',
     baselineSuppressed === 0
       ? null
       : `Note: ${baselineSuppressed} ${baselineSuppressed === 1 ? 'finding was' : 'findings were'} hidden by a baseline. ` +

@@ -144,7 +144,9 @@ npx canship --baseline         # report only new ones
 
 Paths are resolved where they came from: a path typed on the command line is relative to the working directory, a bare `--baseline` or `--baseline-write` uses the scanned project's own `canship-baseline.json`, and a path in `canship.config.json` is relative to that file. So `npx canship ./app --baseline-write` writes into `./app`, which is where `npx canship ./app --baseline` then looks.
 
-A baseline entry is matched by rule, file, title, and a hash of the excerpt. The line number is deliberately excluded, so editing a file above a finding does not report it as new. Each entry carries the number of times it was seen; an additional occurrence beyond that count is reported.
+A baseline entry is matched by rule, file, title, and a digest of its original source evidence; only findings without locatable evidence fall back to the excerpt. The source digest is computed before redaction and truncation, so replacing a credential cannot hide behind the old display text. The line number is deliberately excluded, so editing a file above a line-based finding does not report it as new. Each entry carries the number of times it was seen; an additional occurrence beyond that count is reported.
+
+The baseline format is now version 2, and the SARIF fingerprint is named `canshipFindingV2`. Older baselines are rejected with exit code `3`, never automatically converted or overwritten. Review the findings again before regenerating with `--baseline-write`.
 
 The baseline stores a SHA-256 hash rather than the excerpt itself, because the file is intended to be committed and canship cannot guarantee that an unrecognised credential is masked.
 

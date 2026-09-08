@@ -17,6 +17,7 @@ import { findKnownSecret, isPlaceholder } from './patterns.js'
 import { looksClearlyPrivate, looksIntentionallyPublic, publicPrefixOf } from './framework.js'
 import { parseEnvLine } from './envfile.js'
 import { execGitBatch, execGitSync, hasContainedGitMetadata } from '../git.js'
+import { createHash } from 'node:crypto'
 
 /**
  * Template files are meant to be committed and are not a leak.
@@ -338,6 +339,8 @@ const MAX_HISTORY_REVISIONS = 100
  */
 interface HistoryScan {
   evidence: Evidence
+  /** 用于区分历史版本的新凭据，不保存历史原文。 */
+  sourceFingerprint?: string
   /** Older revisions left unread because the ceiling was reached */
   unread: number
   /** Revisions git show could not read at all */
@@ -383,6 +386,7 @@ function historicalEvidence(
 
   let best: Evidence = 'none'
   let unreadable = 0
+  const hintHashes = new Set<string>()
   for (const body of bodies) {
     if (body === null) {
       unreadable++
@@ -392,10 +396,19 @@ function historicalEvidence(
     // Proof ends the search, and the count of unread revisions goes with it:
     // nothing further back can strengthen a verdict that is already the
     // strongest one available.
-    if (evidence === 'proof') return { evidence: 'proof', unread: 0, unreadable }
-    if (evidence === 'hint') best = 'hint'
+    if (evidence === 'proof') return {
+      evidence: 'proof', unread: 0, unreadable,
+      sourceFingerprint: createHash('sha256').update(body.trim(), 'utf8').digest('hex'),
+    }
+    if (evidence === 'hint') {
+      best = 'hint'
+      hintHashes.add(createHash('sha256').update(body.trim(), 'utf8').digest('hex'))
+    }
   }
-  return { evidence: best, unread: all.length - revs.length, unreadable }
+  return {
+    evidence: best, unread: all.length - revs.length, unreadable,
+    sourceFingerprint: createHash('sha256').update([...hintHashes].sort().join('\n')).digest('hex'),
+  }
 }
 
 /** Whether a remote is configured — if so, the keys have probably left the machine */
@@ -573,6 +586,7 @@ export const gitleakRule: ProjectRule = {
 
       findings.push({
         ruleId: 'gitleak/env-in-history',
+        ...(history?.sourceFingerprint === undefined ? {} : { sourceFingerprint: history.sourceFingerprint }),
         severity: 'P0',
         // Claiming certainty about a file nobody could read would be the same
         // overreach the tracked branch just stopped making.

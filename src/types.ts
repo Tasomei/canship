@@ -70,6 +70,8 @@ export interface Finding {
   line: number | null
   /** The offending snippet. Must already be redacted. */
   excerpt: string | null
+  /** 原始来源行或文件证据的摘要，独立于展示用的脱敏和截断。 */
+  sourceFingerprint?: string
   /**
    * Why this matters — state the consequence, not the category.
    *

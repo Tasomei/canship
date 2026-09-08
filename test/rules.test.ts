@@ -1980,11 +1980,19 @@ describe('gaps a second review found, each one a way to a false clean', () => {
     )
     const handler =
       "import NextAuth from 'next-auth'\n" +
-      'const authHandler = NextAuth({ providers: [] })\n' +
+      "import { createClient } from '@supabase/supabase-js'\n" +
+      'const a = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)\n' +
+      'const authHandler = NextAuth({ providers: [], callbacks: { async signIn() { await a.from("users").select("*"); return true } } })\n' +
       'export { authHandler as GET, authHandler as POST }\n'
     assert.deepEqual(
-      await ids({ 'app/api/auth/[...nextauth]/route.ts': handler + ADMIN_ROUTE }),
+      await ids({ 'app/api/auth/[...nextauth]/route.ts': handler }),
       [],
+    )
+    // Auth.js 只保护它构造的处理函数，独立 DELETE 仍必须接受检查。
+    assert.deepEqual(
+      await ids({ 'app/api/auth/[...nextauth]/route.ts': handler +
+        'export async function DELETE(){ return a.from("users").delete() }\n' }),
+      ['api/admin-db-access-without-auth'],
     )
   })
 

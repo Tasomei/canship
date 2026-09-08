@@ -164,7 +164,7 @@ function resultsOf(findings: Finding[]): unknown[] {
               },
             },
           ],
-    partialFingerprints: { canshipFindingV1: fingerprintOf(f) },
+    partialFingerprints: { canshipFindingV2: fingerprintOf(f) },
   }))
 }
 

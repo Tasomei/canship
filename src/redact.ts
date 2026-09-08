@@ -61,8 +61,9 @@ export function redactSecret(secret: string): string {
  */
 export function redactLine(line: string, secret: string): string {
   const trimmed = line.trim()
-  if (!secret) return truncate(trimmed)
-  return truncate(trimmed.split(secret).join(redactSecret(secret)))
+  // 保留完整行；统一输出边界先脱敏所有凭据，再进行截断。
+  if (!secret) return trimmed
+  return trimmed.split(secret).join(redactSecret(secret))
 }
 
 /**

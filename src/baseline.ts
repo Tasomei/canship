@@ -44,7 +44,7 @@ import type { Finding } from './types.js'
  * error rather than something to interpret optimistically. Guessing at an
  * unknown format is how a baseline silently suppresses the wrong findings.
  */
-export const BASELINE_VERSION = 1
+export const BASELINE_VERSION = 2
 
 /** Where `--baseline` looks when given no path */
 export const DEFAULT_BASELINE_PATH = 'canship-baseline.json'
@@ -90,9 +90,8 @@ export interface BaselineFile {
  * matching anything in that file and reports the same untouched problems as
  * new. A baseline that goes stale on the next commit does not get used.
  *
- * What is left is rule, file, title and excerpt — the excerpt being what tells
- * two different keys on one line apart, the same reason `dedupe` in the engine
- * carries it.
+ * 使用规则、文件、标题以及原始来源摘要；没有可定位来源的结果才使用摘录。
+ * 显示用摘录已经脱敏和截断，不能用来区分被替换的凭据。
  *
  * NUL separates the fields because it is the one byte none of them can hold:
  * every string here has been through the output boundary in engine.ts, which
@@ -102,7 +101,8 @@ export interface BaselineFile {
  * returns — and not raw output from a rule.
  */
 export function fingerprintOf(f: Finding): string {
-  const identity = [f.ruleId, f.file ?? '', f.title, f.excerpt ?? ''].join('\u0000')
+  // 摘录已经丢失密钥中间部分，不能再用于源文件结果的身份判断。
+  const identity = [f.ruleId, f.file ?? '', f.title, f.sourceFingerprint ?? f.excerpt ?? ''].join('\u0000')
   return createHash('sha256').update(identity, 'utf8').digest('hex')
 }
 
@@ -231,7 +231,8 @@ export function readBaseline(path: string): BaselineFile {
   const version = obj['version']
   if (version !== BASELINE_VERSION) {
     throw new BaselineError(
-      `baseline ${path} has version ${String(version)}; this canship reads version ${BASELINE_VERSION}`,
+      `baseline ${path} has version ${String(version)}; this canship reads version ${BASELINE_VERSION}. ` +
+        'Review the findings and regenerate the baseline with --baseline-write.',
     )
   }
 

@@ -49,9 +49,10 @@ export const secretsRule: Rule = {
       pat.pattern.lastIndex = 0
       let match: RegExpExecArray | null
 
-      if (findings.length >= MAX_FINDINGS_PER_FILE) break
-
       while ((match = pat.pattern.exec(file.content)) !== null) {
+        const secret = match[0]
+        if (isPlaceholder(secretPartOf(match, pat))) continue
+        if (pat.ignoreIf?.(match)) continue
         // A ceiling, and one that says so. A file under the size cap can still
         // hold thousands of secret-shaped strings, and every one of them used
         // to become a finding with its own paragraphs of explanation — enough
@@ -64,14 +65,8 @@ export const secretsRule: Rule = {
             `${file.path} holds more than ${MAX_FINDINGS_PER_FILE} credential-shaped strings; ` +
               `the rest were not reported`,
           )
-          break
+          return findings
         }
-        const secret = match[0]
-        // Placeholder checking targets the secret itself (e.g. the password
-        // inside a connection string), not unrelated parts like the host.
-        if (isPlaceholder(secretPartOf(match, pat))) continue
-        // Correctly formatted but pointing somewhere meaningless — skip.
-        if (pat.ignoreIf?.(match)) continue
 
         const line = lineNumberAt(lineStarts, match.index)
         const rawLine = file.lines[line - 1] ?? ''

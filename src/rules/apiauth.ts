@@ -16,10 +16,8 @@
  *      client is certain-grade, because that key bypasses every RLS policy —
  *      whatever the database would normally refuse, this route performs. Plain
  *      ORM writes are reported at lower confidence.
- *   3. Any hint of an authorisation check anywhere in the file suppresses the
- *      finding. The signal list below is deliberately over-broad: matching too
- *      much causes a miss, matching too little causes a false positive, and the
- *      two are not equally bad.
+ *   3. 鉴权必须位于实际数据操作所在的函数内，并且在操作之前执行。
+ *      其他 HTTP 方法、未调用的辅助函数和后置检查不能提供保护。
  *
  * On top of that, Next.js middleware can protect a route from the outside, with
  * nothing visible in the route file at all. That is checked project-wide before
@@ -166,6 +164,145 @@ function hasConditionalAuthGuard(code: string): boolean {
 function hasAuthSignal(file: { content: string }): boolean {
   const code = noiseMaskedOf(file)
   return AUTH_ENFORCING_CALL.test(code) || hasConditionalAuthGuard(code)
+}
+
+interface FunctionBody {
+  declaration: number
+  start: number
+  end: number
+}
+
+/** 一次配对括号，后续函数边界和语句扫描不重复搜索整个文件。 */
+function delimiterPairs(code: string): Map<number, number> {
+  const pairs = new Map<number, number>()
+  const stack: number[] = []
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i]!
+    if ('({['.includes(ch)) stack.push(i)
+    else if (')}]'.includes(ch)) {
+      const open = stack.pop()
+      if (open !== undefined && '({['.indexOf(code[open]!) === ')}]'.indexOf(ch)) {
+        pairs.set(open, i)
+      }
+    }
+  }
+  return pairs
+}
+
+/** 常见函数声明及块体箭头函数；无法确认边界时不假设已有鉴权。 */
+function functionBodies(code: string, pairs: Map<number, number>): FunctionBody[] {
+  const bodies: FunctionBody[] = []
+  for (const match of code.matchAll(/\bfunction\s*\*?\s*(?:\w+\s*)?\(|=>\s*\{/g)) {
+    let body: number
+    if (match[0].startsWith('=>')) body = match.index + match[0].length - 1
+    else {
+      const close = pairs.get(match.index + match[0].length - 1)
+      if (close === undefined) continue
+      body = close + 1
+      while (/\s/.test(code[body] ?? '')) body++
+      // 简单返回类型不含对象字面量；复杂类型保持保守，不猜测边界。
+      if (code[body] === ':') {
+        const type = /^:[\w\s.<>,[\]|?]+(?=\{)/.exec(code.slice(body))
+        if (type) body += type[0].length
+      }
+    }
+    const end = pairs.get(body)
+    if (code[body] === '{' && end !== undefined) bodies.push({ declaration: match.index, start: body, end })
+  }
+  return bodies
+}
+
+/** 语句终点：跳过参数及对象字面量，不能把下一条语句的 return 借过来。 */
+function statementEnd(code: string, start: number, limit: number, pairs: Map<number, number>): number {
+  if (code[start] === '{') return (pairs.get(start) ?? limit) + 1
+  for (let i = start; i < limit; i++) {
+    if (code[i] === ';' || code[i] === '\n') return i + 1
+    const close = pairs.get(i)
+    if (close !== undefined) i = close
+  }
+  return limit
+}
+
+/** 只认当前函数顶层、数据操作之前的检查，跳过未执行的函数和可选分支。 */
+function unguardedOperations(file: ScanFile, ops: DataHit[]): DataHit[] {
+  if (ops.length === 0) return ops
+  const code = noiseMaskedOf(file)
+  const pairs = delimiterPairs(code)
+  const bodies = functionBodies(code, pairs)
+  const declarations = new Map(bodies.map(body => [body.declaration, body]))
+  const functionStarts = new Set(bodies.map(body => body.start))
+  const guardEnds = new Map<number, number>()
+  type Block = Pick<FunctionBody, 'start' | 'end'>
+  const blocks: Block[] = [...pairs].filter(([start]) => code[start] === '{')
+    .map(([start, end]) => ({ start, end })).sort((a, b) => a.start - b.start)
+  const active: Block[] = []
+  let blockIndex = 0
+  const wrappers = [...code.matchAll(/\b(?:withAuth|NextAuth)\s*\(/g)].map(match => {
+    const open = match.index + match[0].length - 1
+    return { start: open, end: pairs.get(open) ?? open }
+  })
+
+  // 每个函数最多扫描一次，不能对每个数据操作重新遍历整个函数前缀。
+  const guardEnd = (owner: Block): number => {
+    for (let i = owner.start + 1; i < owner.end; i++) {
+      const nested = declarations.get(i)
+      if (nested) { i = nested.end; continue }
+      if (code.startsWith('=>', i)) {
+        i = statementEnd(code, i + 2, owner.end, pairs) - 1
+        continue
+      }
+      if (i > 0 && /[\w$]/.test(code[i - 1]!)) continue
+      const conditional = /^if\s*\(/.exec(code.slice(i, i + 32))
+      if (conditional) {
+        const open = i + conditional[0].length - 1
+        const close = pairs.get(open)
+        if (close === undefined) return Infinity
+        let start = close + 1
+        while (/\s/.test(code[start] ?? '')) start++
+        const end = statementEnd(code, start, owner.end, pairs)
+        if (end <= owner.end && hasConditionalAuthGuard(code.slice(i, end))) return end
+        // 只在部分请求中执行的鉴权不能保护后续无条件操作。
+        i = Math.min(end, owner.end) - 1
+        continue
+      }
+      const call = AUTH_ENFORCING_CALL.exec(code.slice(i, i + 100))
+      // 构造一个包装后的处理函数并不鉴权当前请求；只在包围操作时认它。
+      if (call?.index === 0 && !/^(?:withAuth|NextAuth)\b/i.test(call[0]) &&
+          !/\bfunction\s*$/.test(code.slice(Math.max(owner.start, i - 30), i))) {
+        const close = pairs.get(i + call[0].length - 1)
+        if (close !== undefined && close < owner.end) return close + 1
+      }
+      const close = pairs.get(i)
+      if (close !== undefined) i = close
+    }
+    return Infinity
+  }
+
+  return ops.filter(op => {
+    // 操作已按源位置排序；用栈维护包围它的代码块，避免逐操作重扫全部函数。
+    while (blockIndex < blocks.length && blocks[blockIndex]!.start < op.index) {
+      const block = blocks[blockIndex++]!
+      while (active.length && active[active.length - 1]!.end < block.start) active.pop()
+      active.push(block)
+    }
+    while (active.length && active[active.length - 1]!.end < op.index) active.pop()
+    if (wrappers.some(w => w.start < op.index && w.end > op.index)) return false
+    let ownerIndex = active.length - 1
+    while (ownerIndex >= 0 && !functionStarts.has(active[ownerIndex]!.start)) ownerIndex--
+    // 未识别到函数边界时不借用模块级的鉴权。
+    if (ownerIndex < 0) return true
+    // 同一函数中包围该操作的 try/条件块可以提供保护，其他分支不能。
+    for (let index = ownerIndex; index < active.length; index++) {
+      const block = active[index]!
+      let end = guardEnds.get(block.start)
+      if (end === undefined) {
+        end = guardEnd(block)
+        guardEnds.set(block.start, end)
+      }
+      if (end <= op.index) return false
+    }
+    return true
+  })
 }
 
 // ── 3. Does the route use a service_role (admin) client? ────────────────────
@@ -912,9 +1049,7 @@ export const apiAuthRule: ProjectRule = {
     const findings: Finding[] = []
 
     for (const route of routes) {
-      if (hasAuthSignal(route)) continue
-
-      const ops = findDataOps(route)
+      const ops = unguardedOperations(route, findDataOps(route))
       if (ops.length === 0) continue
 
       const url = routeUrl(route.path)

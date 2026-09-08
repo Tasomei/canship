@@ -414,8 +414,10 @@ async function main(): Promise<void> {
       }
     }
   }
-  const only = args.only.length > 0 ? args.only : (config.only ?? [])
-  const skip = args.skip.length > 0 ? args.skip : (config.skip ?? [])
+  // only/skip 是一组互斥选择，命令行覆盖整组配置。
+  const cliSelection = args.only.length > 0 || args.skip.length > 0
+  const only = cliSelection ? args.only : (config.only ?? [])
+  const skip = cliSelection ? args.skip : (config.skip ?? [])
   if (only.length > 0 && skip.length > 0) {
     argumentError('rule selection cannot use both only and skip')
   }
@@ -539,6 +541,7 @@ async function main(): Promise<void> {
       hiddenLikely,
       baselineSuppressed,
       silenced: result.ignoredFindings.map((f) => `${f.file}:${f.line} (${f.ruleId})`),
+      ignoredFiles: result.ignored,
       ruleSelection: selectionPhrase(result.ruleSelection),
     })
     process.stdout.write(

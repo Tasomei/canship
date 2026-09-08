@@ -18,6 +18,7 @@ import { collectFiles, detectGitRepo, ignoredLinesOf } from './walker.js'
 import type { IgnoredLines } from './walker.js'
 import { resolveGitExecutable } from './git.js'
 import { redactAll, truncate } from './redact.js'
+import { createHash } from 'node:crypto'
 
 const SEVERITY_ORDER: Record<Finding['severity'], number> = { P0: 0, P1: 1, P2: 2 }
 const CONFIDENCE_ORDER: Record<Finding['confidence'], number> = { certain: 0, likely: 1 }
@@ -137,9 +138,21 @@ export function cleanForOutput(text: string): string {
   return clean(text)
 }
 
-function sanitize(findings: Finding[]): Finding[] {
+function sanitize(findings: Finding[], files: ScanFile[]): Finding[] {
+  const byPath = new Map(files.map(file => [file.path, file]))
+  const sourceIdentity = (f: Finding): Pick<Finding, 'sourceFingerprint'> => {
+    // Git 历史规则提供的是历史内容摘要，不能用当前工作区的内容覆盖。
+    if (f.sourceFingerprint !== undefined) return { sourceFingerprint: f.sourceFingerprint }
+    const file = f.file === null ? undefined : byPath.get(f.file)
+    const source = f.line === null ? file?.content : file?.lines[f.line - 1]
+    return source === undefined ? {} : {
+      sourceFingerprint: createHash('sha256').update(source.trim(), 'utf8').digest('hex'),
+    }
+  }
   return findings.map((f) => ({
     ...f,
+    // 仅输出摘要；原始行不进入报告，移动行号不改变身份。
+    ...sourceIdentity(f),
     title: clean(f.title),
     // Per paragraph, so the breaks between them survive a cleaner that removes
     // every newline inside them. See Finding.why.
@@ -381,7 +394,7 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
   const selected = applyRuleSelection(kept, options)
 
   return {
-    findings: sanitize(sortFindings(selected.kept)),
+    findings: sanitize(sortFindings(selected.kept), files),
     filesScanned: files.length,
     durationMs: Date.now() - started,
     errors: errors.map((e) => ({
