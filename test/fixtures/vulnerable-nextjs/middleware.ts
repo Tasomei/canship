@@ -1,9 +1,4 @@
-// Test fixture: middleware that authenticates requests but deliberately does
-// not cover /api — this is the matcher printed in the Next.js documentation.
-//
-// It is the trap this rule has to see through. Treating "there is auth
-// middleware" as "the API is protected" would silence every finding in this
-// fixture, which is exactly the mistake a naive implementation makes.
+// 中间件验证身份，但匹配器明确排除 API 路径。
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 

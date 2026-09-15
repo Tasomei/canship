@@ -1,12 +1,4 @@
-// Test fixture: a write with no visible caller check — and correct.
-//
-// This route is the architecture canship recommends: the session-scoped client
-// runs the update as the signed-in caller, so the database refuses rows that
-// are not theirs. Reporting this would mean flagging the fix the tool itself
-// hands out.
-//
-// Deliberately free of anything the auth-signal list would match, so the test
-// proves the client resolution is what suppresses this, not a stray keyword.
+// 会话客户端按调用者身份写入，由数据库策略约束访问。
 import { createClient } from '@/lib/supabase-server'
 
 export async function POST(request: Request) {

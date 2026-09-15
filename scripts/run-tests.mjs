@@ -1,29 +1,4 @@
-/**
- * Test runner.
- *
- * This exists because `node --import tsx --test test/**\/*.test.ts` was a
- * publish gate that could pass without running anything.
- *
- * Three layers had to line up for that to work, and they did not:
- *   - `sh` does not expand `**`; it degrades to `*`, and `test/*\/*.test.ts`
- *     does not match a file sitting directly in `test/`.
- *   - `cmd.exe` does not expand globs at all.
- *   - So the pattern reached node verbatim — and node only learned to treat a
- *     positional argument as a glob after v20, which documents them as
- *     "one or more paths".
- *
- * On Node 20 the pattern was therefore a path, no such path existed, and the
- * runner reported `tests 0` and exited **0**. Two of the six CI cells were
- * green without executing a single assertion, and `prepublishOnly` runs this
- * same script — so the one gate standing between a broken build and the
- * registry could wave it through.
- *
- * Finding the files here removes every one of those variables: no shell
- * expansion, no version-dependent glob, and an empty result is a failure
- * rather than a pass. That last part is the point. A test command that cannot
- * distinguish "everything passed" from "nothing ran" is the same bug canship
- * exits 3 to avoid, sitting in canship's own toolchain.
- */
+/** 显式发现测试文件，避免不同终端或 Node 版本的通配符差异导致空测试通过。 */
 
 import { readdirSync, existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -33,12 +8,11 @@ import { fileURLToPath } from 'node:url'
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const testDir = join(root, 'test')
 
-/** Every *.test.ts under test/, at any depth */
+/** 递归收集测试目录中的测试文件。 */
 function findTests(dir) {
   const found = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    // Fixtures are inputs to the tests, not tests. They also contain
-    // deliberately broken code that must never be executed.
+    // 夹具仅作输入，不执行其中的模拟项目代码。
     if (entry.isDirectory()) {
       if (entry.name === 'fixtures' || entry.name === 'node_modules') continue
       found.push(...findTests(join(dir, entry.name)))

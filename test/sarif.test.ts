@@ -1,14 +1,5 @@
-/**
- * SARIF output tests.
- *
- * canship-ignore-file
- *
- * What a code-scanning platform does with a malformed log is accept it and show
- * nothing, so the failure mode here is silence on a pull request rather than an
- * error anybody sees. These tests pin the shape those platforms actually read:
- * the level, the location, and the fingerprint they use to decide whether a
- * finding is new.
- */
+/** 验证 SARIF 结构、位置、指纹及扫描状态。
+ * canship-ignore-file */
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
@@ -47,7 +38,7 @@ function result(over: Partial<ScanResult> = {}): ScanResult {
   }
 }
 
-/** Render and parse, since every assertion here is about the parsed document */
+/** 对渲染后的文档进行解析和断言。 */
 function sarif(over: Partial<ScanResult> = {}): any {
   return JSON.parse(renderSarif(result(over), { version: '9.9.9' }))
 }
@@ -68,8 +59,7 @@ describe('the document a code-scanning platform reads', () => {
   })
 
   test('every result names a rule the driver declares', () => {
-    // A result whose ruleId is not in the driver's rule list is where GitHub
-    // stops rendering the description and shows a bare id.
+    // 结果 ID 必须对应工具声明的规则。
     const run = sarif({
       findings: [finding(), finding({ ruleId: 'cors/wildcard-with-credentials', severity: 'P2' })],
     }).runs[0]
@@ -82,8 +72,7 @@ describe('the document a code-scanning platform reads', () => {
   })
 
   test('only rules that fired are declared', () => {
-    // Declaring every rule canship has fills the code-scanning UI with entries
-    // that found nothing and say nothing the results do not.
+    // 仅声明实际命中的规则。
     assert.equal(sarif().runs[0].tool.driver.rules.length, 1)
   })
 })
@@ -94,8 +83,7 @@ describe('severity becomes a level', () => {
   })
 
   test('a certain P2 is a warning', () => {
-    // Reserved for what canship exits 1 for. A P2 that browsers reject on the
-    // user's behalf must not fail somebody's pull request.
+    // 非阻断结果不能映射为错误级别。
     const log = sarif({ findings: [finding({ severity: 'P2' })] })
     assert.equal(log.runs[0].results[0].level, 'warning')
   })
@@ -114,8 +102,7 @@ describe('locations', () => {
   })
 
   test('a finding with no file gets no location rather than a made-up one', () => {
-    // Git-history findings have no file. Pointing them at an arbitrary one
-    // would annotate a line that has nothing to do with the problem.
+    // 无具体文件时不得生成虚假位置。
     const log = sarif({ findings: [finding({ file: null, line: null })] })
     assert.deepEqual(log.runs[0].results[0].locations, [])
   })
@@ -130,9 +117,7 @@ describe('locations', () => {
 
 describe('fingerprints', () => {
   test('are the baseline fingerprint, not a second identity', () => {
-    // Both answer "is this the same finding as before" and both must survive a
-    // line moving. Two schemes for one question eventually disagree about
-    // whether a finding is new.
+    // SARIF 和基线共用身份算法。
     const f = finding()
     assert.equal(sarif().runs[0].results[0].partialFingerprints.canshipFindingV2, fingerprintOf(f))
   })
@@ -152,8 +137,7 @@ describe('an incomplete scan is not a successful one', () => {
   })
 
   test('a partial scan does not', () => {
-    // A consumer reading zero results from a scan that crashed is owed the
-    // same distinction the exit codes make.
+    // 不完整扫描不得标记为执行成功。
     assert.equal(sarif({ partial: true }).runs[0].invocations[0].executionSuccessful, false)
   })
 
@@ -170,12 +154,7 @@ describe('an incomplete scan is not a successful one', () => {
 })
 
 describe('SARIF is not the one silent surface', () => {
-  // The terminal, the HTML report and --json all name what was hidden. SARIF is
-  // the only one a machine reads, and it said none of it: results: [] and
-  // executionSuccessful: true, with nothing anywhere to say that nineteen
-  // findings had been filed away in a baseline. A code-scanning dashboard
-  // showing a clean bill of health for a repository whose service_role key is
-  // in a baseline is the most expensive way this tool could be wrong.
+  // SARIF 也必须披露各种结果抑制。
   const notes = (log: any): string[] =>
     (log.runs[0].invocations[0].toolExecutionNotifications ?? []).map(
       (n: { message: { text: string } }) => n.message.text,
@@ -225,8 +204,7 @@ describe('SARIF is not the one silent surface', () => {
   })
 
   test('a clean scan with nothing hidden carries no notifications', () => {
-    // The field has to stay meaningful. If it were always present, nobody would
-    // read it.
+    // 无提示时不输出空通知。
     const log = JSON.parse(renderSarif(result({ findings: [] }), { version: '1' }))
     assert.equal(log.runs[0].invocations[0].toolExecutionNotifications, undefined)
   })

@@ -1,7 +1,6 @@
 'use client'
 
-// Test fixture: correct usage. The client only ever touches the anon key, and
-// anything sensitive goes through a server-side endpoint.
+// 客户端只使用公开键，敏感操作经服务端执行。
 import { createClient } from '@supabase/supabase-js'
 
 const supabase = createClient(
@@ -11,7 +10,7 @@ const supabase = createClient(
 
 export default function Page() {
   async function ask() {
-    // Correct: calls our own server route, so no secret reaches the browser
+    // 调用服务端接口，凭据不进入浏览器。
     await fetch('/api/chat', { method: 'POST' })
   }
 

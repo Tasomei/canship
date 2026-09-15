@@ -1,23 +1,11 @@
-/**
- * Shared frontend-framework knowledge.
- *
- * Extracted because "does this code get shipped to the browser?" is a question
- * both the secrets and exposure rules need to ask, and the answer directly sets
- * the severity: the same OpenAI key hardcoded in a server file means "it is in
- * your git history", while in a 'use client' component it means "every visitor
- * can read it right now".
- */
+/** 共享前端环境变量、客户端代码和 Supabase 识别逻辑。 */
 
 import type { ScanContext, ScanFile } from '../types.js'
 import { isEnvFile } from '../walker.js'
 import { parseEnvLine } from './envfile.js'
 import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
 
-/**
- * Environment variable prefixes that get bundled into the frontend.
- * A variable with one of these prefixes always ends up in JavaScript the
- * browser can download.
- */
+/** 框架用于向客户端公开变量的前缀。 */
 export const PUBLIC_PREFIXES = [
   'NEXT_PUBLIC_',
   'VITE_',
@@ -29,21 +17,7 @@ export const PUBLIC_PREFIXES = [
   'PUBLIC_',
 ]
 
-/**
- * Split a variable name into its words.
- *
- * This exists because `\b` does not do what it looks like it does here.
- * A word boundary sits between a word character and a non-word character, and
- * `_` **is** a word character — so `/\bSECRET\b/` does not match
- * `STRIPE_SECRET_KEY`, and `/\bSERVICE_ROLE\b/` does not match
- * `SUPABASE_SERVICE_ROLE_KEY`. Both patterns read as if they work. Neither
- * matched a single realistic environment variable name, which made the two
- * lists below dead code for as long as they existed.
- *
- *   SUPABASE_SERVICE_ROLE_KEY -> SUPABASE SERVICE ROLE KEY
- *   nextPublicApiKey          -> NEXT PUBLIC API KEY
- *   sentry-dsn                -> SENTRY DSN
- */
+/** 按分隔符拆分变量名，避免下划线影响词边界判断。 */
 export function nameWords(key: string): string[] {
   return key
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -52,20 +26,12 @@ export function nameWords(key: string): string[] {
     .map((w) => w.toUpperCase())
 }
 
-/**
- * The name as a phrase that can be searched exactly.
- * Sentinels at both ends so `_SECRET_` matches STRIPE_SECRET_KEY but not
- * SECRETARY_EMAIL.
- */
+/** 以边界标记构造短语，避免私密词误匹配普通单词。 */
 function namePhrase(key: string): string {
   return `_${nameWords(key).join('_')}_`
 }
 
-/**
- * Phrases that mark a value as meant for the browser.
- * NEXT_PUBLIC_SUPABASE_ANON_KEY and NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY are
- * public **by design**; flagging them is a false positive.
- */
+/** 表示按设计公开用途的词语。 */
 const PUBLIC_PHRASES = [
   'ANON',
   'PUBLISHABLE',
@@ -78,11 +44,7 @@ const PUBLIC_PHRASES = [
   'MAPBOX',
 ]
 
-/**
- * Phrases that must never be public.
- * Kept deliberately narrow — no generic KEY / TOKEN / AUTH, since those appear
- * in legitimately public variables all the time.
- */
+/** 明确的私密词；不将泛化的键或令牌词一律视为私密。 */
 const PRIVATE_PHRASES = [
   'SECRET',
   'SERVICE_ROLE',
@@ -94,38 +56,27 @@ const PRIVATE_PHRASES = [
   'CREDENTIALS',
 ]
 
-/** Whether the name says this value is meant for the browser */
+/** 判断变量是否表达公开用途。 */
 export function looksIntentionallyPublic(key: string): boolean {
   const phrase = namePhrase(key)
   return PUBLIC_PHRASES.some((p) => phrase.includes(`_${p}_`))
 }
 
-/** Whether the name says this value is a credential */
+/** 判断变量名是否明确表达私密用途。 */
 export function looksClearlyPrivate(key: string): boolean {
   const phrase = namePhrase(key)
   return PRIVATE_PHRASES.some((p) => phrase.includes(`_${p}_`))
 }
 
-/** Whether the name carries a public prefix; returns the matched prefix */
+/** 返回匹配的公开前缀。 */
 export function publicPrefixOf(key: string): string | null {
   return PUBLIC_PREFIXES.find((p) => key.startsWith(p)) ?? null
 }
 
-/**
- * Whether this file is shipped to the browser in full.
- *
- * v0.1 only trusts the unambiguous signals: the Next.js / React 'use client'
- * directive, and file types that are inherently client components. It does not
- * try to infer things like "server components under app/ run on the server" —
- * guessing wrong would invert the severity, and it is better to be conservative.
- */
+/** 根据客户端指令和文件类型判断代码是否面向浏览器。 */
 export function isClientCode(file: ScanFile): boolean {
   if (/\.(svelte|vue)$/.test(file.path)) return true
-  // Read to the first statement rather than to a fixed line count. The
-  // directive has to come before any code, but a licence header may come before
-  // *it* — and the previous five-line window meant a seven-line copyright
-  // banner turned a client component into a server one, which inverts the
-  // severity of everything the exposure and secrets rules then say about it.
+  // 跳过许可及注释头，检查首条实际语句。
   let inBlockComment = false
   for (const line of file.lines) {
     let rest = line
@@ -135,10 +86,7 @@ export function isClientCode(file: ScanFile): boolean {
       inBlockComment = false
       rest = rest.slice(close + 2)
     }
-    // What follows a closed comment on the same line is code, and skipping the
-    // whole line lost it: `/* licence */ 'use client'` is a legal first line,
-    // and treating it as a comment graded every credential in the file as
-    // server-side — the opposite severity, with the opposite advice attached.
+    // 同一行块注释结束后的代码仍需检查。
     rest = rest.replace(/\/\*[\s\S]*?\*\//g, ' ')
     const opens = rest.indexOf('/*')
     if (opens !== -1) {
@@ -147,41 +95,17 @@ export function isClientCode(file: ScanFile): boolean {
     }
     const trimmed = rest.trim()
     if (trimmed === '' || trimmed.startsWith('//')) continue
-    // First real line. The directive is here or it is nowhere.
+    // 客户端指令必须位于首条实际语句。
     return /^['"]use client['"]/.test(trimmed)
   }
   return false
 }
 
-/**
- * Whether this project actually uses Supabase.
- *
- * This gate matters more than it looks. Row Level Security is only *required*
- * in architectures where the database is exposed directly to the browser —
- * Supabase and PostgREST. A conventional backend talking to Postgres does not
- * need RLS at all, and flagging those projects would be a serious false
- * positive. So the RLS rule must not run until we are confident Supabase is in
- * play.
- */
-/**
- * The one word every content-based branch of isSupabaseProject needs.
- *
- * Not global, so it carries no lastIndex between calls and is safe to share.
- */
+/** 仅在具有 Supabase 使用证据的项目中启用相关规则。 */
+/** 共享非全局关键词模式，不维护匹配位置。 */
 const MENTIONS_SUPABASE = /supabase/i
 
-/**
- * @param files  The files to consider; defaults to every file in the scan.
- * @param scope  A path prefix to read the paths relative to, for asking this
- *   question about one package of a monorepo rather than the whole tree.
- *
- * The scope is a string rather than pre-rebased files, and that is the point.
- * The caller used to hand over `{ ...file, path: relative }` copies, which are
- * new objects — and the mask cache in mask.ts is a WeakMap keyed on the file
- * object, so every scope re-masked from scratch what the previous one had just
- * masked. Rebasing the path here instead lets the real ScanFile reach the
- * cache, so a file examined under three scopes is masked once.
- */
+/** files 指定候选文件；scope 指定应用路径范围。 */
 export function isSupabaseProject(
   ctx: ScanContext,
   files: ScanFile[] = ctx.files,
@@ -191,8 +115,7 @@ export function isSupabaseProject(
     name === 'SUPABASE_URL' || name.endsWith('_SUPABASE_URL')
 
   for (const file of files) {
-    // Every path test below is about position inside the scope, so they read
-    // the rebased path — while the mask lookups further down read `file`.
+    // 按作用域重新计算路径，掩码仍使用原文件对象。
     const path = scope === '' ? file.path : file.path.slice(scope.length + 1)
     if (path === 'supabase' || path.startsWith('supabase/')) return true
     if (path.includes('/supabase/migrations/')) return true
@@ -220,28 +143,12 @@ export function isSupabaseProject(
           }
         }
       } catch {
-        // Invalid JSON is somebody else's problem. What it must not do here is let
-        // a comment or a line of prose count as evidence about the project.
+        // 无效 JSON 不提供项目证据，避免将说明文本误判为依赖。
       }
       continue
     }
 
-    // Two full masking passes, asked of every file in the project — and every
-    // test below them needs the word "supabase" to be somewhere in this file.
-    // The import specifier carries `@supabase/`, both env checks want
-    // `SUPABASE_URL`, and the createServerClient branch tests for `supabase`
-    // outright. So the cheap question is asked first.
-    //
-    // It cannot lose a match. Masking only ever replaces a character with a
-    // space or leaves it alone; it never inserts one. So if the masked copy
-    // contains "supabase" at some offset, none of those eight characters can be
-    // a space that masking wrote, and the original holds the same eight
-    // characters at the same offset. A file this rejects had nothing to find.
-    //
-    // The gate is the difference between masking every file in a repository and
-    // masking the few that mention Supabase at all. On a 1,333-file project that
-    // does not use Supabase, this call sat at 41% of the entire scan, and every
-    // masking pass the scan performed was reached through it.
+    // 先检查关键词，避免为无关文件构造掩码。
     if (!MENTIONS_SUPABASE.test(file.content)) continue
 
     const commentsRemoved = commentsMaskedOf(file)
@@ -249,8 +156,7 @@ export function isSupabaseProject(
     const supabaseImport =
       /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s*)['"]@supabase\/(?:supabase-js|ssr)(?:\/[^'"]*)?['"]/g
     for (const match of commentsRemoved.matchAll(supabaseImport)) {
-      // The keyword has to sit in real code: an import quoted inside prose must
-      // not switch on a project-wide rule.
+      // 导入必须位于真实代码中，不能来自字符串示例。
       const start = match.index
       if (start !== undefined && /\b(?:from|import|require)\b/.test(code.slice(start, start + 10))) {
         return true
@@ -259,9 +165,7 @@ export function isSupabaseProject(
 
     if (/\b(?:[A-Z][A-Z0-9_]*_)?SUPABASE_URL\b/.test(code)) return true
 
-    // The variable name in a bracket access lives inside a string, which
-    // noiseMaskedOf blanks — so the access is confirmed against real code as
-    // well, keeping a documentation string from switching on the whole rule.
+    // 字符串索引访问需同时确认代码语境和变量名。
     const bracketAccess = /(?:process\.env|import\.meta\.env)\s*\[\s*['"]([^'"]+)['"]\s*\]/g
     for (const match of commentsRemoved.matchAll(bracketAccess)) {
       const start = match.index
@@ -278,7 +182,7 @@ export function isSupabaseProject(
   return false
 }
 
-/** Decode a JWT payload. Returns null when the input is not a valid JWT. */
+/** 解码 JWT 载荷；无效输入返回空值。 */
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
   const parts = token.split('.')
   if (parts.length !== 3) return null
@@ -291,14 +195,7 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
   }
 }
 
-/**
- * Whether a string is a Supabase service_role key.
- *
- * This is the hardest evidence canship produces: decode the JWT payload, and if
- * the role field says service_role, it is the database root password. There is
- * nothing to argue about. Handles both the legacy JWT format and the newer
- * sb_secret_ format.
- */
+/** 识别 Supabase 管理员 JWT 及新版私密密钥格式。 */
 export function isSupabaseServiceRole(value: string): boolean {
   if (value.startsWith('sb_secret_')) return true
   if (!value.startsWith('eyJ')) return false

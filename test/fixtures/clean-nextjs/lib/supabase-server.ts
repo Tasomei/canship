@@ -1,6 +1,4 @@
-// Test fixture: a session-scoped client. The anon key plus the request's
-// cookies means every query runs as whoever is calling, and Row Level Security
-// decides what they get.
+// 公开键结合请求会话，由行级安全决定可访问数据。
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 

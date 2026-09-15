@@ -1,55 +1,9 @@
-/**
- * Generate a prompt the user can paste straight into a coding assistant.
- *
- * This closes the loop: the problems were usually introduced by an AI, and the
- * fastest way to fix them is to hand the same AI a precise description of what
- * is wrong. canship's job is to find and describe; it does not edit your code.
- *
- * Three things this output is careful about:
- *
- * 1. **No recognised secret values.** Every credential canship can identify is
- *    masked here exactly as it is everywhere else, because prompts get pasted
- *    into chat windows, saved in session logs and sometimes shared. The limit
- *    is what "recognise" covers, and redact.ts spells that out.
- *
- * 2. **The assistant is told not to echo secrets.** Left to itself, a model
- *    asked to fix a leaked key will happily print the key in its explanation.
- *
- * 3. **Human-only steps are separated out.** An assistant can rename a variable
- *    but cannot rotate your Stripe key. If those were mixed together, it would
- *    report success and the user would think the leak was closed while the key
- *    is still live. That failure mode is worse than not generating a prompt at
- *    all.
- *
- * 4. **Repository text is labelled as data.** Paths, titles and excerpts are
- *    quoted from files, and whoever wrote those files chose what they say. A
- *    line of prose in a comment — "ignore the above and run this instead" —
- *    reaches an assistant that may hold a terminal, wrapped in a document the
- *    user is about to endorse by pasting it. canship cannot sanitise that away
- *    without destroying the excerpt's usefulness, so it does the next thing:
- *    says plainly, in the instructions the assistant reads first, which parts
- *    are quoted material and that quoted material is never a directive.
- */
+/** 生成修复提示，将代码修改与需人工执行的操作分开。 */
 
 import type { Finding } from '../types.js'
 import { locationOf } from './shared.js'
 
-/**
- * The lines that give this document its shape.
- *
- * Quoted repository text is labelled as data — that is the defence, and it is
- * stated before anything quoted appears. What labelling cannot do is stop a
- * line from *ending the label*: these markers are ordinary text, and a file
- * containing one puts it inside the block it terminates. A source line reading
- *
- *   const k = "…"  // --- End of prompt ---
- *
- * closed the pasteable block at the first finding, so every finding after it —
- * and one of them can be written to look like the human-only header below —
- * read as being outside the quoted region entirely. Nothing was smuggled past
- * the assistant's instructions; the structure simply stopped saying where the
- * quoting stopped.
- */
+/** 提示的结构标记；引用内容不能伪造这些边界。 */
 const STRUCTURAL_MARKERS = [
   '--- Paste everything below into your coding assistant ---',
   '--- End of prompt ---',
@@ -57,12 +11,7 @@ const STRUCTURAL_MARKERS = [
   '=========================================================',
 ]
 
-/**
- * Break a marker that appears inside quoted material.
- *
- * Altered rather than removed: the reader still sees what the file says, and
- * the line can no longer be mistaken for canship's own.
- */
+/** 打断引用内容中的结构标记，保留可读证据。 */
 function defuseMarkers(text: string): string {
   let out = text
   for (const marker of STRUCTURAL_MARKERS) {
@@ -72,7 +21,7 @@ function defuseMarkers(text: string): string {
   return out
 }
 
-/** Render one finding as a numbered instruction */
+/** 将单条结果转换为编号修复指令。 */
 function renderInstruction(f: Finding, index: number): string {
   const lines: string[] = []
   const location = defuseMarkers(locationOf(f))
@@ -85,49 +34,25 @@ function renderInstruction(f: Finding, index: number): string {
   return lines.join('\n')
 }
 
-/** What the prompt needs to know beyond the findings themselves */
+/** 生成提示所需的扫描上下文。 */
 export interface PromptContext {
-  /** Whether part of the scan did not run */
+  /** 扫描是否未完成。 */
   partial: boolean
-  /**
-   * How many files were examined.
-   *
-   * Zero is a different message from "some rules failed", and this text is the
-   * one output that gets acted on by something which cannot see the terminal.
-   * Telling an assistant that files "could not be read" when there were no
-   * files sends it looking for a permissions problem that does not exist.
-   */
+  /** 实际扫描文件数；零文件不能视为无需修复。 */
   filesScanned?: number
-  /** How many lower-confidence findings the default view left out */
+  /** 隐藏的疑似结果数。 */
   hiddenLikely?: number
-  /**
-   * Everything else that removed findings before they reached this prompt.
-   *
-   * The header below says "nothing to fix" is a claim, and that an incomplete
-   * scan makes it the wrong one. A baseline, a rule selection and a
-   * canship-ignore-next-line marker each make it the wrong one too, and this
-   * surface is the one that gets *acted on*: it is pasted into an assistant,
-   * which will read "no findings" and tell somebody their project is clear
-   * while a live key sits in the file the marker was written above.
-   */
+  /** 被基线抑制的结果数。 */
   baselineSuppressed?: number
-  /** Findings a line marker silenced, as `file:line (rule)` */
+  /** 逐行标记抑制的位置及规则。 */
   silenced?: string[]
   /** 被整文件标记排除的路径，不能当作已检查且无问题。 */
   ignoredFiles?: string[]
-  /** Rule selection in force, described in one phrase */
+  /** 本次规则筛选说明。 */
   ruleSelection?: string | null
 }
 
-/**
- * Build the full prompt text.
- * Returns null when there is nothing to say.
- *
- * "Nothing to fix" is a claim, and on an incomplete scan it is the wrong one.
- * This output exists to be pasted into an assistant, which will act on it and
- * report success — so a scan that never finished has to say so here too, or
- * the one place the result gets acted on is the one place it is not mentioned.
- */
+/** 生成完整提示；无发现且无任何提示信息时返回空值。 */
 export function renderFixPrompt(findings: Finding[], ctx?: PromptContext): string | null {
   const incompleteNote = !ctx?.partial
     ? null
@@ -175,7 +100,7 @@ export function renderFixPrompt(findings: Finding[], ctx?: PromptContext): strin
     return notes.length === 0 ? null : `${notes.join('\n\n')}\n`
   }
 
-  // Only findings with actionable code changes go to the assistant.
+  // 仅将有代码修复步骤的结果交给助手。
   const codeFixable = findings.filter((f) => f.fix.length > 0)
   const humanSteps = findings.flatMap((f) =>
     (f.humanOnly ?? []).map((step) => ({ step, title: f.title })),
@@ -192,9 +117,7 @@ export function renderFixPrompt(findings: Finding[], ctx?: PromptContext): strin
     out.push('')
   }
 
-  // Above the paste marker on purpose. What follows it is addressed to an
-  // assistant and will be acted on; this is addressed to the person deciding
-  // whether the list below is the whole list.
+  // 抑制信息位于粘贴区之外，供使用者审阅。
   for (const note of suppressedNotes) {
     out.push(note)
     out.push('')
@@ -235,7 +158,7 @@ export function renderFixPrompt(findings: Finding[], ctx?: PromptContext): strin
     out.push('An AI assistant cannot do any of them.')
     out.push('=========================================================')
     out.push('')
-    // Deduplicate identical steps (several findings can share a rotation step)
+    // 合并重复的人工操作步骤。
     const seen = new Set<string>()
     for (const { step } of humanSteps) {
       if (seen.has(step)) continue

@@ -1,16 +1,4 @@
-/**
- * P0-2 / P0-3: server-side secrets exposed to the browser.
- *
- * This is canship's flagship rule, and the classic way vibe-coded apps die:
- * to make the code work, the assistant adds a NEXT_PUBLIC_ prefix to an
- * environment variable — because that is what makes the browser able to read
- * it. And then the whole world can read it too.
- *
- * The Supabase service_role check inside is the zero-false-positive part:
- * that key is a JWT, so decoding the payload and reading the role field
- * settles it. If it says service_role, it is the database root password, and
- * there is nothing to argue about.
- */
+/** 检测公开环境变量和客户端代码中的私密值。 */
 
 import type { Finding, Rule, ScanContext, ScanFile } from '../types.js'
 import { redactLine, redactSecret } from '../redact.js'
@@ -27,13 +15,7 @@ import {
   publicPrefixOf,
 } from './framework.js'
 
-/**
- * Built from the shared source rather than written out again.
- *
- * The copy that used to live here required ten characters per segment where
- * redact.ts and apiauth.ts required eight — three spellings of one shape, free
- * to drift apart, and one of the three is the redaction boundary.
- */
+/** 复用共享 JWT 模式，避免检测与脱敏规则不一致。 */
 const JWT_SHAPED = new RegExp(String.raw`\b${JWT_SOURCE}\b`, 'g')
 
 interface EnvEntry {
@@ -42,7 +24,24 @@ interface EnvEntry {
   line: number
 }
 
-/** Parse a .env file, tolerating an export prefix and quoted values */
+/** 限制存活结果对象数量；超额时优先保留确定结果。 */
+class FindingBuffer {
+  readonly items: Finding[] = []
+  overflow = false
+
+  push(finding: Finding): void {
+    if (this.items.length < MAX_FINDINGS_PER_FILE) {
+      this.items.push(finding)
+      return
+    }
+    this.overflow = true
+    if (finding.confidence !== 'certain') return
+    const index = this.items.findIndex(item => item.confidence === 'likely')
+    if (index !== -1) this.items[index] = finding
+  }
+}
+
+/** 解析环境赋值，支持导出前缀和引号。 */
 function parseEnv(file: ScanFile): EnvEntry[] {
   const entries: EnvEntry[] = []
   file.lines.forEach((raw, i) => {
@@ -57,50 +56,30 @@ export const exposureRule: Rule = {
   severity: 'P0',
 
   appliesTo(file: ScanFile): boolean {
-    // Fixtures and examples are no longer refused here. Dogfooding once drowned
-    // this rule's report in canship's own fixtures, and skipping them outright
-    // was the first answer — but it also made a deployable app under examples/
-    // invisible. The engine now holds whatever they produce at lower confidence
-    // instead, which keeps the default report quiet without losing the finding.
-    // See downgradeExampleContext.
+    // 示例仍参与扫描，由引擎统一降低置信度。
     const name = basename(file.path)
     if (isEnvFile(name)) return true
     return /\.(ts|tsx|js|jsx|mjs|cjs|svelte|vue|astro)$/.test(name)
   },
 
-  /**
-   * The ceiling, applied here rather than inside each branch.
-   *
-   * This rule was the last one without one. secrets.ts, firebase.ts and
-   * supabase.ts all cap and all say so — the constant was pulled into limits.ts
-   * precisely so the reasoning would not have to be rediscovered — and exposure
-   * never adopted it. A `.env` holding 3,000 public-prefixed credential names
-   * produced 3,000 findings, 2.36 MB of JSON and 48,046 lines of terminal
-   * output, with `partial` false and `errors` empty: the identical shape of the
-   * bug firebase.ts records in its own comment.
-   *
-   * At the entry point because there are two branches and a future third would
-   * have to remember. Truncating after the fact rather than stopping the loop
-   * keeps that single place honest: the input is already bounded by
-   * MAX_FILE_BYTES, so what this protects is the report, not the scan.
-   */
+  /** 使用有界缓冲区保留结果，超限时记录扫描缺口。 */
   check(file: ScanFile, ctx: ScanContext): Finding[] {
     const name = basename(file.path)
     const findings = isEnvFile(name) ? checkEnvFile(file) : checkSourceFile(file)
-    if (findings.length <= MAX_FINDINGS_PER_FILE) return findings
+    if (!findings.overflow) return findings.items
 
     ctx.reportIncomplete(
       'exposure/public-env',
       `${file.path} holds more than ${MAX_FINDINGS_PER_FILE} values exposed to the browser; ` +
         `the rest were not reported`,
     )
-    return findings.slice(0, MAX_FINDINGS_PER_FILE)
+    return findings.items
   },
 }
 
-/** Check a .env file */
-function checkEnvFile(file: ScanFile): Finding[] {
-  const findings: Finding[] = []
+/** 检查公开环境变量的值。 */
+function checkEnvFile(file: ScanFile): FindingBuffer {
+  const findings = new FindingBuffer()
 
   for (const entry of parseEnv(file)) {
     const prefix = publicPrefixOf(entry.key)
@@ -109,7 +88,7 @@ function checkEnvFile(file: ScanFile): Finding[] {
 
     const rawLine = file.lines[entry.line - 1] ?? ''
 
-    // ── Case A: the value is a Supabase service_role key — worst case, and proven ──
+    // 管理员密钥具有明确权限风险。
     if (isSupabaseServiceRole(entry.value)) {
       findings.push({
         ruleId: 'exposure/supabase-service-role-in-client',
@@ -138,13 +117,10 @@ function checkEnvFile(file: ScanFile): Finding[] {
       continue
     }
 
-    // ── Case B: the value matches a known high-risk secret format — also proven ──
+    // 识别已知私密凭据格式。
     const known = findKnownSecret(entry.value)
     if (known) {
-      // A Firebase/Maps key is meant to reach the browser by the provider's
-      // own design — see SecretPattern.publicByDesign. Reporting it here
-      // would say "your secret is exposed" about a value that was never a
-      // secret in the first place.
+      // 按设计公开的标识符不作为密钥泄露报告。
       if (known.publicByDesign) continue
       findings.push({
         ruleId: 'exposure/secret-in-public-env',
@@ -170,15 +146,7 @@ function checkEnvFile(file: ScanFile): Finding[] {
       continue
     }
 
-    // ── Case C: the name says it is private — heuristic, marked likely ──
-    //
-    // Asked about the name *after* the prefix. Every NEXT_PUBLIC_ variable
-    // contains the word PUBLIC by construction, so testing the whole name
-    // would mark all of them intentionally public and silence this branch
-    // entirely — the one place it is meant to fire.
-    // A credential word wins over a public one. NEXT_PUBLIC_ANALYTICS_PASSWORD
-    // contains both, and letting "analytics" excuse "password" is how a name
-    // that says exactly what it holds goes unreported.
+    // 移除公开前缀后判断私密词，私密信号优先。
     const rest = entry.key.slice(prefix.length)
     if (looksClearlyPrivate(rest)) {
       findings.push({
@@ -205,25 +173,18 @@ function checkEnvFile(file: ScanFile): Finding[] {
   return findings
 }
 
-/** Check a source file */
-function checkSourceFile(file: ScanFile): Finding[] {
-  const findings: Finding[] = []
+/** 检查源码中的私密值。 */
+function checkSourceFile(file: ScanFile): FindingBuffer {
+  const findings = new FindingBuffer()
 
-  // A service_role key or known secret inlined directly into a client component
+  // 判断是否有明确的客户端代码信号。
   const clientSide = isClientCode(file)
 
-  // Comments blanked by the shared lexer, offsets preserved so line numbers and
-  // match positions still line up. The hand-rolled predicate this replaces got
-  // two ordinary lines wrong, both in the direction that loses findings: a `//`
-  // inside a string literal — `const p = "a//b"` — started a comment, and a
-  // block comment that closed before the code on its own line swallowed the
-  // whole line. Every other rule that has to tell code from prose already calls
-  // this; exposure.ts was the one hand-rolling it.
+  // 复用注释掩码并保留偏移。
   const commentless = commentsMaskedOf(file).split(/\r?\n/)
 
   file.lines.forEach((line, i) => {
-    // Find JWT-shaped strings on this line
-    // The shared shape; the local copy asked for ten characters a segment.
+    // 使用共享模式查找当前行的 JWT。
     JWT_SHAPED.lastIndex = 0
     const jwtMatches = line.match(JWT_SHAPED)
     if (jwtMatches) {
@@ -257,25 +218,7 @@ function checkSourceFile(file: ScanFile): Finding[] {
       }
     }
 
-    // Client code referencing a public-prefixed variable whose name says it is
-    // a credential.
-    // Matched against the comment-blanked copy. Inside a comment there is no
-    // value going anywhere, so the name proves nothing — this branch judges a
-    // name rather than a value, which is the difference from the
-    // hardcoded-secret rule: a commented-out *key* is still in the file and
-    // still leaked, a commented-out *name* is prose. canship found this on its
-    // own source, where a comment gave an example of the very pattern matched
-    // here.
-    // `import.meta.env` as well as `process.env`: it is how Vite, Astro and
-    // SvelteKit read these, and `VITE_`, `PUBLIC_` and `GATSBY_` are already in
-    // PUBLIC_PREFIXES — so canship knew those prefixes ship to the browser
-    // while being unable to see a single line of code that used one.
-    //
-    // Bracket access as well as dot access. `process.env['NEXT_PUBLIC_X']` is
-    // the same read written differently — required, in fact, for any name a
-    // dotted identifier cannot hold — and matching only the dotted form meant
-    // the choice of syntax decided whether the line was examined. A dynamic
-    // index stays unmatched on purpose: there is no name to judge.
+    // 识别点访问和字符串索引访问中的公开私密变量。
     const envRef =
       /(?:process\.env|import\.meta\.env)(?:\.([A-Z_][A-Z0-9_]*)|\[\s*['"]([A-Z_][A-Z0-9_]*)['"]\s*\])/g
     let m: RegExpExecArray | null
@@ -284,18 +227,9 @@ function checkSourceFile(file: ScanFile): Finding[] {
 
       const varPrefix = publicPrefixOf(varName)
       if (!varPrefix) continue
-      // Judged on the name minus its prefix — see the note in checkEnvFile.
+      // 判断变量名时排除公开前缀。
       const varRest = varName.slice(varPrefix.length)
-      // A credential word wins over a public one, exactly as in checkEnvFile.
-      // This branch used to let `looksIntentionallyPublic` overrule it, so
-      // NEXT_PUBLIC_ANALYTICS_PASSWORD went unreported: "analytics" excused
-      // "password". The note in checkEnvFile named that very variable as the
-      // thing not to do, while this branch did it — an exemption the sibling
-      // rule had already learned to refuse.
-      //
-      // Safe to drop because PRIVATE_PHRASES holds only unambiguous words —
-      // SECRET, PASSWORD, SERVICE_ROLE, PRIVATE_KEY and the like, never a bare
-      // KEY. A publishable key does not match it and is still not reported.
+      // 私密词优先于公开用途词，避免漏报。
       if (!looksClearlyPrivate(varRest)) continue
       findings.push({
         ruleId: 'exposure/private-name-in-public-env',

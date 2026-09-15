@@ -1,21 +1,9 @@
-/**
- * Self-contained HTML report.
- *
- * One file, no external requests, no fonts or scripts from a CDN — it has to
- * work offline, from a file:// URL, and inside a corporate network that blocks
- * everything. The whole point is that it can be handed to someone else.
- *
- * Which is also the risk: a report names your files, your table names and the
- * shape of your project. Recognised secrets are masked the same way as
- * everywhere else, and the ones redaction cannot recognise are the reason the
- * report carries a banner saying what it holds: "shareable" and "safe to post
- * publicly" are not the same thing.
- */
+/** 生成自包含的离线 HTML 报告，不加载外部资源。 */
 
 import type { Finding, ScanResult } from '../types.js'
 import { locationOf, plural, skipPhrase, verdictOf } from './shared.js'
 
-/** Escape text for safe interpolation into HTML */
+/** 转义插入 HTML 的文本。 */
 function esc(s: string): string {
   return s
     .replace(/&/g, '&amp;')
@@ -24,12 +12,12 @@ function esc(s: string): string {
     .replace(/"/g, '&quot;')
 }
 
-/** Turn plain paragraphs into HTML, preserving blank-line breaks */
+/** 逐段渲染并保留段落结构。 */
 function paragraphs(parts: string[]): string {
   return parts.map((p) => `<p>${esc(p.trim())}</p>`).join('')
 }
 
-/** Linkify bare URLs so rotation links are clickable */
+/** 将文本中的 URL 转为可点击链接。 */
 function linkify(html: string): string {
   return html.replace(
     /https?:\/\/[^\s<>"')]+/g,
@@ -69,21 +57,15 @@ function renderFinding(f: Finding, index: number): string {
 
 export interface HtmlOptions {
   root: string
-  /** ISO timestamp for the report header */
+  /** 报告生成时间。 */
   generatedAt: string
-  /** How many lower-confidence findings the default report does not expand */
+  /** 默认视图隐藏的疑似结果数。 */
   hiddenLikely?: number
-  /**
-   * How many findings a baseline removed from this report.
-   *
-   * This report is the shareable one — it gets handed to someone who was not
-   * at the terminal. If a baseline emptied it, that reader has no other way to
-   * find out, so the number travels with the document.
-   */
+  /** 基线抑制数量；独立报告必须披露这一信息。 */
   baselineSuppressed?: number
-  /** Baselined findings that no longer occur */
+  /** 已过期的基线条目数。 */
   baselineStale?: number
-  /** Which file did the suppressing */
+  /** 应用的基线文件路径。 */
   baselinePath?: string | null
 }
 
@@ -92,27 +74,22 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
   const hiddenLikely = opts.hiddenLikely ?? 0
   const baselineSuppressed = opts.baselineSuppressed ?? 0
   const baselineStale = opts.baselineStale ?? 0
-  // Severity decides the verdict; confidence decides how sure it is. See the
-  // note on Severity in types.ts for why those were once the same number.
+  // 联合严重度和置信度计算报告结论。
   const { blocking: certain, minor, unsure } = verdictOf(findings)
 
   const verdict =
     findings.length === 0
       ? result.filesScanned === 0
-        ? // Examined nothing, so there is nothing to report either way.
+        ? // 未扫描文件时不显示通过结论。
           `<div class="verdict warn">No files were scanned &mdash; nothing was checked</div>`
         : result.partial
-          ? // Never the green banner on a partial scan: it reads as a guarantee,
-            // and a scan that skipped files cannot make one.
+          ? // 扫描不完整时不得显示正常通过。
             hiddenLikely > 0
               ? `<div class="verdict warn">No certain findings &mdash; ${hiddenLikely} lower-confidence ${plural(hiddenLikely, 'finding')} hidden, and not everything was checked</div>`
               : `<div class="verdict warn">No findings &mdash; but not everything was checked</div>`
           : hiddenLikely > 0
             ? `<div class="verdict warn">No certain findings &mdash; ${hiddenLikely} lower-confidence ${plural(hiddenLikely, 'finding')} hidden</div>`
-            : // The green banner is a statement about the project. A baseline
-              // makes it a statement about the diff instead, and this document
-              // outlives the run that produced it — whoever opens it later has
-              // only the banner to go on.
+            : // 基线抑制结果时明确说明，避免误报为项目无问题。
               baselineSuppressed > 0
               ? `<div class="verdict warn">No new findings &mdash; ${baselineSuppressed} ${plural(baselineSuppressed, 'finding')} accepted by the baseline</div>`
               : `<div class="verdict clean">No exposed credentials found</div>`
@@ -125,8 +102,7 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
   const body =
     findings.length === 0
       ? result.filesScanned === 0
-        ? // The checklist below would be a false statement here: none of those
-          // checks had any input to run against.
+        ? // 零文件扫描不能显示已完成的检查清单。
           `<div class="clean-note">
            <p>canship found no files it could read at this path, so none of its checks ran.
            <strong>This is not a clean result &mdash; it is an empty one.</strong></p>
@@ -162,8 +138,7 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
       ? `<p class="opted-out">${result.ignored.length} ${plural(result.ignored.length, 'file')} excluded by <code>canship-ignore-file</code>: ${result.ignored.map((f) => `<code>${esc(f)}</code>`).join(', ')}</p>`
       : ''
 
-  // Travels with the document, because whoever opens this later has no other
-  // way to learn that some checks were switched off before it was written.
+  // 披露本次规则筛选范围。
   const selection = result.ruleSelection
   const ruleSelection =
     selection === null
@@ -174,8 +149,7 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
             : `everything except <code>${selection.skip.map(esc).join('</code>, <code>')}</code>`
         }${selection.removed > 0 ? `, hiding ${selection.removed} ${plural(selection.removed, 'finding')}` : ''}.</p>`
 
-  // Named rather than counted, and every location escaped: a path is chosen by
-  // whoever can add a file to the repository.
+  // 列出被抑制的位置并转义路径。
   const silenced =
     result.ignoredFindings.length > 0
       ? `<p class="opted-out">${result.ignoredFindings.length} ${plural(result.ignoredFindings.length, 'finding')} silenced by <code>canship-ignore-next-line</code>: ${result.ignoredFindings
@@ -188,8 +162,7 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
       ? `<p class="opted-out">${hiddenLikely} lower-confidence ${plural(hiddenLikely, 'finding')} hidden. Re-run with <code>--all --report</code> to include ${hiddenLikely === 1 ? 'it' : 'them'}.</p>`
       : ''
 
-  // Only when there *are* findings — with none, the clean-note above already
-  // carries this, and saying it twice in one document reads as two baselines.
+  // 无结果时已有基线说明，避免重复。
   const baselineNotice =
     baselineSuppressed > 0 && findings.length > 0
       ? `<p class="opted-out">${baselineSuppressed} ${plural(baselineSuppressed, 'finding')} hidden by the baseline${opts.baselinePath ? ` (<code>${esc(opts.baselinePath)}</code>)` : ''}. Those problems still exist.</p>`
@@ -200,17 +173,13 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
       ? `<p class="opted-out">${baselineStale} baseline ${baselineStale === 1 ? 'entry' : 'entries'} no longer ${baselineStale === 1 ? 'matches' : 'match'} anything &mdash; re-run <code>--baseline-write</code> to prune.</p>`
       : ''
 
-  // Shown whether or not there were findings: "we did not look at these" is
-  // information the reader needs in both cases.
+  // 无论是否发现问题，都披露未检查的内容。
   const incomplete = result.partial
     ? `<div class="incomplete">
          <h2>Not everything was checked</h2>
          <ul>
            ${
-             // Reachable with findings present: a repository whose working
-             // tree is entirely gitignored still has a git history, and the
-             // history rule reads it. The findings are real; the file-based
-             // checks simply never ran.
+             // 工作区零文件时仍可能产生 Git 历史结果。
              result.filesScanned === 0
                ? `<li>no files could be read at this path, so every file-based check was skipped</li>`
                : ''

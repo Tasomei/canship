@@ -1,12 +1,4 @@
-/**
- * P0-1: secrets hardcoded in source code.
- *
- * Division of labour: this rule **deliberately skips .env files.**
- * Holding secrets is what .env is for, so flagging it is pure noise. The two
- * real risks around .env are handled elsewhere:
- *   - a secret carrying a public prefix, bundled into the frontend -> exposure.ts
- *   - the .env file itself being committed to git                  -> gitleak.ts
- */
+/** 检测源码中的硬编码凭据；普通环境文件交由公开暴露和 Git 规则处理。 */
 
 import type { Finding, Rule, ScanContext, ScanFile } from '../types.js'
 import { redactLine } from '../redact.js'
@@ -23,29 +15,20 @@ export const secretsRule: Rule = {
   severity: 'P0',
 
   appliesTo(file: ScanFile): boolean {
-    // The .env family is handled entirely by the exposure rule (see header) —
-    // with one exception. A template like `.env.example` is not where secrets
-    // are supposed to live; it is the file people commit *instead of* the one
-    // holding them, which makes a real key in it public by design. Three rules
-    // each had a good reason to skip it, and between them nothing looked
-    // inside at all.
+    // 环境模板仍检查硬编码凭据，普通环境文件不重复处理。
     if (isEnvFile(basename(file.path))) return file.isExampleContext
     return true
   },
 
   check(file: ScanFile, ctx: ScanContext): Finding[] {
     const findings: Finding[] = []
-    // Built once per file instead of counted from the start of the file for
-    // every match. See offsets.ts.
+    // 每个文件只构建一次行号索引。
     const lineStarts = lineStartsOf(file.content)
 
     for (const pat of SECRET_PATTERNS) {
-      // A value the issuing provider designed to ship in client code (a
-      // Firebase apiKey, a Maps Platform key) is not a leak here whatever the
-      // file is — see the note on SecretPattern.publicByDesign.
+      // 按设计公开的标识符不作为泄露报告。
       if (pat.publicByDesign) continue
-      // The pattern carries the g flag and is reused, so lastIndex must be
-      // reset before every use.
+      // 重置共享全局正则的匹配位置。
       pat.pattern.lastIndex = 0
       let match: RegExpExecArray | null
 
@@ -53,12 +36,7 @@ export const secretsRule: Rule = {
         const secret = match[0]
         if (isPlaceholder(secretPartOf(match, pat))) continue
         if (pat.ignoreIf?.(match)) continue
-        // A ceiling, and one that says so. A file under the size cap can still
-        // hold thousands of secret-shaped strings, and every one of them used
-        // to become a finding with its own paragraphs of explanation — enough
-        // to make the report, the HTML and the JSON larger than the input by
-        // orders of magnitude. Stopping is fine; stopping quietly would be the
-        // same silence this rule has been fixing all round.
+        // 达到结果上限后停止，并记录未报告部分。
         if (findings.length >= MAX_FINDINGS_PER_FILE) {
           ctx.reportIncomplete(
             'secrets/hardcoded',
@@ -71,10 +49,7 @@ export const secretsRule: Rule = {
         const line = lineNumberAt(lineStarts, match.index)
         const rawLine = file.lines[line - 1] ?? ''
 
-        // The same secret is a very different problem depending on where it
-        // lives: in client code every visitor can read it, in server code it is
-        // "this is now in your git history". Getting that wrong would misdirect
-        // the user's fix priority.
+        // 客户端与服务端代码的暴露影响不同。
         const clientSide = isClientCode(file)
 
         const parts: string[] = [pat.impact]
@@ -104,8 +79,7 @@ export const secretsRule: Rule = {
           `Make sure .env is listed in .gitignore.`,
         ]
 
-        // Rotation cannot be automated and is the only step that actually
-        // revokes the leaked key, so it is kept out of the code-fix list.
+        // 凭据轮换归入需人工执行的步骤。
         const humanOnly = [
           `Rotate this ${pat.rotateLabel ?? pat.name}${pat.rotateAt ? ` at ${pat.rotateAt}` : ''}. Treat the old one as compromised — ` +
             (clientSide
@@ -113,12 +87,7 @@ export const secretsRule: Rule = {
               : `if this file was ever pushed, assume it has already been scraped.`),
         ]
 
-        // Tests, fixtures, examples and docs are where fake keys live, so a
-        // match here is usually scaffolding — but only usually. A real key
-        // committed in a test file is exactly as stolen as one in src/, and
-        // waving the whole directory through is how those go unreported for
-        // years. Lower confidence, hidden by default, still findable with
-        // --all; add canship-ignore-file to silence a file for good.
+        // 示例凭据保留为疑似结果，可通过忽略标记排除。
         const scaffolding = file.isExampleContext
 
         findings.push({

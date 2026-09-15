@@ -1,54 +1,19 @@
-/**
- * Project file traversal.
- *
- * Key decision: **if the target is a git repository, ask git for the file list**
- * (`git ls-files -c -o --exclude-standard`).
- * That hands .gitignore parsing back to git itself — zero code, zero mistakes,
- * and we avoid reimplementing those notoriously fiddly matching rules.
- * Only non-git projects fall back to walking the tree by hand.
- */
+/** 发现项目文件，合并 Git 清单与凭据文件遍历结果。 */
 
 import { readdirSync, readFileSync, statSync, lstatSync, openSync, readSync, closeSync } from 'node:fs'
 import { join, relative, sep, extname, basename } from 'node:path'
 import type { GitStatus, ScanFile, SkippedFile } from './types.js'
 import { execGitSync, hasContainedGitMetadata, hasGitMetadataAbove, resolveGitExecutable } from './git.js'
 
-/**
- * Per-file size cap.
- *
- * This used to be 512 KiB, which is smaller than plenty of hand-written files —
- * a long SQL migration, a generated types file, a fat JSON config. Anything
- * above it was skipped in silence, so a key sitting at the end of such a file
- * produced a clean report. The cap is now high enough that real source is
- * always read, and whatever still exceeds it is reported as skipped rather
- * than quietly dropped.
- */
+/** 单文件读取上限。 */
 const MAX_FILE_BYTES = 2 * 1024 * 1024
+const MAX_SCAN_BYTES = 128 * 1024 * 1024
+const MAX_SCAN_FILES = 10_000
 
-/**
- * How deep the walk goes — for every purpose it serves.
- *
- * Set from what real projects actually look like rather than from a guess. At
- * eight, two healthy repositories reported an incomplete scan on their first
- * run: a Next.js app router with route groups reaches nine levels without
- * anyone trying — `apps/dashboard/src/app/[locale]/(app)/(sidebar)/account/…`
- * is ordinary. A limit that fires on ordinary projects is a warning people
- * learn to ignore, which costs more than the limit saves.
- *
- * One walk now answers two questions, so this bounds both: the hunt for
- * gitignored credential files, and — for a non-git project, where git cannot
- * supply the list — every file that gets scanned at all. That second use is
- * newer and stricter than what it replaced, which had no limit; sixteen is
- * kept deliberately rather than inherited, on the grounds that it sits seven
- * levels clear of what the deepest ordinary layout reaches, and that reaching
- * it is never silent.
- *
- * The cap still exists, and reaching it still produces a receipt. It is simply
- * far enough out that reaching it means something.
- */
+/** 目录遍历深度上限。 */
 const MAX_WALK_DEPTH = 16
 
-/** Directories skipped outright when walking by hand */
+/** 手动遍历时直接排除的目录。 */
 const SKIP_DIRS = new Set([
   'node_modules',
   '.git',
@@ -66,8 +31,7 @@ const SKIP_DIRS = new Set([
   '.venv',
   'venv',
   '.cache',
-  // Build output and tool caches from ecosystems beyond JavaScript. Walking
-  // these to look for credential files is pure cost.
+  // 排除其他生态的构建产物和工具缓存。
   '.dart_tool',
   '.gradle',
   'Pods',
@@ -79,68 +43,34 @@ const SKIP_DIRS = new Set([
   '.pnpm-store',
 ])
 
-/**
- * Third-party code that happens to live in the repository.
- *
- * Split out of SKIP_DIRS because SKIP_DIRS only ever governed the hand-rolled
- * walk. `git ls-files` answers without consulting it, so whether a dependency
- * tree got scanned came down to whether `.git` existed: the same directory
- * holding `vendor/lib/dep.ts` reported a hardcoded key when it was a git
- * repository and nothing when it was not.
- *
- * Only the dependency directories are applied to both paths, not the whole of
- * SKIP_DIRS. Build output is normally gitignored, so git does not list it
- * anyway, and a project that *does* commit its `dist/` is committing its own
- * code — the vendored trees below are the ones that are somebody else's.
- * Go and Composer projects routinely commit `vendor/`, and reporting the
- * example keys in a third-party test fixture is the false positive the README
- * says costs the user's trust for good.
- */
+/** 统一排除第三方目录，包括 Git 跟踪的文件。 */
 const VENDORED_DIRS = new Set(['node_modules', 'vendor', 'Pods', '.yarn', '.pnpm-store'])
 
-/** Whether a path runs through a directory holding somebody else's code */
+/** 判断路径是否位于第三方目录内。 */
 function isVendored(relPath: string): boolean {
   return relPath.split('/').some((segment) => VENDORED_DIRS.has(segment))
 }
 
-/**
- * Extensions included in the scan.
- *
- * This list can be wider than v0.1's target stack (Next.js + Supabase): the
- * "hardcoded secret in source" rule is plain text matching and completely
- * language-agnostic, so including mobile and backend languages adds no false
- * positive risk.
- */
+/** 按扩展名选择候选源码和配置。 */
 const SCAN_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
   '.py', '.go', '.rb', '.php', '.java', '.rs', '.cs',
   '.dart', '.kt', '.kts', '.swift',
   '.json', '.yaml', '.yml', '.toml',
   '.sql',
-  // Firebase security rules (firestore.rules / storage.rules)
+  // Firebase 规则文件。
   '.rules',
   '.env', '.sh', '.bash', '.ps1',
   '.svelte', '.vue', '.astro',
 ])
 
-/**
- * Extensions whose contents *are* a credential.
- *
- * The README promised private-key detection long before this list existed, and
- * `.pem` was not in it — so the single most common way to ship a private key
- * was invisible. Certificates (.crt, .cer) are deliberately absent: they are
- * the public half and leak nothing.
- */
+/** 可能直接包含凭据的文件扩展名。 */
 const CREDENTIAL_EXTENSIONS = new Set(['.pem', '.key', '.ppk', '.asc', '.p8', '.pkcs8'])
 
-/** Configuration formats that routinely hold connection strings and tokens */
+/** 常见凭据配置文件格式。 */
 const CONFIG_EXTENSIONS = new Set(['.properties', '.ini', '.conf', '.cfg', '.tfvars', '.tf'])
 
-/**
- * Files where the *name* is the tell and there is no extension to match on.
- * Every one of these is a well-known place to keep a credential, and none of
- * them would be reached by an extension list.
- */
+/** 根据文件名识别无扩展名凭据文件。 */
 const CREDENTIAL_FILENAMES = new Set([
   '.npmrc',
   '.netrc',
@@ -157,126 +87,37 @@ const CREDENTIAL_FILENAMES = new Set([
   'id_ed25519',
 ])
 
-/**
- * How much of an unknown file to read before deciding what kind of file it is.
- *
- * This window answers one question — text or binary — and nothing else. It used
- * to decide whether the file was worth scanning at all: the probe looked for a
- * credential inside these 4 KiB and the file was opened for real only if it
- * found one. A `terraform.tfstate` with its password at byte 5,000 was
- * therefore never scanned, never listed in `skipped`, and left `partial` false
- * — a silent miss of precisely the file type the probe was added for, and a
- * cap that the README promises is always reported.
- *
- * So the gate is now the cheap, decidable question, and a file that passes it
- * is read in full under MAX_FILE_BYTES like any other. That limit *is*
- * reported when it bites.
- */
+/** 探测窗口只判断文本或二进制，不决定是否含有凭据。 */
 const PROBE_BYTES = 4096
 
-/**
- * The escape hatch, written by the user in their own file.
- *
- * It exists because of what changed around it: secret-shaped strings in test
- * directories are no longer waved through, since a real key in `test/` is just
- * as stolen as one anywhere else. That is the right default, and it needs a way
- * out for the projects where the fakes are the point — security fixtures,
- * teaching material, canship's own test data.
- *
- * Deliberately explicit and deliberately per-file: a directory-wide rule is the
- * blanket exemption this replaces.
- *
- * It has to be the whole content of its line. A plain substring search looked
- * fine until canship scanned itself and found that walker.ts and secrets.ts had
- * silently excluded themselves — both merely *mention* the marker, in a comment
- * explaining it. The same trap catches any documentation about this feature,
- * and it turns one stray word in a comment into a blindfold over a whole file.
- */
-/**
- * The grouping in both markers is load-bearing, and the reason is performance
- * rather than meaning.
- *
- * Written the obvious way — `\s*(?:comment syntax)?\s*` — the two runs of
- * whitespace can both match the same spaces whenever the comment syntax is
- * absent, so the engine has to try every way of dividing them before it can
- * conclude the line does not match. That is quadratic in the length of the
- * line, exactly: measured at 12ms, 186ms and 2,983ms for 6k, 25k and 100k
- * characters. A scan is a loop over every line of every file, and a line is
- * bounded only by the 2 MiB file cap, so a single long line of whitespace in a
- * repository canship was pointed at could hold the scan for minutes. One
- * 200 KB line measured 36 seconds end to end.
- *
- * Binding the comment syntax to its own trailing whitespace removes the
- * ambiguity: there is now one way to divide the input, and the same 100k line
- * matches in a tenth of a millisecond. The two forms accept and reject exactly
- * the same lines and produce the same capture — checked over every combination
- * of comment syntax, closer, whitespace and body.
- */
+/** 整文件忽略标记必须独占注释行。 */
+/** 分离空白与注释前缀，避免正则产生高成本回溯。 */
 const IGNORE_FILE_MARKER =
   /^\s*(?:(?:\/\/|#|--|\*\/?|\/\*|<!--)\s*)?canship-ignore-file(?:\s*(?:\*\/|-->))?\s*$/
 
-/** Whether any single line of the file is the opt-out marker and nothing else */
+/** 判断是否存在独占行的整文件忽略标记。 */
 function hasIgnoreMarker(lines: string[]): boolean {
   return lines.some((line) => IGNORE_FILE_MARKER.test(line))
 }
 
-/**
- * The same escape hatch, narrowed to one line.
- *
- * The file-level marker above was the only way out, and it is far too big a
- * hammer for what people actually hit: one false positive on line 40 of a
- * 500-line file, whose only remedies were to change correct code or to stop
- * scanning the whole file. The second is what someone picks when they are in a
- * hurry, and it takes the other 499 lines with it.
- *
- * Same wrapper syntax and the same whole-line rule as the file marker, for the
- * same reason — a substring search once had walker.ts and secrets.ts excluding
- * themselves because they *mention* the marker in a comment. That trap is worse
- * here, not better: documentation about this feature naturally shows the marker
- * on a line of its own, so anything written about it must keep other text on
- * the line.
- *
- * A trailing form on the offending line itself was considered and left out.
- * It reads better, and it can only work by searching inside a line that also
- * holds code — which is the substring search this rule exists to refuse.
- *
- * The optional rule id narrows the suppression to one rule, so a line with a
- * known false positive does not also go blind to a real finding from a
- * different rule. It is optional because the reports do not print rule ids;
- * requiring one would mean re-running under --json to silence anything.
- */
+/** 逐行忽略标记仅控制下一行，可指定规则。 */
 const IGNORE_LINE_MARKER =
   /^\s*(?:(?:\/\/|#|--|\*\/?|\/\*|<!--)\s*)?canship-ignore-next-line(?:\s+([\w./-]+))?(?:\s*(?:\*\/|-->))?\s*$/
 
-/**
- * What each marked line suppresses: a set of rule ids, or null for every rule.
- *
- * Keyed by the 1-based number of the line the marker *governs* — the one after
- * it — so a caller holding a finding can ask about it directly rather than
- * reconstructing the offset.
- */
+/** 键为被控制行号，空值表示该行全部规则。 */
 export type IgnoredLines = Map<number, Set<string> | null>
 
-/**
- * Which lines of a file carry a suppression, and for which rules.
- *
- * Blank lines are not skipped: a marker governs the very next line and nothing
- * else. Predictable beats clever here — if it silently reached past blank lines
- * and comments, the line it finally landed on would be one the author never
- * looked at.
- */
+/** 解析逐行忽略标记，不跳过标记后的空行。 */
 export function ignoredLinesOf(lines: string[]): IgnoredLines {
   const found: IgnoredLines = new Map()
   lines.forEach((line, index) => {
     const match = IGNORE_LINE_MARKER.exec(line)
     if (match === null) return
-    // `index` is 0-based and names the marker; the governed line is the next
-    // one, which in 1-based numbering is `index + 2`.
+    // 索引从 0 开始，被控制的下一行编号为索引加 2。
     const governed = index + 2
     const ruleId = match[1]
     if (ruleId === undefined) {
-      // A bare marker covers everything, and overrides any narrower marker
-      // already recorded for the same line.
+      // 不指定规则的标记覆盖该行的全部规则。
       found.set(governed, null)
       return
     }
@@ -288,40 +129,27 @@ export function ignoredLinesOf(lines: string[]): IgnoredLines {
   return found
 }
 
-/** Bun's lockfile is binary and cannot be read as text; every other lockfile is text and is scanned like anything else */
+/** 跳过二进制锁文件，其余文本锁文件仍参与扫描。 */
 const SKIP_FILENAMES = new Set(['bun.lockb'])
 
-/**
- * Whether a filename belongs to the .env family (.env / .env.local / ...).
- *
- * Compared in lower case. Windows and macOS open `.ENV` and `.env` as the same
- * file, so a case-sensitive check meant a file the runtime happily loads was
- * neither treated as an env file nor picked up by extension — it simply was
- * not there.
- */
+/** 不区分大小写识别环境文件名。 */
 export function isEnvFile(name: string): boolean {
   const lower = name.toLowerCase()
   return lower === '.env' || lower.startsWith('.env.')
 }
 
-/** Whether this file should be scanned at all */
+/** 根据名称和扩展名决定是否扫描。 */
 function shouldScan(relPath: string): boolean {
   const name = basename(relPath)
   if (SKIP_FILENAMES.has(name)) return false
-  // .env files have no conventional extension, so let them through separately
+  // 环境文件单独识别，不依赖常规扩展名。
   if (isEnvFile(name)) return true
   if (CREDENTIAL_FILENAMES.has(name)) return true
   const ext = extname(name).toLowerCase()
   return SCAN_EXTENSIONS.has(ext) || CREDENTIAL_EXTENSIONS.has(ext) || CONFIG_EXTENSIONS.has(ext)
 }
 
-/**
- * Extensions that are certainly not text, so there is nothing to look at.
- *
- * A denylist rather than an allowlist on purpose: being wrong here costs one
- * wasted 4 KB read, while being wrong in the other direction costs a missed
- * credential. Anything not named here gets looked at.
- */
+/** 已知二进制格式不参与文本探测。 */
 const BINARY_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.bmp', '.ico', '.icns', '.tiff',
   '.mp3', '.mp4', '.wav', '.ogg', '.webm', '.mov', '.avi', '.flac',
@@ -337,13 +165,7 @@ type ProbeResult =
   | { kind: 'binary' }
   | { kind: 'unreadable'; detail: string }
 
-/**
- * Read the start of an unknown file, and decide only whether it is text,
- * binary, or unreadable.
- *
- * UTF-16 text is full of NUL bytes, so the BOM has to be recognised first —
- * otherwise the file is called binary before the BOM-aware decoder ever runs.
- */
+/** 先识别 BOM，再判断未知文件是否为二进制。 */
 function probeFileType(absPath: string): ProbeResult {
   let fd: number | null = null
   try {
@@ -367,46 +189,22 @@ function probeFileType(absPath: string): ProbeResult {
       try {
         closeSync(fd)
       } catch {
-        /* ignore */
+        /* 关闭失败不覆盖原有读取结果。 */
       }
     }
   }
 }
 
-/**
- * Prose formats, left out of the probe deliberately.
- *
- * Documentation spells out secret-shaped strings as examples constantly — a
- * README showing `export OPENAI_API_KEY=sk-proj-…` is doing its job — and this
- * project already decided those are not findings. That decision is pinned by
- * the clean fixture, whose README says so in as many words. `.txt` is not in
- * here: it is a generic dump format, not a prose one, and `keys.txt` is a real
- * thing people have. What turns up in one is still reported quietly, since
- * isExampleContext covers `.txt` and holds it at lower confidence.
- */
+/** 排除明确的文档格式，避免将文档示例作为源码扫描。 */
 const PROSE_EXTENSIONS = new Set(['.md', '.mdx', '.rst', '.adoc'])
 
-/**
- * The same decision for prose that carries no extension to decide by.
- *
- * `README`, `LICENSE` and `CHANGELOG` are conventionally written bare, and the
- * probe cannot tell them apart from a data file by name alone. It did not have
- * to while it was reading them looking for a credential and finding none; now
- * that every text file it accepts is scanned in full, they would arrive in the
- * scan with exactly the documentation examples PROSE_EXTENSIONS exists to keep
- * out. Matched on the stem, so `README.txt` is covered too — `.txt` stays
- * probed for everything else, because `keys.txt` is a real thing people have.
- */
+/** 排除没有扩展名的常见文档文件。 */
 const PROSE_FILENAMES = new Set([
   'README', 'LICENSE', 'LICENCE', 'COPYING', 'NOTICE', 'AUTHORS', 'CONTRIBUTORS',
   'CONTRIBUTING', 'CHANGELOG', 'CHANGES', 'HISTORY', 'CODEOWNERS', 'CODE_OF_CONDUCT',
 ])
 
-/**
- * Whether a file is worth looking inside despite its name saying nothing.
- * Known-scannable names are already handled; known-binary ones cannot hold
- * readable text, and prose is excluded above. Everything left over gets probed.
- */
+/** 对未知且非二进制、非文档的文件进行探测。 */
 function isWorthProbing(relPath: string): boolean {
   const name = basename(relPath)
   if (SKIP_FILENAMES.has(name)) return false
@@ -416,21 +214,7 @@ function isWorthProbing(relPath: string): boolean {
   return !BINARY_EXTENSIONS.has(ext) && !PROSE_EXTENSIONS.has(ext)
 }
 
-/**
- * Whether the target is a git repository — and, crucially, whether that
- * question could be answered at all.
- *
- * This used to return a plain boolean, catching every failure as `false`. That
- * made "git is not installed", "git refuses this repository as dubiously
- * owned", and "this is not a repository" one answer, and the git-history rule
- * skips itself on that answer. The result was a repository with a live key in
- * its history scanning to zero findings, zero errors, `partial: false` and exit
- * 0 — a green tick, produced by a check that never ran. That is the exact
- * failure the README puts at the centre of this tool.
- *
- * So the three cases are kept apart. Only `not-a-repo` is silent; `unavailable`
- * is something the caller is obliged to be loud about.
- */
+/** 区分非仓库与 Git 检查失败。 */
 export function detectGitRepo(root: string, gitExecutable: string | null = resolveGitExecutable(root)): GitStatus {
   const hasMetadata = hasGitMetadataAbove(root)
   if (hasMetadata && !hasContainedGitMetadata(root)) return 'unavailable'
@@ -439,24 +223,18 @@ export function detectGitRepo(root: string, gitExecutable: string | null = resol
     const out = execGitSync(gitExecutable, root, ['rev-parse', '--is-inside-work-tree'], { stderr: 'pipe' })
     return out.trim() === 'true' ? 'repo' : 'not-a-repo'
   } catch {
-    // git could not answer. If there is no .git anywhere above, there is
-    // genuinely no repository here and silence is correct. If there is one,
-    // something stopped git from reading it, and reporting nothing would be a
-    // lie by omission.
+    // 存在元数据但 Git 无法读取时，必须披露检查失败。
     return hasGitMetadataAbove(root) ? 'unavailable' : 'not-a-repo'
   }
 }
 
 interface GitFileList {
   files: string[]
-  /** Nested repositories and submodules, which git reports as a single entry */
+  /** Git 作为不透明条目返回的嵌套仓库。 */
   nestedRepositories: string[]
 }
 
-/**
- * Get the file list from git: tracked files plus untracked ones that are not
- * ignored. Returns null on failure so the caller can fall back to walking.
- */
+/** 读取已跟踪及未忽略文件；失败时回退到目录遍历。 */
 function listViaGit(root: string, gitExecutable: string | null): GitFileList | null {
   if (gitExecutable === null) return null
   try {
@@ -471,8 +249,7 @@ function listViaGit(root: string, gitExecutable: string | null): GitFileList | n
 
     const files: string[] = []
     for (const path of out.split('\0').filter(Boolean)) {
-      // An untracked nested repository comes back as one directory entry with a
-      // trailing slash.
+      // 未跟踪嵌套仓库以带尾斜杠的目录条目返回。
       if (path.endsWith('/')) {
         nested.add(path.replace(/\/+$/, ''))
       } else if (!nested.has(path)) {
@@ -485,54 +262,22 @@ function listViaGit(root: string, gitExecutable: string | null): GitFileList | n
   }
 }
 
-/**
- * Credential files that git will not list.
- *
- * `git ls-files --exclude-standard` hides ignored files, and ignoring
- * credentials is exactly what people are told to do — so the files most likely
- * to hold a secret are precisely the ones git leaves out. They have to be found
- * by walking.
- *
- * The previous version looked in the project root plus a fixed list of
- * directory names, one level deep. A monorepo keeping `services/api/.env` was
- * invisible to it, and reported zero findings with total confidence.
- *
- * Extensionless files get a look inside rather than a guess from the name: a
- * deploy key called `deploy_key` matches no pattern anyone would think to
- * write down.
- */
+/** 补充 Git 忽略的凭据文件。 */
 interface WalkResult {
-  /** Every file the walk found, relative to root with / separators */
+  /** 全部发现路径，相对根目录且使用斜杠。 */
   all: string[]
-  /** Those chosen by looking inside rather than by their name */
+  /** 通过内容探测识别的额外候选文件。 */
   forced: string[]
 }
 
-/**
- * One walk, two answers.
- *
- * There used to be two walkers over the same tree — this one and a plain
- * a plain file lister for non-git projects — with the same SKIP_DIRS, the same
- * readdirSync try/catch and the same `skipped.push({reason:
- * 'directory-unreadable'})`, differing only in which files they kept. A non-git
- * project paid for the whole tree twice, and an unreadable directory was
- * recorded twice, so the report told the reader that two directories could not
- * be listed when only one existed.
- *
- * The depth cap now applies to the full list as well as the credential hunt.
- * That is a change, and the right one: reaching it already leaves a receipt, so
- * the limit is disclosed rather than silent either way.
- */
+/** 单次遍历同时收集文件清单和额外候选文件。 */
 function walkTree(root: string, skipped: SkippedFile[], wantAll: boolean): WalkResult {
   const all: string[] = []
   const found: string[] = []
 
   const walk = (dir: string, depth: number): void => {
     if (depth > MAX_WALK_DEPTH) {
-      // A depth cap is fine as resource protection. Reaching one silently is
-      // not: everything below this point went unexamined, and without a
-      // receipt the report still claims to have covered the project. A .env
-      // one level past the cap used to vanish with no trace at all.
+      // 达到深度上限时记录缺口，不静默跳过。
       skipped.push({
         path: relative(root, dir).split(sep).join('/') || '.',
         reason: 'directory-unreadable',
@@ -558,16 +303,7 @@ function walkTree(root: string, skipped: SkippedFile[], wantAll: boolean): WalkR
       const full = join(dir, entry.name)
       const rel = relative(root, full).split(sep).join('/')
       if (entry.isSymbolicLink()) {
-        // Never followed: the scan must not silently leave the directory it was
-        // pointed at.
-        //
-        // Silent for the names a real directory is silent for, which means
-        // SKIP_DIRS rather than only VENDORED_DIRS. This branch runs before the
-        // isDirectory() check below, so the narrower set let a symlinked `dist`,
-        // `.next` or `venv` — twenty names a real directory skips without a
-        // word — file a receipt, turn the scan partial, and exit 3 on a project
-        // with nothing wrong with it. Whether the build output is a link or a
-        // directory is not a fact about the project's security.
+        // 不跟随符号链接；已排除目录名保持相同排除语义。
         if (!SKIP_DIRS.has(entry.name)) {
           skipped.push({ path: rel, reason: 'symlink', detail: 'symbolic links are not followed' })
         }
@@ -580,8 +316,7 @@ function walkTree(root: string, skipped: SkippedFile[], wantAll: boolean): WalkR
       }
       if (!entry.isFile()) continue
 
-      // git answers the "every file" question when it can, and then this array
-      // is built only to be thrown away.
+      // Git 可提供清单时不重复构建完整路径数组。
       if (wantAll) all.push(rel)
 
       let isCandidate =
@@ -589,8 +324,7 @@ function walkTree(root: string, skipped: SkippedFile[], wantAll: boolean): WalkR
         CREDENTIAL_FILENAMES.has(entry.name) ||
         CREDENTIAL_EXTENSIONS.has(extname(entry.name).toLowerCase())
 
-      // The probe window is read only when the name cannot decide. Unreadable is
-      // not "binary", and it owes the reader a receipt either way.
+      // 名称无法判断时探测文件；读取失败必须报告。
       if (!isCandidate && isWorthProbing(rel)) {
         const probe = probeFileType(full)
         if (probe.kind === 'text') isCandidate = true
@@ -607,27 +341,19 @@ function walkTree(root: string, skipped: SkippedFile[], wantAll: boolean): WalkR
   return { all, forced: found }
 }
 
-/** Whether a filesystem error means "not there" rather than "could not read it" */
+/** 判断文件是否已经不存在。 */
 function isMissing(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code
   return code === 'ENOENT' || code === 'ENOTDIR'
 }
 
-/**
- * Decode a file, honouring a byte-order mark.
- *
- * Reading everything as UTF-8 looks harmless until a UTF-16 file turns up.
- * Its ASCII characters arrive interleaved with zero bytes, the binary check
- * sees those and writes the file off, and it is never scanned. Vercel's own Next.js + Supabase template ships
- * types_db.ts in UTF-16 LE, so this is not a hypothetical: the flagship
- * template of the exact stack canship targets had a file it could not read.
- */
+/** 按 BOM 解码 UTF-8 或 UTF-16。 */
 function decodeText(buf: Buffer): string {
   if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
     return buf.subarray(2).toString('utf16le')
   }
   if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) {
-    // Big-endian. Node decodes only little-endian, so swap the pairs first.
+    // 大端 UTF-16 先交换字节，再按小端解码。
     const body = Buffer.from(buf.subarray(2))
     if (body.length % 2 !== 0) return buf.toString('utf8')
     body.swap16()
@@ -639,23 +365,12 @@ function decodeText(buf: Buffer): string {
   return buf.toString('utf8')
 }
 
-/** Rough binary check: a NUL byte is a reliable enough tell */
+/** 以空字符判断明显二进制内容。 */
 function looksBinary(content: string): boolean {
   return content.includes('\0')
 }
 
-/**
- * Whether the *filename* declares the file to be a template — the
- * `.env.example` family and friends.
- *
- * Split out of isExampleContext because a committed env file answers the two
- * halves of that question differently, and collapsing them cost a real
- * finding. A file *named* `.env.example` is meant to be committed and leaks
- * nothing: it is the file people publish instead of the one holding the keys.
- * A real `.env` that merely *sits in* `tests/` is a committed `.env` like any
- * other — the directory is a reason to doubt the key is real, not a reason to
- * believe the file is a template.
- */
+/** 仅根据文件名识别环境模板，与所在目录分开判断。 */
 export function isTemplateName(relPath: string): boolean {
   const name = basename(relPath)
   if (/\.(example|sample|template|dist)$/i.test(name)) return true
@@ -663,12 +378,7 @@ export function isTemplateName(relPath: string): boolean {
   return false
 }
 
-/**
- * Whether a file is a context where secret-shaped strings are normal:
- * tests, fixtures, examples, documentation.
- *
- * Decided here so every rule shares one definition of the exemption.
- */
+/** 统一识别测试、示例和文档上下文。 */
 export function isExampleContext(relPath: string): boolean {
   const name = basename(relPath)
   if (isTemplateName(relPath)) return true
@@ -680,54 +390,31 @@ export function isExampleContext(relPath: string): boolean {
   return false
 }
 
-/** What a traversal produced: the files it read, and the ones it could not */
+/** 文件遍历与读取结果。 */
 export interface CollectResult {
   files: ScanFile[]
   skipped: SkippedFile[]
-  /**
-   * How many listed paths were dropped for running through a dependency tree.
-   *
-   * Counted rather than passed over, because the exclusion is a judgement the
-   * user did not make and cannot see: it is not an error, so it does not belong
-   * in `skipped`, but a scanner that quietly ignores part of a repository owes
-   * the reader a sentence about it.
-   */
+  /** 默认排除的第三方路径数。 */
   vendored: number
-  /** Files the user opted out of with the canship-ignore-file marker */
+  /** 由整文件忽略标记排除的文件。 */
   ignored: string[]
 }
 
-/**
- * Collect every file worth scanning and read it into memory.
- *
- * Anything found but not read is returned in `skipped` rather than dropped.
- * The distinction between "checked and clean" and "never looked at" is the
- * whole point: a scanner that cannot tell them apart will eventually tell
- * someone their app is fine because it failed to open the file holding the key.
- */
+/** 读取候选文件并记录未读取的路径。 */
 export function collectFiles(
   root: string,
   isGitRepo: boolean,
   gitExecutable: string | null = resolveGitExecutable(root),
+  limits: { maxBytes?: number; maxFiles?: number } = {},
 ): CollectResult {
   const skipped: SkippedFile[] = []
   const ignored: string[] = []
-  // One walk of the tree, whatever git can or cannot say. It answers both
-  // questions at once — every file, and the credential files git hides —
-  // because two walkers over the same directories charged twice for the I/O
-  // and recorded an unreadable directory twice in `skipped`.
+  // 合并 Git 清单和单次目录遍历。
   const fromGit = isGitRepo ? listViaGit(root, gitExecutable) : null
   const walked = walkTree(root, skipped, fromGit === null)
   const listed = fromGit?.files ?? walked.all
 
-  // Merge git's list with the credential files git hides, listing nothing twice.
-  //
-  // Vendored trees are dropped here rather than inside either lister, because
-  // that is the one place both answers meet. Applied in only one of them, the
-  // same repository covered different files depending on whether git could
-  // answer for it.
-  // Partitioned in one pass. Filtering the list twice asked the same question
-  // of every path twice over, and the two calls could drift apart.
+  // 合并候选路径并统一排除第三方目录。
   const candidates = new Set<string>()
   let vendored = 0
   for (const path of fromGit?.nestedRepositories ?? []) {
@@ -745,9 +432,7 @@ export function collectFiles(
     if (isVendored(path)) vendored++
     else candidates.add(path)
   }
-  // Paths chosen by looking at the file rather than at its name. They bypass
-  // shouldScan, which only knows about extensions — an extensionless deploy
-  // key would otherwise be discovered and then thrown away again.
+  // 内容探测选中的路径不再受扩展名筛选限制。
   const forced = new Set<string>()
   for (const hidden of walked.forced) {
     candidates.add(hidden)
@@ -755,6 +440,10 @@ export function collectFiles(
   }
 
   const files: ScanFile[] = []
+  let bytesRead = 0
+  let filesRead = 0
+  const maxBytes = limits.maxBytes ?? MAX_SCAN_BYTES
+  const maxFiles = limits.maxFiles ?? MAX_SCAN_FILES
   for (const relPath of candidates) {
     if (!forced.has(relPath) && !shouldScan(relPath)) continue
 
@@ -762,8 +451,7 @@ export function collectFiles(
     let content: string
     try {
       if (lstatSync(absPath).isSymbolicLink()) {
-        // git lists tracked links, so the same boundary is drawn here — without
-        // filing the receipt the walk may already have filed.
+        // Git 跟踪的链接也不能被读取，避免重复记录。
         if (!skipped.some((entry) => entry.path === relPath && entry.reason === 'symlink')) {
           skipped.push({ path: relPath, reason: 'symlink', detail: 'symbolic links are not followed' })
         }
@@ -778,16 +466,22 @@ export function collectFiles(
         })
         continue
       }
-      content = decodeText(readFileSync(absPath))
+      // 预算覆盖读取后被识别为二进制或主动忽略的文件。
+      if (filesRead >= maxFiles || bytesRead + size > maxBytes) {
+        skipped.push({ path: relPath, reason: 'too-large',
+          detail: `scan read budget exceeded (${maxFiles} files, ${maxBytes} bytes); remaining candidates were not read` })
+        break
+      }
+      const bytes = readFileSync(absPath)
+      bytesRead += bytes.length
+      filesRead++
+      if (bytesRead > maxBytes) {
+        skipped.push({ path: relPath, reason: 'too-large', detail: 'scan read budget exceeded during file read' })
+        break
+      }
+      content = decodeText(bytes)
     } catch (err) {
-      // A file git still lists but that is gone from disk has no contents to
-      // miss — this is the ordinary state of any repository with uncommitted
-      // deletions, and one real project produced 160 of them. Reporting those
-      // as an incomplete scan would be its own false alarm.
-      //
-      // Anything else — permission denied, a device error, a lock — means the
-      // file is there and its contents are unknown, which is not the same as
-      // safe.
+      // 已删除文件无需报错；其他读取失败均记录。
       if (!isMissing(err)) {
         skipped.push({
           path: relPath,
@@ -802,10 +496,7 @@ export function collectFiles(
       continue
     }
     const lines = content.split(/\r?\n/)
-    // An opt-out the user wrote themselves. Not a `skipped` entry — nothing
-    // went wrong — but recorded all the same, because a whole file dropping
-    // out of the scan should never be invisible. That is the same mistake in a
-    // friendlier costume.
+    // 主动排除独立记录，不作为扫描失败。
     if (hasIgnoreMarker(lines)) {
       ignored.push(relPath)
       continue

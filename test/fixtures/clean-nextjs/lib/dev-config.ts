@@ -1,15 +1,10 @@
-// Test fixture: connection strings that are perfectly well formed but point at
-// nothing useful. None of them should be reported.
-//
-// These target RFC-reserved example domains or local addresses, so they are
-// worthless to an attacker. Reporting them is pure noise — and noise is what
-// makes users stop trusting the tool.
+// 示例域名和本地服务的连接串不应报告。
 
-/** Local development database */
+/** 本地开发数据库。 */
 export const LOCAL_DB = 'postgresql://postgres:devpassword@localhost:5432/app_dev'
 
-/** The connection string every tutorial uses */
+/** 文档中的示例连接。 */
 export const DOC_EXAMPLE = 'mongodb://admin:hunter2@db.example.com:27017/mydb'
 
-/** A docker compose service name */
+/** 容器编排服务名。 */
 export const DOCKER_REDIS = 'redis://default:localdev@host.docker.internal:6379'

@@ -1,28 +1,4 @@
-/**
- * P0/P1: API routes that reach your database with nothing checking who is calling.
- *
- * This is the failure that follows a leaked key in how often it happens and how
- * much it costs. The assistant writes `app/api/users/route.ts`, gives it the
- * service_role client so the query "just works", and never adds a sign-in
- * check — because during development there is nobody to check. The route ships.
- * Its URL is not a secret: it is spelled out by the file path, and it is in the
- * frontend bundle the moment anything calls it.
- *
- * Detecting this without false positives is the hard part, so the rule is built
- * out of three separate conservative decisions:
- *
- *   1. Only files that really are HTTP route handlers (Next.js app/pages router).
- *   2. Only routes that really touch data. A route using the *service_role*
- *      client is certain-grade, because that key bypasses every RLS policy —
- *      whatever the database would normally refuse, this route performs. Plain
- *      ORM writes are reported at lower confidence.
- *   3. 鉴权必须位于实际数据操作所在的函数内，并且在操作之前执行。
- *      其他 HTTP 方法、未调用的辅助函数和后置检查不能提供保护。
- *
- * On top of that, Next.js middleware can protect a route from the outside, with
- * nothing visible in the route file at all. That is checked project-wide before
- * anything is reported.
- */
+/** 检查未认证请求可触达的数据操作；结合函数内控制流、客户端类型和中间件判断。 */
 
 import { posix } from 'node:path'
 import type { Finding, ProjectRule, ScanContext, ScanFile } from '../types.js'
@@ -32,66 +8,36 @@ import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { JWT_SOURCE, SB_SECRET_SOURCE } from './patterns.js'
 
-// ── 1. Is this file an HTTP route handler? ──────────────────────────────────
+// 识别 API 路由。
 
-/** App Router route handlers, and Pages Router API files */
+/** App Router 处理函数及 Pages Router API 文件。 */
 const APP_ROUTER = /(?:^|\/)app\/api\/(?:.+\/)?route\.[mc]?[jt]sx?$/
 const PAGES_ROUTER = /(?:^|\/)pages\/api\/.+\.[mc]?[jt]sx?$/
 
 function isApiRoute(path: string): boolean {
-  return APP_ROUTER.test(path) || PAGES_ROUTER.test(path)
+  return APP_ROUTER.test(routePathOf(path)) || PAGES_ROUTER.test(path)
 }
 
-/**
- * Routes that cannot have a sign-in check, because they are how you sign in.
- *
- * `/api/auth/signin` calling the admin client to mint a magic link is the
- * correct implementation of passwordless auth, not a hole — there is nobody to
- * authenticate yet.
- *
- * Only the handlers that genuinely have that property are named. Exempting the
- * whole `/api/auth` namespace was simpler and wrong: `/api/auth/export-all`
- * lives there too, and being under an auth path says nothing about whether a
- * route should be open. A namespace is not an argument.
- *
- * Webhook and cron routes are deliberately *not* exempt either: those are
- * supposed to verify a signature or a shared secret, and one that does not is
- * a real finding.
- *
- * The same reasoning applies one level down, and used not to. Every name here
- * once allowed arbitrary descendants, so `/api/auth/signin/export-all` was
- * exempt while `/api/auth/export-all` — the case the fixture exists to pin —
- * was not. Moving the bulk export one segment deeper turned it invisible. A
- * sub-path is a namespace too, and a namespace is still not an argument.
- */
+/** 路由组仅用于组织目录，不构成 URL 路径。 */
+function routePathOf(path: string): string {
+  return path.replace(/(^|\/)\([^/]+\)(?=\/)/g, '$1').replace(/\/{2,}/g, '/')
+}
+
+/** 仅豁免明确的登录及身份管理入口，不豁免整个命名空间。 */
 const AUTH_ENDPOINT_NAMES =
   /^\/api\/auth\/(?:sign[-_]?in|sign[-_]?up|sign[-_]?out|log[-_]?in|log[-_]?out|register|session|verify|confirm|reset(?:[-_]password)?|forgot(?:[-_]password)?|magic[-_]?link|otp)$/
 
-/**
- * The exception that earns its descendants.
- *
- * OAuth callbacks are addressed per provider — `/api/auth/callback/google`,
- * `/api/auth/callback/github` — and every one of them is a real callback with
- * nobody to authenticate yet. One extra segment, no deeper: the provider name
- * is the only thing that legitimately follows.
- */
+/** OAuth 回调允许一层提供方路径。 */
 const AUTH_CALLBACK = /^\/api\/auth\/callback(?:\/[^/]+)?$/
 
 function isAuthEndpoint(url: string): boolean {
-  // Deliberately no catch-all case. `/api/auth/[...nextauth]` is a real
-  // Auth.js handler and a real place to hide `/api/auth/[...evil]`, and the
-  // path cannot tell them apart — so the genuine one is recognised by what is
-  // in the file (`import NextAuth`), which is evidence, and the path is not.
+  // 不按任意捕获路径豁免，仅识别明确的认证处理方式。
   return AUTH_ENDPOINT_NAMES.test(url) || AUTH_CALLBACK.test(url)
 }
 
-/**
- * The URL this file is served at. Worth the few lines: "/api/users" lands very
- * differently from "app/api/users/route.ts" when someone is deciding whether to
- * take a finding seriously.
- */
+/** 将文件路径转换为请求 URL。 */
 function routeUrl(path: string): string {
-  const m = /(?:^|\/)(?:app|pages)\/(api\/.*)$/.exec(path)
+  const m = /(?:^|\/)(?:app|pages)\/(api\/.*)$/.exec(routePathOf(path))
   if (!m) return `/${path}`
   const url = m[1]!
     .replace(/\/route\.[mc]?[jt]sx?$/, '')
@@ -100,17 +46,17 @@ function routeUrl(path: string): string {
   return `/${url}`
 }
 
-// ── 2. Does anything in the file look like an authorisation check? ──────────
+// 识别鉴权证据。
 
-/** Wrappers and verifiers that reject an invalid caller themselves */
+/** 已知会拒绝无效调用者的验证函数及包装器。 */
 const AUTH_ENFORCING_CALL =
   /\b(?:NextAuth|require(?:Auth|User|Session|Admin)|withAuth|verifyAuth|ensureAuth|assertAuth(?:enticated)?|verifyIdToken|constructEvent)\s*\(/i
 
-/** The condition has to name an identity, a credential or a check — not merely a related word */
+/** 鉴权条件必须涉及身份、凭据或验证调用。 */
 const AUTH_CONDITION =
   /\b(?:session|token|user|authorization|bearer|jwt|auth|signature|CRON_SECRET|WEBHOOK_SECRET|REVALIDATE_SECRET|ADMIN_SECRET)\b|\blocals\s*\.\s*user\b|\b(?:getUser|getSession|getServerSession|currentUser|getAuth|isAuthenticated|checkAuth|verifyAuth|ensureAuth|verifyIdToken|timingSafeEqual)\s*\(/i
 
-/** The matching delimiter, in text whose strings and comments are already blanked */
+/** 在已屏蔽文本中匹配分隔符。 */
 function closingDelimiter(source: string, start: number, open: string, close: string): number | null {
   let depth = 0
   for (let i = start; i < source.length; i++) {
@@ -124,7 +70,7 @@ function closingDelimiter(source: string, start: number, open: string, close: st
   return null
 }
 
-/** Only the statements this if controls, so an unrelated 401 or return further down does not count */
+/** 提取条件控制的语句，避免借用后续退出语句。 */
 function controlledStatement(source: string, afterCondition: number): string {
   let start = afterCondition
   while (/\s/.test(source[start] ?? '')) start++
@@ -137,26 +83,47 @@ function controlledStatement(source: string, afterCondition: number): string {
   return source.slice(start, end)
 }
 
-/**
- * Reading an authentication state is not performing one. A route counts as
- * protected only when an auth condition governs a rejection — a return, a throw,
- * a redirect — or when the branch answers 401 or 403 outright.
- */
+/** 只有拒绝未认证请求的条件分支才能提供保护。 */
 function hasConditionalAuthGuard(code: string): boolean {
-  const starts = code.matchAll(/\bif\s*\(/g)
-  for (const match of starts) {
+  const starts = /\bif\s*\(/g
+  let match: RegExpExecArray | null
+  while ((match = starts.exec(code)) !== null) {
     const open = code.indexOf('(', match.index)
     const close = closingDelimiter(code, open, '(', ')')
     if (close === null) continue
 
     const condition = code.slice(open + 1, close)
     const statement = controlledStatement(code, close + 1)
-    const stopsRequest = /\b(?:return|throw|redirect|notFound)\b/.test(statement)
+    // 只认可分支顶层的退出；嵌套条件中的退出不覆盖整个分支。
+    const body = statement.startsWith('{') ? statement.slice(1, -1) : statement
+    const pairs = delimiterPairs(body)
+    let stopsRequest = false
+    for (let i = 0; i < body.length; i++) {
+      if (/^(?:return|throw|redirect|notFound)\b/.test(body.slice(i, i + 16)) &&
+          (i === 0 || !/[\w$]/.test(body[i - 1]!))) {
+        stopsRequest = true
+        break
+      }
+      if (/^if\s*\(/.test(body.slice(i, i + 16))) break
+      const end = pairs.get(i)
+      if (end !== undefined) i = end
+    }
+    let statementStart = close + 1
+    while (/\s/.test(code[statementStart] ?? '')) statementStart++
+    starts.lastIndex = statementStart + statement.length
     if (!stopsRequest) continue
 
     const returnsDeniedStatus =
       /\b(?:return|throw)\b[\s\S]{0,300}\bstatus\s*[:(=]\s*(?:401|403)\b/i.test(statement)
-    if (AUTH_CONDITION.test(condition) || returnsDeniedStatus) return true
+    // 正向身份判断、短路合取及三元条件不能证明未认证请求必然退出。
+    const negative = !/&&|\?/.test(condition) && condition.split('||').some(part => {
+      const term = part.trim()
+      const rejects = /^!\s*[\w$.]+(?:\s*\([^=]*\))?$/.test(term) ||
+        /^[\w$.]+\s*={2,3}\s*(?:null|undefined|false)$/.test(term) ||
+        /^[\w$.]+\s*!={1,2}\s*(?!(?:null|undefined|false)\b)[\w$.]+$/.test(term)
+      return rejects && (AUTH_CONDITION.test(term) || returnsDeniedStatus)
+    })
+    if (negative) return true
   }
   return false
 }
@@ -269,6 +236,15 @@ function unguardedOperations(file: ScanFile, ops: DataHit[]): DataHit[] {
       // 构造一个包装后的处理函数并不鉴权当前请求；只在包围操作时认它。
       if (call?.index === 0 && !/^(?:withAuth|NextAuth)\b/i.test(call[0]) &&
           !/\bfunction\s*$/.test(code.slice(Math.max(owner.start, i - 30), i))) {
+        const prefixStart = Math.max(owner.start + 1, code.lastIndexOf(';', i - 1) + 1,
+          code.lastIndexOf('\n', i - 1) + 1)
+        const prefix = code.slice(prefixStart, i).trim()
+        // 换行不终止短路或三元表达式，不能借换行伪装成独立鉴权。
+        if (/(?:&&|\|\||\?|:)\s*$/.test(code.slice(owner.start + 1, prefixStart))) continue
+        const awaited = /^(?:await|(?:const|let|var)\s+[\w${},:\s]+?=\s*await)(?:\s+[\w$.]+\.)?$/.test(prefix)
+        const synchronous = /^(?:assertAuth(?:enticated)?|constructEvent)\b/i.test(call[0]) &&
+          /^(?:(?:const|let|var)\s+[\w$]+\s*=\s*)?(?:[\w$]+\.)*$/.test(prefix)
+        if (!awaited && !synchronous) continue
         const close = pairs.get(i + call[0].length - 1)
         if (close !== undefined && close < owner.end) return close + 1
       }
@@ -305,25 +281,16 @@ function unguardedOperations(file: ScanFile, ops: DataHit[]): DataHit[] {
   })
 }
 
-// ── 3. Does the route use a service_role (admin) client? ────────────────────
+// 识别管理员客户端。
 
-/**
- * A Supabase client being constructed.
- *
- * The optional type-argument group is not decoration: `createClient<Database>()`
- * is the form Supabase's own documentation recommends for typed projects, and
- * without it the generic swallows the opening parenthesis, so the whole file
- * stops looking like it builds a client. A real repository caught this — the
- * finding was downgraded from certain to likely, and therefore hidden by
- * default.
- */
+/** 匹配 Supabase 客户端构造，支持简单泛型参数。 */
 const CLIENT_CONSTRUCTOR = /\b(?:createClient|createServerClient)\s*(?:<[^()]{0,200}>)?\s*\(/
 
 const SERVICE_ROLE_ENV = /\bSUPABASE_SERVICE_ROLE(?:_KEY)?\b|\bSERVICE_ROLE_KEY\b|\bSUPABASE_SECRET_KEY\b/
 const SERVICE_ROLE_LITERAL = new RegExp(String.raw`['"\`](${JWT_SOURCE}|${SB_SECRET_SOURCE})['"\`]`, 'g')
 const ENV_BRACKET_ACCESS = /(?:process\.env|import\.meta\.env)\s*\[\s*['"]([^'"]+)['"]\s*\]/g
 
-/** Reads code identifiers and structured env index access, without mistaking prose for a reference */
+/** 从代码标识符和环境索引访问中识别管理员凭据。 */
 function referencesServiceRole(code: string, source: string): boolean {
   if (SERVICE_ROLE_ENV.test(code)) return true
   ENV_BRACKET_ACCESS.lastIndex = 0
@@ -334,11 +301,7 @@ function referencesServiceRole(code: string, source: string): boolean {
   return false
 }
 
-/**
- * Whether this file constructs a Supabase client with the service_role key.
- * Requires both the key reference and a client constructor, so a file that
- * merely forwards the variable is not mistaken for the client itself.
- */
+/** 同时存在客户端构造和管理员密钥引用时视为管理员客户端。 */
 function buildsAdminClient(file: ScanFile): boolean {
   const code = noiseMaskedOf(file)
   if (!CLIENT_CONSTRUCTOR.test(code)) return false
@@ -353,40 +316,21 @@ function buildsAdminClient(file: ScanFile): boolean {
   return false
 }
 
-/**
- * Whether this file constructs a Supabase client bound to the caller's session.
- *
- * This matters because of what the rule tells people to do. Its own advice is
- * "use a client created from the request's session instead of the service_role
- * key, and let Row Level Security enforce the boundary". A route that does
- * exactly that runs every query as whoever is calling — signed in or not — and
- * the database decides. Reporting it would mean flagging the fix.
- *
- * Whether RLS is actually switched on is a different question, and
- * supabase/rls-not-enabled is the rule that answers it.
- */
+/** 识别绑定调用者会话的客户端，由数据库策略实施授权。 */
 function buildsSessionClient(file: ScanFile): boolean {
   const code = noiseMaskedOf(file)
   if (!CLIENT_CONSTRUCTOR.test(code)) return false
-  // A file holding the service_role key is an admin client whatever else it does.
+  // 含管理员凭据的客户端不能按会话客户端处理。
   if (referencesServiceRole(code, commentsMaskedOf(file))) return false
   return /\bcookies\b/.test(code)
 }
 
-/** Strip the extension and a trailing /index so a path compares to an import specifier */
+/** 移除扩展名及末尾索引文件名以匹配导入。 */
 function moduleKey(path: string): string {
   return path.replace(/\.[mc]?[jt]sx?$/, '').replace(/\/index$/, '')
 }
 
-/**
- * Every file in the scan, indexed by module key.
- *
- * Resolving one import specifier used to filter the whole file list, and the
- * walk below asks per import, per file, per route. On 3,000 library files
- * behind 300 routes that is millions of key derivations for a lookup a map
- * answers outright. Keyed on the array the way the maskers are keyed on the
- * file, so it is built once and dies with the scan.
- */
+/** 按模块键缓存文件索引，避免每次导入遍历所有文件。 */
 const moduleIndexCache = new WeakMap<object, Map<string, ScanFile[]>>()
 
 function moduleIndexOf(allFiles: ScanFile[]): Map<string, ScanFile[]> {
@@ -405,15 +349,10 @@ function moduleIndexOf(allFiles: ScanFile[]): Map<string, ScanFile[]> {
 
 const IMPORT_SPEC = /(?:from|import|require)\s*\(?\s*['"]([^'"]+)['"]/g
 
-/**
- * Resolve an import specifier to a project-relative module path.
- * Handles relative imports and the `@/`, `~/`, `#/` aliases every Next.js
- * template ships with. Bare package imports return null — node_modules is not
- * scanned and nothing in there is the user's code.
- */
+/** 解析相对导入及常见别名，忽略外部包导入。 */
 interface ModuleTarget {
   key: string
-  /** Whether it resolves from the current Next.js app root */
+  /** 是否相对当前应用根目录解析。 */
   alias: boolean
 }
 
@@ -428,29 +367,22 @@ function normalizeSpec(spec: string, fromPath: string): ModuleTarget | null {
   return alias ? { key: moduleKey(alias[1]!), alias: true } : null
 }
 
-/**
- * Whether the route reaches an admin client, directly or through an import.
- *
- * The import case is not an edge case — it is the shape every Supabase tutorial
- * teaches: one `lib/supabase-admin.ts` holding the service_role client,
- * imported wherever it is needed. Only looking inside the route file would miss
- * almost all of them.
- */
+/** 通过本地代码或导入关系判断管理员客户端使用情况。 */
 function usesAdminClient(route: ScanFile, adminModules: ScanFile[], allFiles: ScanFile[]): boolean {
   return buildsAdminClient(route) || importsAnyOf(route, adminModules, allFiles)
 }
 
-/** The session-scoped counterpart of usesAdminClient */
+/** 通过导入关系判断会话客户端使用情况。 */
 function usesSessionClient(route: ScanFile, sessionModules: ScanFile[], allFiles: ScanFile[]): boolean {
   return buildsSessionClient(route) || importsAnyOf(route, sessionModules, allFiles)
 }
 
-/** The Next.js app root a route belongs to; the empty string for an app at the scan root */
+/** 提取路由所属的应用根目录。 */
 function moduleScopeOf(routePath: string): string {
-  return /^(.*?)(?:src\/)?(?:app|pages)\/api\//.exec(routePath)?.[1] ?? ''
+  return /^(.*?)(?:src\/)?(?:app|pages)\/api\//.exec(routePathOf(routePath))?.[1] ?? ''
 }
 
-/** The project files a file imports or re-exports */
+/** 获取文件导入及重导出的项目模块。 */
 function importedModules(file: ScanFile, allFiles: ScanFile[], aliasScope: string): ScanFile[] {
   const found: ScanFile[] = []
   const source = commentsMaskedOf(file)
@@ -466,8 +398,7 @@ function importedModules(file: ScanFile, allFiles: ScanFile[], aliasScope: strin
     if (!target.alias) {
       found.push(...(index.get(target.key) ?? []))
     } else {
-      // @/, ~/ and #/ resolve inside this app root and its src/ only, so one
-      // workspace package cannot vouch for another.
+      // 别名仅在所属应用及其源码目录解析，避免跨应用误匹配。
       const prefix = aliasScope
       for (const key of [
         moduleKey(`${prefix}${target.key}`),
@@ -480,7 +411,7 @@ function importedModules(file: ScanFile, allFiles: ScanFile[], aliasScope: strin
   return found
 }
 
-/** Whether any target module is reachable across a bounded walk of the project's import graph */
+/** 按访问集合遍历导入图并判断目标模块是否可达。 */
 function importsAnyOf(route: ScanFile, modules: ScanFile[], allFiles: ScanFile[]): boolean {
   if (modules.length === 0) return false
 
@@ -488,13 +419,7 @@ function importsAnyOf(route: ScanFile, modules: ScanFile[], allFiles: ScanFile[]
   const visited = new Set<string>()
   const aliasScope = moduleScopeOf(route.path)
 
-  // Walked with an explicit queue rather than by recursion. `visited` bounds
-  // how many files are examined but says nothing about how deep the chain is,
-  // and one call frame per link is a limit a repository can reach: a 4,000-file
-  // chain of re-exports — three lines of codegen, or a deliberate layout in a
-  // repository canship has no reason to trust — overflowed the stack. The
-  // engine caught the throw, so it was never silent; it did mean the whole
-  // rule crashed and every route in the project lost its check at once.
+  // 使用显式队列避免深层导入链导致调用栈溢出。
   const queue: ScanFile[] = importedModules(route, allFiles, aliasScope)
   while (queue.length > 0) {
     const file = queue.pop()!
@@ -506,19 +431,16 @@ function importsAnyOf(route: ScanFile, modules: ScanFile[], allFiles: ScanFile[]
   return false
 }
 
-// ── 4. Does the route actually touch data? ──────────────────────────────────
+// 识别实际数据操作。
 
 interface DataHit {
-  /** Character offset of the match, used to resolve a line number */
+  /** 操作的字符偏移，用于定位行号。 */
   index: number
-  /**
-   * Whether the operation changes data. Writes are what make the
-   * lower-confidence tier worth reporting at all.
-   */
+  /** 是否修改数据，决定疑似结果是否需要报告。 */
   writes: boolean
 }
 
-/** Supabase / PostgREST: .from('table') followed by an operation */
+/** 匹配 Supabase 表访问及后续操作。 */
 const SUPABASE_TABLE = /\.from\(\s*['"`][^'"`]+['"`]\s*\)\s*\.?\s*(\w+)?/g
 const SUPABASE_ADMIN_API = /\bauth\s*\.\s*admin\s*\.\s*(\w+)\s*\(/g
 const SUPABASE_WRITES = new Set(['insert', 'update', 'upsert', 'delete'])
@@ -534,7 +456,7 @@ const MONGO_OP =
 const RAW_SQL = /\b(?:sql|query|execute)\s*(?:`|\(\s*['"`])\s*(select|insert|update|delete|drop|truncate)\b/gi
 const RAW_SQL_WRITES = /^(?:insert|update|delete|drop|truncate)$/i
 
-/** Collect every data operation in the file, in source order */
+/** 按源码顺序收集数据操作。 */
 function findDataOps(file: ScanFile): DataHit[] {
   const hits: DataHit[] = []
   const code = noiseMaskedOf(file)
@@ -582,38 +504,17 @@ function findDataOps(file: ScanFile): DataHit[] {
   return hits.sort((a, b) => a.index - b.index)
 }
 
-// ── 5. Is middleware already protecting these routes? ───────────────────────
+// 检查中间件保护范围。
 
-/**
- * A Next.js middleware file, anywhere a Next.js app can be rooted.
- *
- * This was anchored with `^`, which only ever found a middleware sitting in the
- * directory canship was pointed at. `APP_ROUTER` next to it is anchored
- * `(?:^|\/)`, so in a monorepo the pair disagreed: `apps/web/app/api/x/route.ts`
- * was recognised as a route, `apps/web/middleware.ts` was not recognised as its
- * protection, and every authenticated route in every workspace package came
- * back P0. The regexes have to agree about where an app may start.
- */
+/** 识别各应用根目录及源码目录中的中间件。 */
 const MIDDLEWARE_FILE = /(?:^|\/)(?:src\/)?middleware\.[mc]?[jt]s$/
 
-/**
- * The directory a middleware file governs: its own, less a trailing `src/`.
- *
- * `apps/web/middleware.ts` and `apps/web/src/middleware.ts` both govern
- * `apps/web/`; a middleware at the root governs everything.
- */
+/** 中间件作用域为所在应用目录。 */
 function middlewareScopeOf(path: string): string {
   return path.replace(/(?:src\/)?middleware\.[mc]?[jt]s$/, '')
 }
 
-/**
- * The middleware governing a route, or null.
- *
- * Deepest scope wins. Matching any middleware anywhere would be the opposite
- * error to the one above and a worse one: `apps/admin/middleware.ts` would
- * silence the rule for `apps/web`, hiding real findings instead of inventing
- * false ones.
- */
+/** 选择作用域最深的中间件，避免其他应用提供错误保护证据。 */
 function middlewareFor(ctx: ScanContext, routePath: string): ScanFile | null {
   let best: ScanFile | null = null
   let bestDepth = -1
@@ -629,28 +530,13 @@ function middlewareFor(ctx: ScanContext, routePath: string): ScanFile | null {
   return best
 }
 
-/**
- * What a middleware's `matcher` config says, as three distinct answers.
- *
- * `absent` and `unreadable` used to be the same answer — an empty array — and
- * the caller read that one answer as "covers every request". So a matcher the
- * parser choked on silenced the rule for the whole app, exactly as if no
- * matcher had been written at all. They mean opposite things and now say so.
- */
+/** 区分无匹配器、可读模式和无法解析的配置。 */
 type MatcherConfig =
   | { kind: 'absent' }
   | { kind: 'patterns'; patterns: string[] }
   | { kind: 'unreadable' }
 
-/**
- * From a leading `[`, the text through its matching `]`.
- *
- * Written as a scan rather than `\[[^\]]*\]` because that regex stops at the
- * first `]` in the text, and a `]` inside a matcher string is ordinary:
- * `matcher: ["/dashboard/[a-z]+"]` was cut to `["/dashboard/[a-z]`, which holds
- * one quote, yields no strings, and so read as "no matcher at all" — meaning
- * a middleware guarding only /dashboard was taken to cover the entire API.
- */
+/** 扫描成对分隔符，跳过字符串内的同名字符。 */
 function sliceDelimited(text: string, open: string, close: string): string | null {
   if (text[0] !== open) return null
   let quote: string | null = null
@@ -673,7 +559,7 @@ function sliceBracketed(text: string): string | null {
   return sliceDelimited(text, '[', ']')
 }
 
-/** From a leading quote, the text through its closing quote */
+/** 提取完整引号字符串。 */
 function sliceQuoted(text: string): string | null {
   const quote = text[0]
   if (quote !== "'" && quote !== '"' && quote !== '`') return null
@@ -684,7 +570,7 @@ function sliceQuoted(text: string): string | null {
   return null
 }
 
-/** Where the value of the config object's top-level matcher property starts */
+/** 定位配置对象顶层匹配器属性的值。 */
 function topLevelMatcherValueStart(objectText: string): number | null {
   const candidates = [1]
   let quote: string | null = null
@@ -720,7 +606,7 @@ function topLevelMatcherValueStart(objectText: string): number | null {
   return null
 }
 
-/** Read `export const config = { matcher: ... }` */
+/** 解析显式导出的匹配器配置。 */
 function extractMatcherConfig(file: { content: string }): MatcherConfig {
   const code = noiseMaskedOf(file)
   const declaration = /\bexport\s+const\s+config\b/.exec(code)
@@ -749,24 +635,15 @@ function extractMatcherConfig(file: { content: string }): MatcherConfig {
   return patterns.length === 0 ? { kind: 'unreadable' } : { kind: 'patterns', patterns }
 }
 
-/**
- * Long enough for any matcher anyone writes on purpose.
- *
- * The documented Next.js exclusion matcher is about seventy characters. A
- * bound here is the cheap half of the defence below: backtracking cost grows
- * with the pattern as well as the input.
- */
+/** 限制匹配器长度，避免复杂输入消耗过多资源。 */
 const MAX_MATCHER_LENGTH = 300
 
-/** Strip the `?:`, `?=`, `?!`, `?<=`, `?<!`, `?<name>` a group body may open with */
+/** 移除正则分组前缀。 */
 function withoutGroupPrefix(body: string): string {
   return body.replace(/^\?(?:[:=!]|<[=!]|<[A-Za-z_]\w*>)/, '')
 }
 
-/**
- * Split a group body on its top-level `|`, ignoring bars nested inside another
- * group or a character class.
- */
+/** 仅按顶层分支符拆分，不拆分嵌套组或字符类。 */
 function topLevelBranches(body: string): string[] {
   const parts: string[] = []
   let depth = 0
@@ -797,20 +674,12 @@ function topLevelBranches(body: string): string[] {
   return parts
 }
 
-/**
- * The one literal character a branch has to start with, or null when its first
- * token is not a single literal — a class, a group, a dot, or nothing at all.
- * Null means "could start with anything", which overlaps everything.
- */
+/** 提取分支的首个确定字符；无法确认时返回空值。 */
 function firstLiteralOf(branch: string): string | null {
   const ch = branch[0]
   if (ch === undefined) return null
   if (ch === '\\') {
-    // A class shorthand is not a literal. `\w` compared as the two-character
-    // string "\\w" is unequal to "a", so `(\w|a)+` read as two disjoint
-    // branches and was let through — and then took 7.3 seconds on a
-    // 28-character path. Anything that stands for a set of characters overlaps
-    // whatever else the alternation offers.
+    // 字符类缩写不能作为字面量判断分支互斥。
     if (/[wWdDsSpP]/.test(branch[1] ?? '')) return null
     return branch.slice(0, 2)
   }
@@ -818,15 +687,7 @@ function firstLiteralOf(branch: string): string | null {
   return ch
 }
 
-/**
- * Whether two branches of an alternation can match the same text.
- *
- * Decided on first characters, which is an approximation in the safe
- * direction: `(foo|bar)` can never take two paths through the same input and
- * is left alone, while `(a|a)` and `(a|ab)` can, and are refused. A branch
- * opening with a class or a group counts as overlapping everything, because
- * proving otherwise needs a real parser.
- */
+/** 保守判断分支是否可能匹配相同输入。 */
 function branchesCanOverlap(branches: string[]): boolean {
   if (branches.length < 2) return false
   const seen = new Set<string>()
@@ -839,25 +700,7 @@ function branchesCanOverlap(branches: string[]): boolean {
   return false
 }
 
-/**
- * A repeated group that can match one input in more than one way — `(a+)+`,
- * `(\w*)*`, `([a-z]+){2,}`, and equally `(a|a)+` or `(a|ab)*`.
- *
- * This is the shape that makes a backtracking engine try every way of splitting
- * the input across the repeats, which is exponential. The matcher is a string
- * taken from a file in the repository being scanned and handed to `new RegExp`,
- * then run against route paths on the main thread — so a pattern like that plus
- * a long path is a scan, or a CI runner, pinned at 100% for as long as the
- * author of the repository would like.
- *
- * The ambiguity used to be looked for only as a nested quantifier, and
- * alternation is the other half of the same idea: `/((a|a|a)+)x` passed this
- * check and then took **162 seconds** on a 30-character path. Both halves are
- * needed, because both produce the same exponential.
- *
- * Scanned rather than pattern-matched, because deciding this needs to know
- * which `(` a `)` belongs to, and a regex cannot count brackets.
- */
+/** 识别可能产生指数级回溯的重复分组。 */
 function hasAmbiguousRepetition(source: string): boolean {
   const open: number[] = []
   for (let i = 0; i < source.length; i++) {
@@ -874,10 +717,7 @@ function hasAmbiguousRepetition(source: string): boolean {
     const start = open.pop()
     if (start === undefined) continue
     const next = source[i + 1] ?? ''
-    // Only a group that repeats can pair with inner ambiguity to go
-    // exponential. An unquantified group is ordinary grouping — which is why
-    // the matcher Next.js documents, whose groups are never quantified, is
-    // still read rather than refused.
+    // 仅重复组与内部歧义组合才构成此类风险。
     if (next !== '+' && next !== '*' && next !== '{') continue
     const body = withoutGroupPrefix(source.slice(start + 1, i))
     if (/(?:^|[^\\])[+*]|\{\d+,\d*\}/.test(body)) return true
@@ -886,36 +726,14 @@ function hasAmbiguousRepetition(source: string): boolean {
   return false
 }
 
-/** Whether a matcher is safe to compile and run against a path */
+/** 判断匹配器是否可安全执行。 */
 function isSafeMatcher(pattern: string): boolean {
   return pattern.length <= MAX_MATCHER_LENGTH && !hasAmbiguousRepetition(pattern)
 }
 
-/**
- * Turn a Next.js matcher into a regular expression.
- *
- * Matchers are path-to-regexp patterns that may also contain raw regex, and
- * both forms have to work:
- *
- *   /api/:path*                                 named parameters
- *   /((?!api|_next/static|favicon.ico).*)       a negative lookahead
- *
- * Converting the parameter syntax and handing the rest to RegExp covers both,
- * because the raw-regex form already is one.
- */
+/** 将 Next.js 路径匹配器转换为正则。 */
 function matcherToRegex(pattern: string): RegExp | null {
-  // The leading slash is not decoration. A path parameter always follows one,
-  // and requiring it is what keeps this away from the colon in `(?:` — which
-  // appears in the matcher Next.js documents for excluding static files:
-  //
-  //   /((?!api|_next/static|favicon.ico|.*\.(?:svg|png|jpg)$).*)
-  //
-  // Rewriting `:svg` there produced `(?[^/]+|png|…)`, an invalid group. The
-  // pattern failed to compile, an unreadable matcher counted as coverage, and
-  // the whole rule went quiet on every project using that matcher.
-  // Refused before compiling, and refused as "unreadable" rather than as an
-  // error, because that is already the honest answer: canship did not evaluate
-  // this matcher. Running it to find out would be the whole problem.
+  // 参数必须以斜杠开头，避免替换正则分组中的冒号。
   if (!isSafeMatcher(pattern)) return null
   const source = pattern
     .replace(/\/:[A-Za-z_]\w*\*/g, '/.*')
@@ -928,30 +746,16 @@ function matcherToRegex(pattern: string): RegExp | null {
   }
 }
 
-/**
- * Whether Next.js middleware authenticates requests to **this** route.
- *
- * The question has to be asked per route. Asking it once for the whole project
- * produced a hole big enough to drive through: middleware protecting only
- * `/api/admin/:path*` returned "the API is covered", and every unauthenticated
- * route in the project went unreported. One narrow matcher silenced the rule
- * everywhere.
- *
- * This gate remains the biggest false-positive risk here — middleware protects
- * a route from the outside, leaving nothing in the route file to see — so an
- * unreadable matcher still counts as protection.
- */
+/** 按具体路由判断中间件覆盖及鉴权信号。 */
 function middlewareCovers(ctx: ScanContext, routePath: string, url: string): boolean {
   const mw = middlewareFor(ctx, routePath)
   if (!mw) return false
   if (!hasAuthSignal(mw)) return false
 
   const config = extractMatcherConfig(mw)
-  // No matcher at all: middleware runs on every request, this one included.
+  // 未指定匹配器时按全部请求处理。
   if (config.kind === 'absent') return true
-  // A matcher canship could not read is still assumed to cover — the note at
-  // the top of this function explains why that direction is the careful one —
-  // but assuming is not knowing, and the reader is told which this was.
+  // 无法解析的匹配器保守视为可能覆盖，并记录扫描未完成。
   if (config.kind === 'unreadable') {
     ctx.reportIncomplete(
       'api/db-access-without-auth',
@@ -963,32 +767,17 @@ function middlewareCovers(ctx: ScanContext, routePath: string, url: string): boo
 
   const parsed = config.patterns.map(matcherToRegex)
   const readable = parsed.filter((re): re is RegExp => re !== null)
-  // One unreadable pattern among several used to make everything look covered,
-  // which is how a single odd matcher silences the rule for a whole project.
-  // Ignore what cannot be read; only fall back to assuming coverage when none
-  // of it could be read at all.
+  // 仅使用可读模式；完全不可读时保持保守。
   if (readable.length === 0) return true
   return readable.some((re) => re.test(url))
 }
 
-// ── Rule ────────────────────────────────────────────────────────────────────
+// 生成检测结果。
 
-/**
- * Anything quoted and long enough to be a credential.
- * Table names, column lists and dates fall well under this length; JWTs,
- * sk- keys and sb_secret_ tokens are all comfortably above it.
- */
+/** 识别摘录中需提前遮蔽的长凭据形状。 */
 const SECRET_SHAPED = /['"`]([A-Za-z0-9_\-.]{32,})['"`]/g
 
-/**
- * Build the excerpt from the whole source line rather than the regex match:
- * `const { data } = await supabaseAdmin.from('profiles').select('*')` reads
- * naturally, where `.from('profiles').select` does not.
- *
- * Any credential-shaped token on that line is masked first. A hardcoded key
- * sitting on the same line as a query is unlikely — but canship's rule is that
- * no complete secret ever reaches the output, and "unlikely" is not "never".
- */
+/** 从完整源码行生成摘录，保留上下文。 */
 function excerptFor(file: ScanFile, line: number): string {
   const raw = (file.lines[line - 1] ?? '').trim()
   let out = raw
@@ -997,9 +786,7 @@ function excerptFor(file: ScanFile, line: number): string {
   while ((m = SECRET_SHAPED.exec(raw)) !== null) {
     out = out.split(m[1]!).join(redactSecret(m[1]!))
   }
-  // Length is the boundary's job — see sanitize(). Cutting here would risk
-  // the same order bug: a credential this masker did not recognise could be
-  // sliced through before redaction ever saw it.
+  // 截断由统一输出边界完成。
   return out
 }
 
@@ -1008,30 +795,14 @@ export const apiAuthRule: ProjectRule = {
   severity: 'P0',
 
   check(ctx: ScanContext): Finding[] {
-    // Example apps are routes too — a deployable demo under examples/ has the
-    // same open endpoint. The engine downgrades what they produce.
+    // 示例路由仍参与检查，由引擎降低置信度。
     const routes = ctx.files.filter((f) => isApiRoute(f.path))
     if (routes.length === 0) return []
 
-    // Said once, before the per-route loop, rather than once per route. A
-    // matcher canship declines to run is a question it did not answer — and
-    // the answer it falls back to is "covered", which is the quiet direction.
-    // Every middleware, not the first one found. `find` was left over from when
-    // a project had at most one; once each workspace package could have its
-    // own, the second app's refused matchers went unmentioned — and a refused
-    // matcher is read as coverage, so that silence hid real routes.
+    // 每个中间件只校验一次匹配器。
     for (const middlewareFile of ctx.files.filter((f) => MIDDLEWARE_FILE.test(f.path))) {
       const config = extractMatcherConfig(middlewareFile)
-      // matcherToRegex(p) === null covers both reasons a matcher goes unread:
-      // refused up front for being unsafe to run (isSafeMatcher), or refused
-      // after because it failed to compile at all — a matcher with invalid
-      // regex syntax passed isSafeMatcher (nothing about it looked like
-      // exponential backtracking) and only failed inside matcherToRegex's own
-      // try/catch. That case used to slip past this loop silently: the pattern
-      // filtered on `!isSafeMatcher(p)` alone called it zero refused matchers,
-      // middlewareCovers fell back to its "nothing readable → assume covered"
-      // branch, and every route under a middleware with one malformed matcher
-      // reported clean with no incomplete notice at all.
+      // 编译失败或不安全的模式都必须记录。
       const refused =
         config.kind === 'patterns' ? config.patterns.filter((p) => matcherToRegex(p) === null) : []
       if (refused.length > 0) {
@@ -1054,14 +825,13 @@ export const apiAuthRule: ProjectRule = {
 
       const url = routeUrl(route.path)
       if (isAuthEndpoint(url)) continue
-      // Asked per route, not once for the project — see middlewareCovers.
+      // 逐路由判断保护范围。
       if (middlewareCovers(ctx, route.path, url)) continue
 
       const admin = usesAdminClient(route, adminModules, ctx.files)
-      // Report the write if there is one — it is the operation people care
-      // about, and it makes the excerpt concrete.
+      // 存在写操作时优先用其作为证据。
       const hit = ops.find((o) => o.writes) ?? ops[0]!
-      // One offset per route, so the index is built and used in the same breath.
+      // 每个路由只构建一次行号索引。
       const line = lineNumberAt(lineStartsOf(route.content), hit.index)
       const excerpt = excerptFor(route, line)
 
@@ -1069,9 +839,7 @@ export const apiAuthRule: ProjectRule = {
         findings.push({
           ruleId: 'api/admin-db-access-without-auth',
           severity: 'P0',
-          // Hard evidence: the route runs queries through a key that bypasses
-          // every RLS policy, and nothing in the file or in middleware checks
-          // who sent the request.
+          // 管理员客户端缺少鉴权时使用确定置信度。
           confidence: 'certain',
           title: `Anyone can call ${url} and it queries your database as admin`,
           file: route.path,
@@ -1100,16 +868,13 @@ export const apiAuthRule: ProjectRule = {
           ],
         })
       } else if (hit.writes) {
-        // A session-scoped client runs as the caller, so the database is
-        // already deciding what they may change. See buildsSessionClient.
+        // 会话客户端交由数据库行级策略限制调用者。
         if (usesSessionClient(route, sessionModules, ctx.files)) continue
 
         findings.push({
           ruleId: 'api/db-write-without-auth',
           severity: 'P1',
-          // Lower confidence on purpose: the write may be legitimately open
-          // (a waitlist, a contact form), and protection can also live in a
-          // deployment-level proxy this scan cannot see.
+          // 公开写入可能是业务设计，保留疑似置信度。
           confidence: 'likely',
           title: `${url} writes to your database with no sign-in check`,
           file: route.path,

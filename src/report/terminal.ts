@@ -1,15 +1,4 @@
-/**
- * Terminal report.
- *
- * The audience is **people who are not security engineers**, so the wording
- * here matters more than the code:
- *   - state the consequence, not the category ("anyone can read your whole
- *     database", not "privilege escalation risk")
- *   - give steps that can be followed as-is, never "consider hardening your
- *     configuration"
- *   - when the result is clean, say exactly what was and was not checked, and
- *     never imply the app is secure
- */
+/** 生成终端报告，展示影响、证据、修复步骤和扫描范围。 */
 
 import type { Finding, ScanResult, SkipReason } from '../types.js'
 import { bold, dim, red, green, yellow, cyan, gray } from '../colors.js'
@@ -18,36 +7,21 @@ import { SKIP_LABEL, locationOf, plural, verdictOf } from './shared.js'
 const INDENT = '  '
 
 export interface RenderOptions {
-  /** Project root that was scanned, shown in the header */
+  /** 报告标题使用的扫描根目录。 */
   root: string
-  /** Whether likely-confidence findings are being shown */
+  /** 是否展示疑似结果。 */
   showingLikely: boolean
-  /** How many likely findings are hidden */
+  /** 隐藏的疑似结果数。 */
   hiddenLikely: number
-  /**
-   * How many findings a baseline removed from this report.
-   *
-   * Optional so the renderer keeps working for callers that do not use one, but
-   * once it is non-zero it is not optional to *print*: a baseline is the second
-   * thing in canship that can empty this report without the project being
-   * clean, and the first one (--all hiding likely findings) already has a line
-   * in the footer for exactly this reason.
-   */
+  /** 基线抑制数量；非零时必须披露。 */
   baselineSuppressed?: number
-  /** Baselined findings that no longer occur, so the file can be pruned */
+  /** 不再匹配的基线条目数。 */
   baselineStale?: number
-  /** Which file did the suppressing, so the reader can go and read it */
+  /** 应用的基线文件路径。 */
   baselinePath?: string | null
 }
 
-/**
- * What the baseline did, for the reader.
- *
- * Printed on both the clean and the non-clean path, because the clean one is
- * where it matters most: a report saying "no findings" over a baseline holding
- * a live service_role key is the single most misleading thing this tool could
- * produce.
- */
+/** 无论有无新结果，都显示基线抑制信息。 */
 function renderBaseline(opts: RenderOptions): string[] {
   const suppressed = opts.baselineSuppressed ?? 0
   const stale = opts.baselineStale ?? 0
@@ -63,8 +37,7 @@ function renderBaseline(opts: RenderOptions): string[] {
   }
   if (stale > 0) {
     out.push(
-      // Not plural() — that helper only appends an s, and "entrys" is not a
-      // word. The irregular ones have to be written out.
+      // 不规则复数单独处理。
       `${INDENT}${dim(`${stale} baseline ${stale === 1 ? 'entry' : 'entries'} no longer ${stale === 1 ? 'matches' : 'match'} anything — re-run --baseline-write to prune.`)}`,
     )
   }
@@ -75,7 +48,7 @@ export function renderReport(result: ScanResult, opts: RenderOptions): string {
   const out: string[] = ['']
   const { findings } = result
 
-  // ── Header ──
+  // 报告标题。
   out.push(
     `${INDENT}${bold('canship')} ${dim(`scanned ${result.filesScanned} ${plural(result.filesScanned, 'file')} in ${result.durationMs}ms`)}`,
   )
@@ -87,11 +60,7 @@ export function renderReport(result: ScanResult, opts: RenderOptions): string {
     return out.join('\n')
   }
 
-  // ── Verdict banner ──
-  //
-  // "Critical" is a claim about severity, not about certainty. Counting every
-  // certain finding as critical meant a P2 configuration mistake — one that
-  // browsers reject outright, so nothing is exposed — printed "do not deploy".
+  // 按严重度和置信度生成结论。
   const { blocking, minor: confirmedMinor, unsure } = verdictOf(findings)
   if (blocking > 0) {
     out.push(`${INDENT}${red(bold(`✗ ${blocking} critical ${plural(blocking, 'issue')} — do not deploy`))}`)
@@ -104,13 +73,13 @@ export function renderReport(result: ScanResult, opts: RenderOptions): string {
   }
   out.push('')
 
-  // ── Findings ──
+  // 结果详情。
   findings.forEach((f, i) => {
     out.push(...renderFinding(f, i + 1))
     out.push('')
   })
 
-  // ── Footer ──
+  // 报告页尾。
   out.push(`${INDENT}${gray('─'.repeat(60))}`)
   out.push('')
   if (result.partial) {
@@ -144,12 +113,9 @@ function renderFinding(f: Finding, index: number): string[] {
   }
 
   out.push('')
-  // Joined here rather than stored joined: the boundary has already stripped
-  // every newline from inside each paragraph, so the only breaks in this string
-  // are the ones this line puts there. See Finding.why.
+  // 输出边界已清理段内换行，此处恢复段落结构。
   for (const line of wrapText(f.why.join('\n\n'), 76)) {
-    // The blank line between paragraphs stays genuinely blank. Indenting it
-    // would put trailing whitespace into output people paste elsewhere.
+    // 段落空行不增加缩进，避免尾随空白。
     out.push(line === '' ? '' : `${INDENT}${INDENT}${line}`)
   }
 
@@ -165,8 +131,7 @@ function renderFinding(f: Finding, index: number): string[] {
     })
   }
 
-  // Shown separately and last, because these are the steps that actually
-  // revoke access — and the ones people skip.
+  // 人工操作单独列出，突出凭据轮换等必要步骤。
   if (f.humanOnly && f.humanOnly.length > 0) {
     out.push('')
     out.push(`${INDENT}${INDENT}${yellow(bold('Only you can do this:'))}`)
@@ -184,14 +149,7 @@ function renderFinding(f: Finding, index: number): string[] {
 function renderClean(result: ScanResult, opts: RenderOptions): string[] {
   const out: string[] = []
 
-  // Nothing was examined at all. This is a different statement from "examined
-  // and found clean", and it needs different words: the reassuring checklist
-  // below would be a lie here, since not one of those checks had any input.
-  //
-  // It is also the failure the reader is least likely to suspect, because the
-  // output of a scan that found nothing looks exactly like success. The
-  // headline command takes no argument, so the wrong working directory is the
-  // ordinary mistake rather than an exotic one.
+  // 零文件扫描使用独立提示。
   if (result.filesScanned === 0) {
     out.push(`${INDENT}${yellow(bold('! No files were scanned — nothing was checked'))}`)
     out.push('')
@@ -207,9 +165,7 @@ function renderClean(result: ScanResult, opts: RenderOptions): string[] {
     out.push(`${INDENT}${dim('  · this is not the directory you meant to scan')}`)
     out.push(`${INDENT}${dim('  · everything here is gitignored, or is build output canship skips')}`)
     out.push(`${INDENT}${dim('  · the project lives in a subdirectory — try: npx canship ./app')}`)
-    // Naming the real cause when it is known beats offering three guesses. If
-    // the user excluded every file themselves, the list above is a set of
-    // wrong answers and the right one is sitting in `ignored`.
+    // 全部文件被主动忽略时说明具体原因。
     if (result.ignored.length > 0) {
       out.push(`${INDENT}${dim('  · every file here was excluded by canship-ignore-file')}`)
       out.push('')
@@ -219,10 +175,7 @@ function renderClean(result: ScanResult, opts: RenderOptions): string[] {
     return out
   }
 
-  // The green tick is a promise, and it is only honest when the project was
-  // actually examined. A rule that crashed or a file that could not be read
-  // means "nothing was found in what was checked" — a much weaker statement,
-  // and the one a reader is most likely to mistake for the strong one.
+  // 扫描未完成时不得显示正常通过。
   if (result.partial) {
     const headline =
       opts.hiddenLikely > 0
@@ -234,10 +187,7 @@ function renderClean(result: ScanResult, opts: RenderOptions): string[] {
       `${INDENT}${yellow(bold(`! No certain findings — ${opts.hiddenLikely} lower-confidence ${plural(opts.hiddenLikely, 'finding')} hidden`))}`,
     )
   } else if ((opts.baselineSuppressed ?? 0) > 0) {
-    // The green tick is a promise about the project, not about the diff. With a
-    // baseline in force it would be describing a repository whose findings were
-    // filed away rather than fixed — which is the whole reason this branch
-    // exists above the tick rather than beside it.
+    // 基线隐藏结果时不得宣称项目无问题。
     const suppressed = opts.baselineSuppressed ?? 0
     out.push(
       `${INDENT}${yellow(bold(`! No new findings — ${suppressed} ${plural(suppressed, 'finding')} accepted by the baseline`))}`,
@@ -248,8 +198,7 @@ function renderClean(result: ScanResult, opts: RenderOptions): string[] {
   out.push('')
   out.push(...renderBaseline(opts))
   if ((opts.baselineSuppressed ?? 0) > 0 || (opts.baselineStale ?? 0) > 0) out.push('')
-  // This block is deliberate: a user must never walk away thinking
-  // "it passed, therefore I am secure".
+  // 明确静态检查的能力边界。
   out.push(`${INDENT}${dim('canship checked for:')}`)
   out.push(`${INDENT}${dim('  · API keys hardcoded in source code')}`)
   out.push(`${INDENT}${dim('  · Server-side secrets exposed to the browser via public env prefixes')}`)
@@ -262,12 +211,7 @@ function renderClean(result: ScanResult, opts: RenderOptions): string[] {
   out.push('')
   out.push(`${INDENT}${dim('It does not check rate limiting, injection, or whether the checks it')}`)
   out.push(`${INDENT}${dim('did find are the right ones.')}`)
-  // The closing sentence is the one people quote back. It must not say the
-  // checks passed when something was found and then silenced — by --all hiding
-  // it, or by a marker in the source. The tick above stays either way, matching
-  // how canship-ignore-file has always behaved: the user made this call
-  // deliberately, in their own file, and a line marker hides strictly less than
-  // the file marker that already keeps it.
+// 结束语必须保留隐藏、忽略和筛选信息。
   if (opts.hiddenLikely > 0) {
     out.push(`${INDENT}${dim('This is not a finding-free result. Review the hidden items with --all.')}`)
   } else if (result.ignoredFindings.length > 0) {
@@ -294,14 +238,7 @@ function renderClean(result: ScanResult, opts: RenderOptions): string[] {
   return out
 }
 
-/**
- * One line naming the files the user excluded on purpose.
- *
- * Deliberate exclusions are not failures, so they do not make the scan partial
- * — but they still have to be visible. A file dropping out of a security scan
- * with nothing said about it is the same problem as a silent crash, only more
- * comfortable, and comfortable is how it survives.
- */
+/** 列出主动排除的文件，这些排除不影响完整性。 */
 function renderIgnored(result: ScanResult): string[] {
   const out: string[] = []
   if (result.ignored.length > 0) {
@@ -311,9 +248,7 @@ function renderIgnored(result: ScanResult): string[] {
       `${INDENT}${dim(`${result.ignored.length} ${plural(result.ignored.length, 'file')} excluded by canship-ignore-file: ${shown}${more}`)}`,
     )
   }
-  // A rule that was turned off is a check that did not happen, and the reader
-  // has to see it from the report alone — otherwise a config file committed a
-  // year ago decides what "clean" means and never says so.
+  // 披露被排除的规则范围。
   if (result.ruleSelection !== null) {
     const { only, skip, removed } = result.ruleSelection
     const which =
@@ -321,9 +256,7 @@ function renderIgnored(result: ScanResult): string[] {
     const cost = removed > 0 ? `, hiding ${removed} ${plural(removed, 'finding')}` : ''
     out.push(`${INDENT}${dim(`Rule selection in force: ${which}${cost}`)}`)
   }
-  // A silenced finding is a decision about a specific rule at a specific
-  // place, so the locations are named rather than counted. "Three findings
-  // were silenced" is not something a reviewer can check.
+  // 逐条列出忽略标记对应的位置及规则。
   if (result.ignoredFindings.length > 0) {
     const n = result.ignoredFindings.length
     const shown = result.ignoredFindings
@@ -335,10 +268,7 @@ function renderIgnored(result: ScanResult): string[] {
       `${INDENT}${dim(`${n} ${plural(n, 'finding')} silenced by canship-ignore-next-line: ${shown}${more}`)}`,
     )
   }
-  // canship's decision, not the user's, so it says so. Dependency trees are
-  // skipped because a third-party fixture's example key is a false positive —
-  // but a reader who keeps their own code under `vendor/` deserves to find out
-  // from the report rather than from a scan that quietly covered less.
+  // 披露工具默认排除的第三方目录数量。
   if (result.vendored > 0) {
     out.push(
       `${INDENT}${dim(`${result.vendored} ${plural(result.vendored, 'file')} skipped inside dependency directories (node_modules, vendor, Pods, .yarn, .pnpm-store)`)}`,
@@ -347,21 +277,12 @@ function renderIgnored(result: ScanResult): string[] {
   return out
 }
 
-/**
- * Say exactly what did not get checked.
- *
- * Deliberately concrete. "Scan may be incomplete" teaches people to skip the
- * line; naming the rule that crashed and the file that could not be opened
- * tells them whether it matters to them.
- */
+/** 列出未完成的检查和跳过原因。 */
 function renderIncomplete(result: ScanResult): string[] {
   const out: string[] = []
   out.push(`${INDENT}${yellow(bold('Not everything was checked:'))}`)
 
-  // Reachable with findings present: a repository whose working tree is
-  // entirely gitignored still has a git history, and the history rule reads
-  // it. Those findings are real — but no file-based check ever ran, so the
-  // absence of the others means nothing.
+  // 零工作区文件仍可能存在历史扫描结果。
   if (result.filesScanned === 0) {
     out.push(
       `${INDENT}${INDENT}${dim('·')} no files could be read at this path, so every file-based check was skipped`,
@@ -370,8 +291,7 @@ function renderIncomplete(result: ScanResult): string[] {
 
   for (const err of result.errors.slice(0, 5)) {
     const where = err.file ? ` on ${err.file}` : ''
-    // A rule that hit a ceiling did not fail, and saying it did sends someone
-    // looking for a bug instead of reading the sentence that follows.
+    // 区分规则异常与规则达到资源上限。
     const verb = err.kind === 'incomplete' ? 'did not finish' : 'failed'
     out.push(`${INDENT}${INDENT}${dim('·')} the ${err.ruleId} check ${verb}${where} — ${err.message}`)
   }
@@ -399,7 +319,7 @@ function renderIncomplete(result: ScanResult): string[] {
   return out
 }
 
-/** Wrap to a width, preserving explicit newlines in the source text */
+/** 按宽度换行，保留显式段落分隔。 */
 function wrapText(text: string, width: number): string[] {
   const out: string[] = []
   for (const paragraph of text.split('\n')) {

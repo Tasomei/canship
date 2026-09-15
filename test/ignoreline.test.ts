@@ -1,20 +1,5 @@
-/**
- * Line-level suppression tests.
- *
- * canship-ignore-file
- *
- * The marker above opts this file out of canship's own scan: it holds
- * credential-shaped strings as assertion data.
- *
- * The property that matters most here is not that the marker works. It is that
- * the marker does not work by accident. `canship-ignore-file` learned this the
- * expensive way — a substring search had walker.ts and secrets.ts excluding
- * themselves, because both merely *mention* the marker in a comment explaining
- * it — and a line marker walks straight back into that trap unless it is held
- * to the same whole-line rule.
- *
- * So half of these tests are about lines that must NOT suppress anything.
- */
+/** 验证逐行抑制的语法、范围和输出披露。
+ * canship-ignore-file */
 
 import { test, describe, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -29,7 +14,7 @@ after(() => {
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true })
 })
 
-/** A throwaway project holding one source file, scanned as its own root */
+/** 以独立临时项目扫描单个源文件。 */
 async function scanSource(source: string): Promise<Awaited<ReturnType<typeof scan>>> {
   const root = mkdtempSync(join(tmpdir(), 'canship-ignoreline-'))
   tempDirs.push(root)
@@ -38,14 +23,14 @@ async function scanSource(source: string): Promise<Awaited<ReturnType<typeof sca
   return scan(root)
 }
 
-/** Credential-shaped strings, kept out of the test bodies so they read */
+/** 集中保存模拟凭据，便于阅读用例。 */
 const OPENAI = 'sk-proj-Ab3xQ9zK7mNpR2tVwY4hJdLcF8gH1nT6bE0s'
 const OPENAI_TWO = 'sk-proj-Zz9yX8wV7uT6sR5qP4oN3mL2kJ1hG0fE9dC8'
 const SENDGRID = 'SG.aB3xQ9zK7mNpR2tVwY4hJd.LcF8gH1nT6bE0sU5iO9jXrZaQwMkPvYdN3C'
 
 describe('parsing the markers', () => {
   test('a marker governs the line after it', () => {
-    // 1-based, so a marker on line 1 governs line 2.
+    // 标记位于第一行时控制第二行。
     const lines = ignoredLinesOf(['// canship-ignore-next-line', 'const a = 1'])
     assert.deepEqual([...lines.keys()], [2])
   })
@@ -74,8 +59,7 @@ describe('parsing the markers', () => {
   })
 
   test('a bare marker beats a narrow one on the same line', () => {
-    // Two markers stacked above one line. The wider of the two has to win, or
-    // the narrow one silently shrinks a suppression the user also wrote.
+    // 无规则限制的标记应覆盖更窄的标记。
     const lines = ignoredLinesOf([
       '// canship-ignore-next-line secrets/hardcoded/openai',
       '// canship-ignore-next-line',
@@ -87,15 +71,12 @@ describe('parsing the markers', () => {
 
 describe('lines that must not suppress anything', () => {
   test('prose that merely mentions the marker', () => {
-    // The exact mistake canship-ignore-file made, and the reason both markers
-    // insist on owning their whole line.
+    // 说明文本不能触发忽略。
     assert.equal(ignoredLinesOf(['// Using canship-ignore-next-line here is wrong']).size, 0)
   })
 
   test('a marker trailing real code on the same line', () => {
-    // The convenient form, deliberately unsupported: it can only work by
-    // searching inside a line that also holds code, which is the substring
-    // search this rule exists to refuse.
+    // 同行包含真实代码的标记不生效。
     assert.equal(ignoredLinesOf(['const a = 1 // canship-ignore-next-line']).size, 0)
   })
 
@@ -128,8 +109,7 @@ describe('suppressing real findings', () => {
   })
 
   test('a named rule does not silence a different one', async () => {
-    // The reason the rule id is worth having. A line with one known false
-    // positive must not go blind to a real finding from another rule.
+    // 指定规则只能抑制对应问题。
     const result = await scanSource(
       [
         '// canship-ignore-next-line secrets/hardcoded/openai',
@@ -142,8 +122,7 @@ describe('suppressing real findings', () => {
   })
 
   test('a suppressed finding is recorded, never merely dropped', async () => {
-    // A finding leaving a security report with nothing said about it is the
-    // failure this whole feature had to avoid being.
+    // 被抑制的结果必须留有记录。
     const result = await scanSource(
       ['// canship-ignore-next-line', `export const a = "${OPENAI}"`].join('\n'),
     )
@@ -154,8 +133,7 @@ describe('suppressing real findings', () => {
   })
 
   test('the record holds no excerpt', async () => {
-    // The user's point in writing the marker was that this line should stop
-    // being reproduced in reports.
+    // 忽略记录不得再次输出源码内容。
     const result = await scanSource(
       ['// canship-ignore-next-line', `export const a = "${OPENAI}"`].join('\n'),
     )
@@ -172,8 +150,7 @@ describe('suppressing real findings', () => {
   })
 
   test('suppression does not make the scan partial', async () => {
-    // A deliberate opt-out is not an incomplete scan. Marking it partial would
-    // exit 3 and tell CI the tool failed.
+    // 主动忽略不构成扫描未完成。
     const result = await scanSource(
       ['// canship-ignore-next-line', `export const a = "${OPENAI}"`].join('\n'),
     )
@@ -182,14 +159,7 @@ describe('suppressing real findings', () => {
 })
 
 describe('the markers cannot be made slow', () => {
-  // Both markers were written as `\s*(?:comment syntax)?\s*marker`, where the
-  // two runs of whitespace can both match the same spaces when the comment
-  // syntax is absent. That is quadratic in the length of the line, and a scan
-  // is a loop over every line of every file — so one long whitespace line in a
-  // repository canship was pointed at held the scan for 36 seconds at 200 KB,
-  // with the file cap at 2 MiB. Pinned by time because the shape of the regex
-  // is the thing that has to stay right, and a future edit that reintroduces
-  // the ambiguity would still pass every correctness test above.
+  // 用长行验证标记解析不会发生高成本回溯。
   const budgetMs = 1000
 
   for (const [name, line] of [
@@ -208,8 +178,7 @@ describe('the markers cannot be made slow', () => {
   }
 
   test('the fast form still recognises and rejects the same lines', () => {
-    // The rewrite is only safe if it did not change what matches. The suites
-    // above cover the cases in prose; this walks the combinations.
+    // 遍历注释包装组合，验证语义保持一致。
     const wrappers = ['', '//', '#', '--', '*', '*/', '/*', '<!--']
     const closers = ['', '*/', '-->']
     const spaces = ['', ' ', '   ', '\t']
@@ -220,7 +189,7 @@ describe('the markers cannot be made slow', () => {
           if (ignoredLinesOf([`${s}${w}${s}canship-ignore-next-line${s}${c}${s}`]).size === 1) {
             matched++
           }
-          // Anything with real content beside the marker must never match.
+          // 标记旁存在其他内容时不能匹配。
           assert.equal(
             ignoredLinesOf([`${s}${w}${s}const a = 1 ${c}`]).size,
             0,

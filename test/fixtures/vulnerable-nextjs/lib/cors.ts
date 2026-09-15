@@ -1,6 +1,4 @@
-// Test fixture: the origin is handed straight back to whoever asked for it,
-// and credentials are allowed alongside it. Every website on the internet is
-// now an allowed origin.
+// 无条件回显调用者来源，同时允许携带凭据。
 export function corsHeaders(req: Request): Record<string, string> {
   return {
     'Access-Control-Allow-Origin': req.headers.get('origin')!,

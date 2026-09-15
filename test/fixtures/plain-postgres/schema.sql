@@ -1,12 +1,4 @@
--- Test fixture: a conventional backend + Postgres project. NOT Supabase.
---
--- This is the false positive trap the RLS rule has to avoid. Row Level Security
--- is only *required* when the database is exposed straight to the browser, as
--- Supabase and PostgREST do. Here the database sits behind an API server and is
--- never reachable by a client, so these tables need no RLS at all.
---
--- Reporting this project would be a serious false positive, and the kind that
--- makes an experienced developer close the tab.
+-- 普通后端数据库位于 API 服务之后，不按 Supabase 直接访问模式检查。
 
 create table public.users (
   id bigserial primary key,

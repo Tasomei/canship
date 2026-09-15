@@ -2,7 +2,7 @@
 
 面向 JavaScript 和 TypeScript Web 项目的本地静态安全扫描工具。canship 检测暴露的凭据和常见访问控制错误，不执行项目代码，不上传源码，也不主动访问网络。
 
-```bash
+```powershell
 npx canship .
 ```
 
@@ -17,19 +17,19 @@ npx canship .
 | 硬编码凭据 | 暴露已识别的 OpenAI、Anthropic、AWS、Stripe、GitHub、npm、Slack、SendGrid、私钥或数据库凭据 | P0 |
 | 公开环境变量中的私密值 | 将私密值打包进浏览器代码 | P0 |
 | 客户端可访问 Supabase `service_role` key | 绕过 Row Level Security 策略 | P0 |
-| Git 跟踪的 `.env` 文件中存在凭据 | 凭据留在本地仓库历史中 | P0 |
+| Git 跟踪及历史 `.env` 文件中的私密值或疑似私密值 | 凭据或疑似秘密保留在仓库历史中 | P0 |
 | Supabase 表未启用 RLS | 通过 Supabase Data API 暴露缺少行级控制的数据 | P1 |
 | Firebase 规则允许无条件访问 | 允许未经授权的读取或写入 | P1 |
 | Next.js API route 未鉴权 | 未验证调用方即可访问数据或管理操作 | P0 / P1 |
 | 携带凭据的 CORS 回显来源 | 其他站点可能读取已认证响应 | P1 |
 
-API 鉴权检查仅覆盖 `app/api/**` 和 `pages/api/**` 下的处理函数。其他检查不依赖具体框架，并识别 Next.js、Vite、Nuxt、Create React App、Expo、Gatsby、Vue CLI 和 SvelteKit 使用的公开环境变量前缀。
+API 鉴权检查覆盖 Next.js App Router 和 Pages Router 的 `/api` 处理函数，支持 `app/(group)/api/**` 等路由组和工作区应用。其他检查识别 Next.js、Vite、Nuxt、Create React App、Expo、Gatsby、Vue CLI 和 SvelteKit 的公开环境变量前缀。
 
 严重度表示潜在影响，置信度（`certain` 或 `likely`）表示证据强度。`certain` 的 P0/P1 结果会阻止发布并返回退出码 `1`；其他结果返回退出码 `2`。
 
 ## 使用方式
 
-```bash
+```powershell
 npx canship [路径] [参数]
 ```
 
@@ -45,13 +45,13 @@ npx canship [路径] [参数]
 | `--best-effort` | 扫描不完整且没有结果时允许退出 `0` |
 | `--baseline[=文件]` | 隐藏基线中已有结果；默认：`canship-baseline.json` |
 | `--baseline-write[=文件]` | 将当前结果记录为基线后退出 |
-| `--only=规则` | 只报告匹配的规则 ID；逗号分隔，可重复传入 |
+| `--only=规则` | 仅执行匹配规则；逗号分隔，可重复传入 |
 | `--skip=规则` | 排除匹配的规则 ID；逗号分隔，可重复传入 |
 | `--no-config` | 忽略被扫描目录下的 `canship.config.json` |
 | `-h`, `--help` | 显示帮助 |
 | `-v`, `--version` | 显示版本 |
 
-`--json` 和 `--fix-prompt` 是两种互斥的标准输出模式。`--report` 可以与其中任意一种组合。
+`--json` 与 `--fix-prompt` 互斥。`--report` 和 `--sarif` 独立写入文件，可与其中任意一种组合。报告正文为英文；各格式均需添加 `--all` 才包含 `likely` 详情。
 
 ### 退出码
 
@@ -62,7 +62,7 @@ npx canship [路径] [参数]
 | `2` | 存在结果，但没有 `certain` 的 P0/P1 阻断项 |
 | `3` | 参数错误、工具错误，或扫描不完整且未使用 `--best-effort` |
 
-结果对应的退出码优先于扫描不完整状态。机器可读输出仍通过 `partial`、`errors` 和 `skipped` 保留不完整信息。
+结果对应的退出码优先于扫描不完整状态。JSON 通过 `partial`、`errors` 和 `skipped` 保留完整性信息；SARIF 包含执行状态及诊断通知。`--best-effort` 不改变退出码 `1` 或 `2`。
 
 终端默认只展开 `certain` 结果。被隐藏的 `likely` 结果仍会返回退出码 `2`；使用 `--all` 查看完整内容。
 
@@ -79,6 +79,8 @@ npx canship [路径] [参数]
 ```
 
 支持 `baseline`、`only`、`skip` 和 `all`。命令行参数优先于配置文件。`only` 和 `skip` 不能同时使用；选择器必须匹配完整规则 ID 或规则命名空间。规则 ID 可从 JSON 输出中获取。
+
+规则筛选会跳过无关规则的执行。报告披露筛选条件；`ruleSelection.removed` 仅统计已执行规则中被过滤的结果，不估算未执行规则的潜在发现。
 
 配置采用 JSON，因为 canship 不执行项目代码。扫描不可信代码时应使用 `--no-config`，避免目标项目修改规则选择。`bestEffort` 只能由运行者通过命令行启用。
 
@@ -104,8 +106,11 @@ const key = process.env.OPENAI_KEY
 
 基线适合在已有项目中接入 canship：
 
-```bash
+```powershell
 npx canship --baseline-write
+```
+
+```powershell
 npx canship --baseline
 ```
 
@@ -115,12 +120,15 @@ npx canship --baseline
 
 所有输出都会说明基线抑制了多少结果。基线缺失、损坏或版本不兼容时，canship 会以退出码 `3` 失败，不会静默跳过。
 
+`--baseline-write` 写入成功后退出 `0`；扫描不完整或启用规则筛选时会提示。裸基线参数使用扫描目录，显式路径相对当前工作目录。
+
 ## 范围与限制
 
 - canship 使用静态启发式规则，无法验证运行时行为。自定义鉴权、动态配置和不支持的语法可能产生误报或漏报。
 - 检测和脱敏使用同一套凭据特征。无法识别的密钥也无法保证被遮蔽，因此报告应视为内部材料。
-- 单个文件最大读取 2 MiB，目录最大深度为 16 层，单文件最多输出 100 条结果，Git 历史中每个文件最多检查最近 100 个相关版本。触及限制时会明确报告。
-- 不跟随符号链接。嵌套 Git 仓库和子模块会列为跳过项；这些情况会使扫描标记为不完整。
+- 单文件读取上限为 2 MiB，单次扫描累计读取上限为 128 MiB、10,000 个文件，目录深度上限为 16 层。各规则合计每文件最多输出 100 条结果，优先保留高严重度、高置信度结果。超过限制时标记扫描未完成。
+- Git 历史每文件最多检查 100 个相关版本，单条 Git 命令超时为 30 秒。仓库中的 Git 检查不可用时标记扫描未完成。
+- 扫描范围内的符号链接和嵌套仓库会被跳过，并标记扫描未完成。已排除的构建及依赖目录仍保持排除；嵌套仓库和子模块需分别扫描。
 - Google、Firebase 和 Maps 的 `AIza...` 值被视为公开标识符，因为仅凭源码无法验证其服务端限制。
 - 不检查限流、注入、依赖漏洞，也不验证调用方身份之外的业务授权。
 
@@ -130,8 +138,11 @@ npx canship --baseline
 
 修改检测规则时，应在 [`test/fixtures/`](./test/fixtures/) 中同时提供一个应检出和一个不应检出的夹具。
 
-```bash
+```powershell
 npm ci
+```
+
+```powershell
 npm run prepublishOnly
 ```
 

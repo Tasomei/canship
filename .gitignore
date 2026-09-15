@@ -4,27 +4,20 @@ dist/
 *.tgz
 .DS_Store
 
-# `npm config set` without --location=global, and a scoped `npm login`, write a
-# project-level .npmrc — and what they write is an auth token. The user-level
-# file lives outside any repository; this one would live inside this one.
+# 排除可能包含认证令牌的项目级包管理配置。
 .npmrc
 
-# Local scratch space for one-off scripts and throwaway repros.
+# 本地脚本及临时复现目录。
 .scratch/
 
-# Local backups created before replacing existing files.
+# 文件覆盖前创建的本地备份。
 _备份/
 
-# canship's own output, written into whatever directory it was pointed at.
-# Both name findings and the files they are in; neither is meant to be
-# committed. canship-baseline.json is deliberately absent — that one *is*
-# meant to be committed, since it is the record of what a project accepted.
+# 报告包含问题位置及详情，不应提交；基线需经审阅后单独纳入版本控制。
 canship-report.html
 canship.sarif
 
-# The .env files under test/fixtures are committed on purpose: they are test
-# fixtures full of fake keys, used to verify the rules fire correctly.
-# Do not let the patterns below swallow them.
+# 夹具中的环境文件使用模拟值，应保留在版本控制中。
 .env
 .env.local
 .env.*.local

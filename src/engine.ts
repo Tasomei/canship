@@ -1,6 +1,4 @@
-/**
- * Scan engine: schedules rules, deduplicates and sorts the results.
- */
+/** 扫描引擎：调度规则、去重、抑制、限额及输出清理。 */
 
 import type {
   Finding,
@@ -13,7 +11,8 @@ import type {
   RuleSelection,
   SkippedFile,
 } from './types.js'
-import { FILE_RULES, PROJECT_RULES, ruleMatches } from './rules/index.js'
+import { FILE_RULES, PROJECT_RULES, ruleMatches, shouldRunRule } from './rules/index.js'
+import { MAX_FINDINGS_PER_FILE } from './rules/limits.js'
 import { collectFiles, detectGitRepo, ignoredLinesOf } from './walker.js'
 import type { IgnoredLines } from './walker.js'
 import { resolveGitExecutable } from './git.js'
@@ -23,32 +22,7 @@ import { createHash } from 'node:crypto'
 const SEVERITY_ORDER: Record<Finding['severity'], number> = { P0: 0, P1: 1, P2: 2 }
 const CONFIDENCE_ORDER: Record<Finding['confidence'], number> = { certain: 0, likely: 1 }
 
-/**
- * The same underlying problem can be matched by several rules (a service_role
- * key sitting in .env and also referenced from source, say). Deduplicate so one
- * mistake is not reported three times.
- *
- * The excerpt is part of the key, and has to be. Rule + file + line alone is a
- * proxy for identity rather than identity itself, and it was wrong in the
- * direction that loses findings: two different OpenAI keys declared on one line
- * share a ruleId — `secrets/hardcoded/openai` — so the second was dropped
- * silently, with nothing in `errors` and no effect on `partial`. Two live
- * credentials, two rotations needed, one of them never named. The existing
- * multi-secret fixture happened to use two *different* providers, whose rule
- * ids differ, so it walked straight past this.
- *
- * Rules that redact per match give those two findings different excerpts, which
- * is exactly the distinction wanted here. A rule reporting the same line twice
- * for genuinely the same reason still produces one entry, because its excerpt
- * is then the same string.
- *
- * The title is in the key for the same reason and because the excerpt cannot
- * carry the distinction alone: a rule may have no excerpt to give. The RLS rule
- * sets `excerpt: null` on every finding, so two tables declared on one line of
- * SQL — which a generated or minified migration does — collapsed to the same
- * key and the second table went unreported, silently, with `errors` empty and
- * `partial` still false.
- */
+/** 按规则、文件、行号、摘录和标题去重，保留同位置的不同问题。 */
 function dedupe(findings: Finding[]): Finding[] {
   const seen = new Set<string>()
   const out: Finding[] = []
@@ -61,79 +35,27 @@ function dedupe(findings: Finding[]): Finding[] {
   return out
 }
 
-/**
- * Terminal escape sequences and other control characters.
- *
- * A path is attacker-influenced in exactly the way a file's contents are:
- * anyone who can add a file to a repository chooses its name. A name carrying
- * ANSI escapes can repaint the report around it, and one carrying a credential
- * puts that credential into every output.
- */
+/** 移除终端控制字符，避免路径或内容改变报告显示。 */
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g
 
-/**
- * Bidirectional and invisible formatting characters.
- *
- * These are not noise, they are a technique. A right-to-left override in a
- * comment reorders everything after it *at display time only*, so a line can
- * read as one thing in canship's report and mean another to the compiler —
- * the Trojan Source attack. Stripping them the way the control characters
- * above are stripped would defeat the deception and destroy the evidence at
- * the same time: the reader would be shown a clean-looking line, no longer
- * matching the file, with nothing to say why it had been touched.
- *
- * So they are made visible instead. `<U+202E>` cannot reorder anything, it
- * survives being pasted back into an editor, and it tells a reader the thing
- * they most need to know about that line — that someone put an invisible
- * character in it on purpose.
- *
- * ZWNJ and ZWJ (U+200C, U+200D) are deliberately absent: they carry real
- * meaning in Persian, in several Indic scripts and in every emoji sequence,
- * so marking them would fire constantly on ordinary text.
- */
+/** 显式标记双向和不可见格式字符；保留具有文字语义的连接字符。 */
 const DECEPTIVE_CHARS = /[\u061c\u200b\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g
 
-/** U+202E arrives as one character and leaves as the eight that name it */
+/** 将不可见字符转换为可读的码位标记。 */
 function nameOf(ch: string): string {
   return `<U+${(ch.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}>`
 }
 
-/**
- * The output boundary.
- *
- * canship promises it never prints a complete secret, and that promise is only
- * as good as the last rule that remembered to keep it. Enforcing it here means
- * a rule cannot leak a credential by forgetting to redact one, or by redacting
- * the wrong one of the two on a line. Every renderer reads what this produces.
- *
- * Which strings reach a reader is a list, and it has been wrong twice: once
- * for the excerpt, once for the path. Being a list, it will be wrong again —
- * the only real defence is that it lives in one place.
- */
+/** 统一输出清理：脱敏后移除控制字符并标记格式字符。 */
 function clean(text: string): string {
   return redactAll(text)
-    // A tab is a control character and was being deleted with the rest of them,
-    // which closed up the gap it was holding: an indented `return\ttrue` became
-    // `returntrue`, so an excerpt could show code that does not exist. Turned
-    // into a space rather than kept, because a real tab still lets a crafted
-    // line push text around in a terminal.
+    // 制表符替换为空格，避免相邻代码被合并。
     .replace(/\t/g, ' ')
     .replace(CONTROL_CHARS, '')
     .replace(DECEPTIVE_CHARS, nameOf)
 }
 
-/**
- * The same boundary, for text the CLI adds after the scan.
- *
- * Exported for exactly one caller and one reason: the scanned path itself.
- * Every field of a Finding goes through `clean`, but the root is attached by
- * the CLI afterwards and reached the JSON, the terminal header and the HTML
- * report untouched — so a project in a directory named after a credential
- * printed that credential in full, three times over, under a README promising
- * everything is redacted. A directory name is attacker-influenced in exactly
- * the way the note above describes, and it is also the one string a user can
- * put a secret in entirely by accident.
- */
+/** 清理 CLI 在扫描后添加的展示文本。 */
 export function cleanForOutput(text: string): string {
   return clean(text)
 }
@@ -154,41 +76,18 @@ function sanitize(findings: Finding[], files: ScanFile[]): Finding[] {
     // 仅输出摘要；原始行不进入报告，移动行号不改变身份。
     ...sourceIdentity(f),
     title: clean(f.title),
-    // Per paragraph, so the breaks between them survive a cleaner that removes
-    // every newline inside them. See Finding.why.
+    // 按段落清理，保留段落之间的结构。
     why: f.why.map(clean),
-    // The path was left out of this list once, and a filename holding a
-    // credential put it straight back into the JSON, the terminal, the HTML
-    // and the prompt meant for pasting into an assistant.
+    // 文件路径也必须经过输出清理。
     file: f.file === null ? null : clean(f.file),
-    // Redacted first, cut second, and both of them here.
-    //
-    // A rule that trimmed its own excerpt to length before this ran could
-    // defeat the redaction entirely: cutting at 120 characters through the
-    // middle of a key leaves a fragment that matches no pattern, so `clean`
-    // waved it past and nineteen characters of a live OpenAI key reached the
-    // terminal, the JSON, the HTML report and the prompt meant for pasting
-    // into an assistant. The rule was not doing anything unreasonable — it
-    // truncated, which every other rule also does. The order was simply not
-    // its decision to make.
-    //
-    // So rules hand over the whole line and the boundary does both jobs, in
-    // the only order that is safe. Rules that redact per match still may:
-    // masking a known secret before this point is additive, and truncating an
-    // already-truncated string is a no-op.
+    // 先脱敏再截断，避免截断导致凭据特征失效。
     excerpt: f.excerpt === null ? null : truncate(clean(f.excerpt)),
     fix: f.fix.map(clean),
     ...(f.humanOnly ? { humanOnly: f.humanOnly.map(clean) } : {}),
   }))
 }
 
-/**
- * Every piece of variable text in a skip record goes through the same boundary.
- *
- * A system error message usually repeats the full path, so cleaning `path`
- * alone still let a credential in a filename reach the JSON and the HTML
- * through `detail`.
- */
+/** 清理跳过记录中的路径及异常详情。 */
 export function sanitizeSkippedForOutput(items: SkippedFile[]): SkippedFile[] {
   return items.map((item) => ({
     ...item,
@@ -197,28 +96,7 @@ export function sanitizeSkippedForOutput(items: SkippedFile[]): SkippedFile[] {
   }))
 }
 
-/**
- * Findings from test fixtures, examples and documentation are held at lower
- * confidence — never dropped.
- *
- * Enforced here because leaving it to each rule produced two incompatible
- * policies at once: secrets and gitleak downgraded, while exposure, cors,
- * firebase, supabase and apiauth refused to look at all. The same
- * unauthenticated service_role route was reported under `app/` and completely
- * absent under `examples/demo/` — no finding, no `skipped` entry, nothing in
- * `partial`, on a directory layout that ships a deployable demo in half the
- * repositories that have one.
- *
- * gitleak's own header already recorded this lesson, having watched `e2e/.env`
- * vanish from a report, but the conclusion stayed inside that one rule. A
- * policy every rule has to remember is a policy some rule will forget, so the
- * engine applies it once and rules no longer get the choice.
- *
- * Downgraded rather than shown in full because the flood is real: v0.1 pointed
- * canship at its own repository and drowned in its own fixtures. `likely` is
- * hidden without --all, so the default report stays quiet while the finding
- * still exists for anyone who looks.
- */
+/** 测试与示例中的结果统一降为疑似，不直接丢弃。 */
 function downgradeExampleContext(findings: Finding[], files: ScanFile[]): Finding[] {
   const examples = new Set(files.filter((f) => f.isExampleContext).map((f) => f.path))
   return findings.map((f) =>
@@ -226,29 +104,13 @@ function downgradeExampleContext(findings: Finding[], files: ScanFile[]): Findin
   )
 }
 
-/**
- * Remove the findings a line marker silenced, and record what went.
- *
- * Applied here for the same reason the policy above is: a suppression every
- * rule has to remember is a suppression some rule will forget, and the one
- * that forgets is the one whose false positive sent the user looking for an
- * escape hatch in the first place.
- *
- * Only findings that have a line can be silenced this way. A project-wide
- * finding — git history, an RLS gap spanning migrations — is not attached to a
- * place a marker could sit next to, and pretending otherwise would let a marker
- * anywhere in the repository turn one of those off.
- *
- * The markers are read only for files that actually produced a finding. Nothing
- * else needs the answer, and the alternative is a pass over every line of every
- * file to serve the handful that have one.
- */
+/** 应用逐行忽略标记并记录被抑制的位置。 */
 function suppressIgnoredLines(
   findings: Finding[],
   files: ScanFile[],
 ): { kept: Finding[]; ignored: IgnoredFinding[] } {
   const byPath = new Map(files.map((f) => [f.path, f]))
-  /** Parsed once per file, and only for files with something to suppress */
+  /** 仅为有结果的文件解析标记，每个文件解析一次。 */
   const markers = new Map<string, IgnoredLines>()
 
   const kept: Finding[] = []
@@ -269,7 +131,7 @@ function suppressIgnoredLines(
       continue
     }
     const rules = lines.get(f.line)
-    // null means a bare marker, which covers every rule on that line.
+    // 空值表示忽略该行所有规则。
     if (rules !== null && rules !== undefined && !rules.has(f.ruleId)) {
       kept.push(f)
       continue
@@ -279,16 +141,7 @@ function suppressIgnoredLines(
   return { kept, ignored }
 }
 
-/**
- * Drop the findings a rule selection turned off.
- *
- * Applied to findings rather than to the rules themselves, which is a real
- * trade and worth stating: the rules still run, so `skip` costs nothing back
- * in scan time. The alternative is selecting on the registry ids, and those
- * appear in no output canship produces — asking someone to type
- * `exposure/public-env` to silence a finding labelled
- * `exposure/secret-in-public-env` is a guessing game.
- */
+/** 过滤已执行规则中的细分结果；整体规则筛选在执行前完成。 */
 function applyRuleSelection(
   findings: Finding[],
   options: ScanOptions,
@@ -304,7 +157,7 @@ function applyRuleSelection(
   return { kept, selection: { only, skip, removed: findings.length - kept.length } }
 }
 
-/** Most severe and most certain first — people often read only the first few */
+/** 按严重度、置信度和位置排序。 */
 function sortFindings(findings: Finding[]): Finding[] {
   return [...findings].sort((a, b) => {
     const bySeverity = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]
@@ -315,11 +168,7 @@ function sortFindings(findings: Finding[]): Finding[] {
   })
 }
 
-/**
- * Run a full scan and return **all** findings, including likely ones.
- * Deciding what to display is the caller's job — we scan once and never repeat
- * the work just to produce a count.
- */
+/** 返回选定规则的全部置信度结果，展示过滤由调用方负责。 */
 export async function scan(root: string, options: ScanOptions = {}): Promise<ScanResult> {
   const started = Date.now()
 
@@ -329,24 +178,18 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
 
   const findings: Finding[] = []
   const errors: ScanError[] = []
-  /** ruleId + message pairs already recorded, so a ceiling is reported once */
+  const fileRules = FILE_RULES.filter(rule => shouldRunRule(rule.id, options.only ?? [], options.skip ?? []))
+  const projectRules = PROJECT_RULES.filter(rule => shouldRunRule(rule.id, options.only ?? [], options.skip ?? []))
+  /** 按规则和消息去重不完整记录。 */
   const incompleteSeen = new Set<string>()
 
-  // A rule reporting a ceiling it hit lands in the same list as a rule that
-  // crashed, because the consequence for the reader is identical: part of this
-  // scan did not happen, so "found nothing" is not "there is nothing".
+  // 规则失败或达到上限均意味着扫描未完成。
   const ctx: ScanContext = {
     root,
     files,
     git,
     gitExecutable,
-    // Deduplicated here rather than by each rule remembering to report once.
-    // A rule that reaches the same ceiling from two loops over the same file —
-    // firebase does, once for open rules and once for test-mode rules — said
-    // the identical sentence twice, in the terminal's incomplete section and in
-    // the JSON. Saying "part of this did not happen" twice does not make it
-    // twice as true, and a once-flag per rule is the kind of bookkeeping every
-    // new rule would have to remember.
+    // 统一记录不完整状态，避免重复提示。
     reportIncomplete: (ruleId, message) => {
       if (incompleteSeen.has(`${ruleId} ${message}`)) return
       incompleteSeen.add(`${ruleId} ${message}`)
@@ -354,24 +197,21 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
     },
   }
 
-  // Per-file rules
+  // 执行单文件规则。
   for (const file of files) {
-    for (const rule of FILE_RULES) {
-      if (!rule.appliesTo(file)) continue
+    for (const rule of fileRules) {
       try {
+        if (!rule.appliesTo(file)) continue
         findings.push(...rule.check(file, ctx))
       } catch (err) {
-        // One broken rule must not fail the whole scan — the rest of the
-        // results are still worth showing. But the check did not run, and
-        // saying nothing about that is how a scanner reports "clean" for a
-        // repository it never finished examining.
+        // 规则异常不阻止其他规则，但必须记录扫描缺口。
         errors.push({ ruleId: rule.id, file: file.path, message: messageOf(err), kind: 'crashed' })
       }
     }
   }
 
-  // Project-wide rules
-  for (const rule of PROJECT_RULES) {
+  // 执行跨文件规则。
+  for (const rule of projectRules) {
     try {
       findings.push(...(await rule.check(ctx)))
     } catch (err) {
@@ -379,22 +219,27 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
     }
   }
 
-  // Suppressed after dedupe, so one marker silences one finding rather than
-  // being spent on a duplicate the reader would never have seen anyway — and
-  // before sanitize, because what gets recorded here is a location and a rule
-  // id, not the finding's text.
+  // 去重后应用忽略标记，再清理输出文本。
   const { kept, ignored: ignoredFindings } = suppressIgnoredLines(
     dedupe(downgradeExampleContext(findings, files)),
     files,
   )
-  // Rule selection last of the three, so its count answers the question a
-  // reader actually has — how many findings this setting is keeping from me —
-  // rather than counting duplicates and example-context entries that would
-  // never have been shown.
+  // 统计已执行规则中被选择器过滤的结果。
   const selected = applyRuleSelection(kept, options)
 
+  // 跨规则共享单文件上限，优先保留高严重度、高置信度结果。
+  const counts = new Map<string | null, number>()
+  const bounded = sortFindings(selected.kept).filter(finding => {
+    const count = (counts.get(finding.file) ?? 0) + 1
+    counts.set(finding.file, count)
+    if (count <= MAX_FINDINGS_PER_FILE) return true
+    if (count === MAX_FINDINGS_PER_FILE + 1) ctx.reportIncomplete('engine/findings-limit',
+      `${finding.file ?? 'project'} has more than ${MAX_FINDINGS_PER_FILE} findings; remaining findings were not reported`)
+    return false
+  })
+
   return {
-    findings: sanitize(sortFindings(selected.kept), files),
+    findings: sanitize(bounded, files),
     filesScanned: files.length,
     durationMs: Date.now() - started,
     errors: errors.map((e) => ({
@@ -404,12 +249,9 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
     })),
     skipped: sanitizeSkippedForOutput(skipped),
     ignored: ignored.map(clean),
-    // The path goes through the boundary like every other path that reaches a
-    // reader: a filename is chosen by whoever can add a file to the repository,
-    // and one holding a credential would otherwise print it here in full.
+    // 清理被忽略结果的路径。
     ignoredFindings: ignoredFindings.map((f) => ({ ...f, file: clean(f.file) })),
-    // Selectors come from a config file or the command line, both of which are
-    // text canship prints back, so both go through the boundary.
+    // 选择器来自外部输入，输出前也需清理。
     ruleSelection:
       selected.selection === null
         ? null
@@ -419,22 +261,12 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
             removed: selected.selection.removed,
           },
     vendored,
-    // A deliberate opt-out is not an incomplete scan: the user made that call
-    // knowingly. It is listed in the report, not treated as a failure.
-    //
-    // Examining no files at all, however, is the purest form of an incomplete
-    // scan, and it used to print a green tick and exit 0 — the exact outcome
-    // the README says must never share an exit code with "clean". It is also
-    // the most likely way to be wrong in practice: the headline command is
-    // `npx canship` with no argument, so running it from the wrong directory
-    // is the ordinary user error, and a directory holding nothing but a
-    // build/ folder (every entry of which the walker skips by design) reaches
-    // zero without looking empty to a human.
+    // 主动忽略不影响完整性；错误、跳过或零文件扫描均标记为未完成。
     partial: errors.length > 0 || skipped.length > 0 || files.length === 0,
   }
 }
 
-/** Readable one-liner from whatever a rule decided to throw */
+/** 将异常转换为可读消息。 */
 function messageOf(err: unknown): string {
   if (err instanceof Error) return err.message
   return String(err)

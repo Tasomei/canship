@@ -1,20 +1,20 @@
-// Test fixture: Firebase rules left wide open.
+// 无条件开放的 Firebase 规则夹具。
 rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Fatal: unconditional access for everyone.
+    // 任何调用者均可访问。
     match /posts/{postId} {
       allow read, write: if true;
     }
 
-    // Fatal: "test mode" rule, public until a hardcoded date.
+    // 固定日期之前保持开放的测试模式。
     match /messages/{messageId} {
       allow read, write: if request.time < timestamp.date(2027, 6, 1);
     }
 
-    // Correct: a real authorisation check. Must not be reported.
+    // 合法鉴权不应报告。
     match /users/{userId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }

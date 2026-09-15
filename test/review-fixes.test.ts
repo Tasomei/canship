@@ -11,6 +11,9 @@ import { applyBaseline, buildBaseline } from '../src/baseline.js'
 import { renderReport } from '../src/report/terminal.js'
 import { renderHtml } from '../src/report/html.js'
 import { renderFixPrompt } from '../src/report/prompt.js'
+import { PROJECT_RULES } from '../src/rules/index.js'
+import { renderSarif } from '../src/report/sarif.js'
+import { collectFiles } from '../src/walker.js'
 
 const roots: string[] = []
 const KEY = 'sk-proj-A9dKfM2xQwRt7YuIoPa1SdFgHjKlZxCvBn'
@@ -45,6 +48,16 @@ for (const [name, source] of [
   ['仅构造的鉴权包装器', `export async function POST(){const unused=withAuth(async()=>{});${WRITE};}`],
   ['仅构造的 Auth.js 处理函数', `export async function POST(){const unused=NextAuth({providers:[]});${WRITE};}`],
   ['条件分支中的可选鉴权', `export async function POST(req){if(req.optional){await requireAuth();}${WRITE};}`],
+  ['短路表达式中的可选鉴权', `export async function POST(req){req.optional && await requireAuth();${WRITE};}`],
+  ['三元表达式中的可选鉴权', `export async function POST(req){req.optional ? await requireAuth() : null;${WRITE};}`],
+  ['多行短路鉴权', `export async function POST(req){req.optional &&\nawait requireAuth();${WRITE};}`],
+  ['多行三元鉴权', `export async function POST(req){req.optional ?\nawait requireAuth() : null;${WRITE};}`],
+  ['空白后的嵌套条件退出', `export async function POST(req){const user=await getUser();if(!user)${' '.repeat(80)}{if(!req.debug)return new Response(null,{status:401});}${WRITE};}`],
+  ['未等待的异步鉴权', `export async function POST(){requireAuth();${WRITE};}`],
+  ['嵌套条件退出', `export async function POST(req){const user=await getUser();if(!user){if(req.optional)return new Response(null,{status:401});}${WRITE};}`],
+  ['正向条件退出', `export async function POST(){const user=await getUser();if(user){return Response.json({ok:true});}${WRITE};}`],
+  ['非空身份条件退出', `export async function POST(){const user=await getUser();if(user!==null){return Response.json({ok:true});}${WRITE};}`],
+  ['否定身份与假值比较后退出', `export async function POST(){const user=await getUser();if(!user===false){return Response.json({ok:true});}${WRITE};}`],
 ] as const) {
   test(`${name}不能使未受保护的操作消失`, async () => {
     const root = project({ [ROUTE]: CLIENT + source })
@@ -69,6 +82,75 @@ for (const source of [
     assert.deepEqual(result.findings.filter(f => f.ruleId.startsWith('api/')), [])
   })
 }
+
+test('路由组不改变 API 识别或报告 URL', async () => {
+  const path = 'app/(dashboard)/(internal)/api/users/route.ts'
+  const root = project({ [path]: CLIENT + `export async function POST(){${WRITE};}` })
+  const result = await scan(root)
+  const finding = result.findings.find(f => f.ruleId === 'api/admin-db-access-without-auth')
+  assert.ok(finding)
+  assert.equal(finding.file, path)
+  assert.ok(JSON.stringify(finding).includes('/api/users'))
+  writeFileSync(join(root, 'middleware.ts'), `export function middleware(req){if(!req.user)return new Response(null,{status:401});}\nexport const config={matcher:['/api/:path*']};`)
+  assert.equal((await scan(root)).findings.some(f => f.ruleId.startsWith('api/')), false)
+})
+
+test('路由组中的工作区别名仍指向所属应用', async () => {
+  const root = project({
+    'apps/web/app/(api)/api/users/route.ts': `import {db} from '@/lib/admin';export async function POST(){${WRITE};}`,
+    'apps/web/lib/admin.ts': CLIENT + 'export {db};',
+  })
+  assert.ok((await scan(root)).findings.some(f => f.ruleId === 'api/admin-db-access-without-auth'))
+})
+
+test('总读取预算在边界处允许读取，超限时明确披露', () => {
+  const root = project({ 'a.ts': 'let a=1;', 'b.ts': 'let b=2;' })
+  const exact = collectFiles(root, false, null, { maxFiles: 2, maxBytes: 16 })
+  assert.equal(exact.files.length, 2)
+  assert.deepEqual(exact.skipped, [])
+  for (const limits of [{ maxFiles: 1 }, { maxBytes: 8 }]) {
+    const result = collectFiles(root, false, null, limits)
+    assert.equal(result.files.length, 1)
+    assert.equal(result.skipped.length, 1)
+    assert.match(result.skipped[0]!.detail!, /scan read budget exceeded/)
+  }
+})
+
+test('被排除规则不执行，也不会用其异常影响完整性', async () => {
+  let calls = 0
+  const sentinel = { id: 'api/db-access-without-auth', severity: 'P0' as const,
+    check(): never { calls++; throw new Error('excluded-rule-sentinel') } }
+  PROJECT_RULES.push(sentinel)
+  try {
+    const result = await scan(project({ 'app.ts': 'export const value=1;' }), { only: ['secrets'] })
+    assert.equal(calls, 0)
+    assert.equal(result.partial, false)
+    assert.deepEqual(result.errors, [])
+  } finally { PROJECT_RULES.splice(PROJECT_RULES.indexOf(sentinel), 1) }
+})
+
+test('跨规则单文件总上限优先保留确定结果', async () => {
+  const content = Array.from({ length: 60 }, (_, i) =>
+    `const k${i}="${KEY}";\nconst v${i}=process.env.NEXT_PUBLIC_ADMIN_SECRET;`).join('\n')
+  const result = await scan(project({ 'keys.ts': content }))
+  assert.equal(result.findings.length, 100)
+  assert.equal(result.findings.filter(f => f.confidence === 'certain').length, 60)
+  assert.equal(result.partial, true)
+  assert.ok(result.errors.some(e => e.ruleId === 'engine/findings-limit'))
+})
+
+test('SARIF 编码文件路径并披露跳过原因', async () => {
+  const result = await scan(project({ '路径 #100%.ts': `const key="${KEY}";` }))
+  result.skipped.push({ path: 'large.ts', reason: 'too-large', detail: 'file limit exceeded' })
+  result.partial = true
+  const log = JSON.parse(renderSarif(result, { version: '0.2.0' }))
+  const run = log.runs[0]
+  const uri = run.results[0].locations[0].physicalLocation.artifactLocation.uri
+  assert.equal(decodeURIComponent(uri), '路径 #100%.ts')
+  assert.equal(new URL(uri, 'https://example.invalid/').hash, '')
+  assert.equal(run.invocations[0].executionSuccessful, false)
+  assert.match(JSON.stringify(run.invocations), /large\.ts.*too-large/)
+})
 
 test('基线区分脱敏后相同的新密钥，并允许原结果移动行号', async () => {
   const root = project({ 'keys.ts': `const key="${KEY}";` })

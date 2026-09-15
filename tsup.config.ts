@@ -1,26 +1,20 @@
 import { defineConfig } from 'tsup'
 import { readFileSync } from 'node:fs'
 
-/**
- * The version lives in package.json and nowhere else.
- *
- * It used to be written out a second time in src/cli.ts, which is the kind of
- * duplication that stays correct right up until a release and then reports the
- * wrong number to everyone who runs --version.
- */
+/** 构建版本统一读取包信息。 */
 const { version } = JSON.parse(readFileSync('./package.json', 'utf8')) as { version: string }
 
 export default defineConfig({
   entry: ['src/cli.ts'],
   format: ['esm'],
   target: 'node18',
-  // Bundle into a single file to keep the npx download and cold start small
+  // 合并为单文件以减少下载及启动成本。
   bundle: true,
   splitting: false,
   clean: true,
   minify: false,
   sourcemap: false,
   define: { __CANSHIP_VERSION__: JSON.stringify(version) },
-  // npx executes dist/cli.js directly, so it needs a shebang
+  // 可执行入口需要解释器声明。
   banner: { js: '#!/usr/bin/env node' },
 })

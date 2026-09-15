@@ -1,28 +1,27 @@
-// Test fixture: correctly scoped Firebase rules. Nothing here should be reported.
+// 正确限定访问范围的规则夹具。
 rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Correct: ownership check.
+    // 验证数据所有权。
     match /users/{userId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
 
-    // Correct: deliberately public data, but read-only.
+    // 公开数据只允许读取。
     match /announcements/{id} {
       allow read: if true;
       allow write: if false;
     }
 
-    // Correct: signed-in users only.
+    // 仅允许已登录用户。
     match /comments/{id} {
       allow read: if request.auth != null;
       allow write: if request.auth != null && request.auth.uid == resource.data.authorId;
     }
   }
 
-    // Left behind after tightening this rule. A comment is not a rule — but a
-    // certain-confidence "your database is wide open" used to come out of one.
-    // allow read, write: if true;
+    // 注释中的开放规则不得生效。
+    // 示例：allow read, write: if true;
 }

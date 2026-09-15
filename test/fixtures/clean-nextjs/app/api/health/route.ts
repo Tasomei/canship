@@ -1,6 +1,4 @@
-// Test fixture: a public route that touches no data at all. Nothing to report —
-// flagging every unauthenticated route regardless of what it does would be
-// noise, and noise is what makes people stop running the tool.
+// 不访问数据的公开健康检查无需报告。
 export function GET() {
   return Response.json({ ok: true })
 }

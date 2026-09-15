@@ -1,13 +1,8 @@
-// Test fixture: correct usage, in the two shapes that look most like the
-// broken one.
-//
-// Both read the request's Origin header, which is what makes them the real
-// test: the difference from a reflection bug is that these decide what to send
-// back rather than echoing it.
+// 验证允许列表判断与固定来源配置。
 
 const ALLOWED = ['https://app.example.com', 'https://admin.example.com']
 
-/** Allowlist: the header is compared before any of it reaches the response. */
+/** 比较允许列表后再返回来源。 */
 export function corsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get('origin') ?? ''
   return {
@@ -16,7 +11,7 @@ export function corsHeaders(req: Request): Record<string, string> {
   }
 }
 
-/** Configured: one origin, set per environment. */
+/** 使用环境配置指定唯一来源。 */
 export function singleOriginHeaders(): Record<string, string> {
   return {
     'Access-Control-Allow-Origin': process.env['APP_ORIGIN']!,

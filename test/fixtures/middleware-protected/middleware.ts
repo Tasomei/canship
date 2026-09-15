@@ -1,8 +1,4 @@
-// Test fixture: middleware that really does protect /api.
-//
-// The route below has no check of its own, so anything looking only at route
-// files would report it. Protection that lives outside the file it protects is
-// the biggest false-positive risk this rule carries.
+// 实际覆盖 API 的鉴权中间件。
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { createServerClient } from '@supabase/ssr'

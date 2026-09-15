@@ -1,9 +1,4 @@
-// Test fixture: a destructive write with no caller check, through an ordinary
-// ORM rather than an admin client.
-//
-// Reported at lower confidence on purpose: an open write can be a deliberate
-// design (a waitlist, a contact form), and protection can live in a proxy this
-// scan cannot see.
+// 普通数据库客户端执行未鉴权写入，按疑似问题报告。
 import { prisma } from '@/lib/prisma'
 
 export async function DELETE(_req: Request, { params }: { params: { id: string } }) {

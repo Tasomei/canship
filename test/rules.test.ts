@@ -1,25 +1,5 @@
-/**
- * Rule tests.
- *
- * canship-ignore-file
- *
- * The marker above opts this file out of canship's own scan: it holds fake
- * credentials as assertion data. It has to sit on a line of its own — a
- * mention in passing does not count, which is what stops a stray word in a
- * comment from blindfolding a file.
- *
- * The fixtures under fixtures/ carry no marker, and must not: the tests point
- * canship at them as project roots and expect the findings.
- *
- * Deliberately split into two groups:
- *   1. the vulnerable fixture — everything that should be caught, is (misses)
- *   2. the clean fixture      — nothing that should be left alone, is flagged
- *
- * The second group is the important one. A missed finding costs the user one
- * favour; a false positive costs their trust permanently, and they will tell
- * other people the tool is noisy. So the clean fixture is packed with patterns
- * that look dangerous but are in fact correct.
- */
+/** 验证规则检测、误报边界、输出脱敏和命令行契约。
+ * canship-ignore-file */
 
 import { test, describe, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -45,24 +25,10 @@ import { hasGitMetadataAbove } from '../src/git.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
-/** Temporary parents of the fixture copies, removed once the file's tests finish */
+/** 保存临时夹具目录，测试结束后统一清理。 */
 const fixtureCopies: string[] = []
 
-/**
- * A fixture, copied out of this repository before anything scans it.
- *
- * A fixture scanned where it lives inherits the git state of the repository
- * around it, and that is not a property these tests are written to assert.
- * `clean-nextjs` holds a committed `.env.local` — it has to, since that file is
- * what several rules are exercised against — so the moment canship itself
- * gained a first commit, the git-tracked-env rule fired on it and the *clean*
- * fixture stopped being clean. Seven tests broke at once, having passed until
- * then only because this project had never been committed. CI found it on the
- * first run, which is exactly the shape of bug a local suite cannot see.
- *
- * Copying to a directory outside any repository restores what the fixtures are
- * for: a result that is a fact about the fixture, not about where it is kept.
- */
+/** 将夹具复制到仓库外，避免其结果受当前 Git 历史影响。 */
 function fixture(name: string): string {
   const parent = mkdtempSync(join(tmpdir(), 'canship-fixture-'))
   fixtureCopies.push(parent)
@@ -82,10 +48,7 @@ const MIDDLEWARE_PROTECTED = fixture('middleware-protected')
 
 describe('the fixtures are scanned as themselves', () => {
   test('no fixture copy sits inside a git repository', () => {
-    // Guards the property, not the mechanism: pointing the constants back at
-    // test/fixtures/ fails here, and so does a machine whose temporary
-    // directory happens to live under a checkout — the second is the version
-    // nobody would think to look for.
+    // 验证夹具确实位于仓库之外。
     for (const [name, path] of Object.entries({
       CLEAN,
       VULNERABLE,
@@ -101,15 +64,7 @@ describe('the fixtures are scanned as themselves', () => {
   })
 })
 
-/**
- * Build a throwaway git repository with the given files committed.
- *
- * The git-history rule cannot be tested against a fixture directory: it asks
- * git what is tracked, and a fixture inside this repository is tracked by
- * *this* repository, not by itself. Real repositories are the only way to
- * exercise it — which is why it went untested long enough to produce four
- * false positives on well-known starters.
- */
+/** 创建包含已提交文件的独立临时仓库。 */
 function withGitRepo(files: Record<string, string>, run: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), 'canship-git-'))
   const git = (...args: string[]): void => {
@@ -129,19 +84,18 @@ function withGitRepo(files: Record<string, string>, run: (root: string) => Promi
       { cwd: root, stdio: 'ignore' },
     )
     return run(root).finally(() => {
-      // Windows keeps git's pack files read-only; a failed cleanup of a temp
-      // directory must not fail the test.
+      // 临时目录可能受 Windows 文件锁影响，清理失败不改变断言结果。
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     })
   } catch (err) {
     try {
       rmSync(root, { recursive: true, force: true })
     } catch {
-      /* ignore */
+      /* 临时目录清理失败不覆盖测试结果。 */
     }
     throw err
   }
@@ -178,8 +132,7 @@ describe('vulnerable fixture — everything that should be caught', () => {
     const { findings } = await scan(VULNERABLE)
     const hit = findings.find((f) => f.ruleId === 'secrets/hardcoded/openai')
     assert.ok(hit)
-    // app/page.tsx carries 'use client', so the severity wording has to reflect
-    // that any visitor can read the key right now.
+    // 客户端指令应使报告明确说明浏览器可读取凭据。
     assert.match(hit.title, /browser/i, 'title does not reflect that this is client code')
     assert.match(hit.why.join('\n\n'), /sent to the browser|dev tools/i, 'body does not say visitors can read it')
   })
@@ -206,8 +159,7 @@ describe('vulnerable fixture — everything that should be caught', () => {
   test('never prints a complete secret', async () => {
     const { findings } = await scan(VULNERABLE)
     const serialized = JSON.stringify(findings)
-    // These are the full fake secrets from the fixture. Not one of them may
-    // appear verbatim in the report.
+    // 完整模拟凭据不得原样出现在输出中。
     const rawSecrets = [
       'sk-proj-A9dKfM2xQwRt7YuIoPa1SdFgHjKlZxCvBn',
       'sk_live_51H8xQ2KZvKuab1cdEfGhIjKlMnOpQr',
@@ -269,8 +221,7 @@ describe('Supabase Row Level Security', () => {
     const { findings } = await scan(VULNERABLE)
     const hit = findings.find((f) => f.ruleId === 'supabase/rls-not-enabled')
     assert.ok(hit)
-    // People toggle RLS in the dashboard, which leaves no trace in the repo.
-    // The wording has to stay accurate about what was actually observed.
+    // 结论只描述仓库中的可见证据，不推断控制台状态。
     assert.match(hit.title, /in your migrations/i, 'title overclaims')
     assert.match(hit.why.join('\n\n'), /dashboard/i, 'does not mention the dashboard caveat')
   })
@@ -282,9 +233,7 @@ describe('Supabase Row Level Security', () => {
   })
 
   test('does NOT run on a plain Postgres project', async () => {
-    // The important one. RLS is only required when the database is exposed to
-    // the browser. Flagging an ordinary backend would be a serious false
-    // positive.
+    // 普通后端数据库不能仅因未启用行级安全而报告。
     const { findings } = await scan(PLAIN_POSTGRES)
     const hits = findings.filter((f) => f.ruleId === 'supabase/rls-not-enabled')
     assert.deepEqual(
@@ -318,7 +267,7 @@ describe('Firebase security rules', () => {
   })
 
   test('does not flag "allow read: if true" paired with "allow write: if false"', async () => {
-    // Deliberately public read-only data is a legitimate pattern.
+    // 显式公开只读数据属于合法配置。
     const { findings } = await scan(CLEAN)
     const hit = findings.find((f) => f.excerpt?.includes('allow read: if true'))
     assert.equal(hit, undefined, 'public read-only data is a valid choice')
@@ -337,10 +286,7 @@ describe('API routes with no authorisation check', () => {
   })
 
   test('follows the import into the admin client module', async () => {
-    // The route file itself contains no service_role reference — it imports
-    // supabaseAdmin from lib/. Looking only inside route files would miss
-    // nearly every real project, because that is the shape every Supabase
-    // tutorial teaches.
+    // 管理员客户端可能通过导入间接使用。
     const { findings } = await scan(VULNERABLE)
     const route = (await import('node:fs')).readFileSync(
       join(VULNERABLE, 'app', 'api', 'users', 'route.ts'),
@@ -367,19 +313,13 @@ describe('API routes with no authorisation check', () => {
     const { findings } = await scan(VULNERABLE)
     const hit = findings.find((f) => f.ruleId === 'api/db-write-without-auth')
     assert.ok(hit, 'missed the prisma delete in app/api/posts/[id]/route.ts')
-    // Not certain: an open write can be deliberate, and protection can live in
-    // a proxy this scan cannot see.
+    // 普通公开写入可能合法，因此保留疑似置信度。
     assert.equal(hit.confidence, 'likely')
     assert.equal(hit.severity, 'P1')
   })
 
   test('is not silenced by middleware whose matcher excludes /api', async () => {
-    // The regression test that matters most here. The vulnerable fixture ships
-    // the matcher printed in the Next.js documentation:
-    //   matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)']
-    // It authenticates every page and no API route at all. Reading it as
-    // "there is auth middleware, so the API is covered" would silence every
-    // finding in this fixture.
+    // 排除 API 的中间件匹配器不能保护 API。
     const { findings } = await scan(VULNERABLE)
     const hits = findings.filter((f) => f.ruleId.startsWith('api/'))
     assert.equal(hits.length, 3, 'the excluding matcher was misread as protection')
@@ -398,18 +338,14 @@ describe('API routes with no authorisation check', () => {
   })
 
   test('treats webhook signature verification as a real authorisation check', async () => {
-    // A webhook cannot have a sign-in check — Stripe is not signed in. It
-    // authenticates the caller by verifying the signature instead.
+    // Webhook 通过签名认证，无需用户登录。
     const { findings } = await scan(CLEAN)
     const hits = findings.filter((f) => f.file?.includes('webhooks'))
     assert.deepEqual(hits.map((f) => f.ruleId), [], 'false positive on a signature-verified webhook')
   })
 
   test('does not flag a route that middleware protects', async () => {
-    // The route in this fixture is indistinguishable from the vulnerable one:
-    // admin client, whole table, no check of its own. It is safe only because
-    // middleware.ts covers /api/:path*. Protection living outside the file it
-    // protects is the biggest false-positive risk this rule carries.
+    // 路由自身没有鉴权时，中间件仍可提供保护。
     const { findings } = await scan(MIDDLEWARE_PROTECTED)
     assert.deepEqual(
       findings.map((f) => `${f.ruleId} @ ${f.file}:${f.line}`),
@@ -430,9 +366,7 @@ describe('CORS', () => {
   })
 
   test('says the wildcard pairing is broken, not that it is an exploit', async () => {
-    // "*" with credentials is forbidden by the specification, so browsers
-    // reject the response. It is a bug, and the wording has to say so — the
-    // reason to report it is that the obvious fix creates the real hole.
+    // 通配符与凭据组合是浏览器拒绝的配置错误。
     const { findings } = await scan(VULNERABLE)
     const hit = findings.find((f) => f.ruleId === 'cors/wildcard-with-credentials')
     assert.ok(hit, 'missed the wildcard/credentials pair in next.config.js')
@@ -442,33 +376,28 @@ describe('CORS', () => {
   })
 
   test('does not flag a wildcard on its own', async () => {
-    // A public API with Access-Control-Allow-Origin: * is ordinary and correct.
+    // 单独公开通配符来源属于正常配置。
     const { findings } = await scan(CLEAN)
     const hits = findings.filter((f) => f.ruleId.startsWith('cors/'))
     assert.deepEqual(hits.map((f) => `${f.ruleId} @ ${f.file}:${f.line}`), [], 'noise on correct CORS')
   })
 
   test('does not flag an allowlist that compares before echoing', async () => {
-    // The hard case: a safe implementation reads the Origin header too. What
-    // separates it from the bug is that it decides, rather than echoes.
+    // 允许列表判断与直接回显应区分。
     const { findings } = await scan(CLEAN)
     const hits = findings.filter((f) => f.file === 'lib/cors.ts')
     assert.deepEqual(hits.map((f) => f.ruleId), [], 'false positive on an allowlist check')
   })
 
   test('does not read client-side credentials settings as server policy', async () => {
-    // axios withCredentials and fetch credentials: 'include' say what this code
-    // sends, not what the server accepts. Treating them as server policy would
-    // pair them with the public wildcard in the same file.
+    // 客户端携带凭据不等于服务端允许跨域凭据。
     const { findings } = await scan(CLEAN)
     const hits = findings.filter((f) => f.file === 'lib/api-client.ts')
     assert.deepEqual(hits.map((f) => f.ruleId), [], 'confused a client setting for a server header')
   })
 
   test('pairs credentials with the nearest origin, not any nearby one', async () => {
-    // clean-nextjs/next.config.js serves one public route with "*" and, six
-    // lines later, an authenticated route with a named origin. Those are two
-    // responses; only the second has credentials.
+    // 不同响应的来源和凭据设置不能交叉配对。
     const { findings } = await scan(CLEAN)
     const hits = findings.filter((f) => f.file === 'next.config.js')
     assert.deepEqual(hits.map((f) => f.ruleId), [], 'paired credentials with an unrelated wildcard')
@@ -476,15 +405,11 @@ describe('CORS', () => {
 })
 
 describe('findings that only real repositories exposed', () => {
-  // Every test here comes from running canship against six popular Next.js +
-  // Supabase projects. It produced four true positives and six false
-  // positives, which is the wrong ratio for a tool whose entire claim is that
-  // it does not cry wolf.
+  // 覆盖实际项目中发现的检测边界。
 
   test('a committed env file holding a real credential is reported', async () => {
     await withGitRepo(
-      // Deliberately random-looking. An "AbCdEf" run reads as a placeholder —
-      // correctly — and would have made this test fail for the wrong reason.
+      // 使用非占位格式的模拟值，避免测试因占位识别而失效。
       { '.env.local': 'STRIPE_SECRET_KEY=sk_live_51Nc7RtKm9Zp3WqLvB8Hd2Ys6\n' },
       async (root) => {
         const { findings } = await scan(root)
@@ -495,9 +420,7 @@ describe('findings that only real repositories exposed', () => {
   })
 
   test('.env.local.example is not a leak', async () => {
-    // Reported on three of six starters, Vercel's own template among them.
-    // The exemption existed — in walker.ts — but this rule kept a narrower
-    // private copy that only matched ".env.example" exactly.
+    // 环境模板命名使用统一判断。
     await withGitRepo(
       {
         '.env.local.example':
@@ -512,8 +435,7 @@ describe('findings that only real repositories exposed', () => {
   })
 
   test('a template in a test directory is still not a leak', async () => {
-    // The half of the old exemption that was right: a file named .env.example
-    // is published on purpose, wherever it happens to sit.
+    // 模板按文件名豁免，与所在目录无关。
     await withGitRepo(
       {
         'test/.env.example': 'STRIPE_SECRET_KEY=your-stripe-key\n',
@@ -528,9 +450,7 @@ describe('findings that only real repositories exposed', () => {
   })
 
   test('an env file in a test directory is committed all the same', async () => {
-    // The location exemption used to drop these before anything read them, so
-    // a real key under e2e/ produced no finding at all. Quietly, because the
-    // directory makes a fake key likely — not because it makes one harmless.
+    // 测试目录中的环境凭据仍需报告。
     await withGitRepo(
       {
         'e2e/.env': 'STRIPE_SECRET_KEY=sk_live_51Nc7RtKm9Zp3WqLvB8Hd2Ys6\n',
@@ -546,10 +466,7 @@ describe('findings that only real repositories exposed', () => {
   })
 
   test('an env file deleted from a test directory is still in history', async () => {
-    // The case this rule exists for, in the directory the exemption hid. Once
-    // the file is gone from disk no other rule can read it, so going quiet
-    // here meant a key sitting in history was reported by nothing at all — a
-    // green tick over a live credential.
+    // 已删除示例文件中的凭据仍需检查历史。
     await withGitRepo(
       {
         'e2e/.env': 'STRIPE_SECRET_KEY=sk_live_51Nc7RtKm9Zp3WqLvB8Hd2Ys6\n',
@@ -571,8 +488,7 @@ describe('findings that only real repositories exposed', () => {
   })
 
   test('a committed env file holding only public values is not a leak', async () => {
-    // .env.test carrying three NEXT_PUBLIC_ variables. The name is not an
-    // example name, so no filename rule saves this one — only reading it does.
+    // 仅含公开值的环境文件不应报告。
     await withGitRepo(
       {
         '.env.test':
@@ -589,44 +505,35 @@ describe('findings that only real repositories exposed', () => {
   })
 
   test('a table dropped by a later migration is not reported', async () => {
-    // Migrations are append-only. Reading them as a set rather than a sequence
-    // invents tables that no longer exist.
+    // 迁移按顺序重放，已删除表不再报告。
     const { findings } = await scan(VULNERABLE)
     const hit = findings.find((f) => f.title.includes('legacy_notes'))
     assert.equal(hit, undefined, 'reported a table that a later migration dropped')
   })
 
   test('a commented-out DROP TABLE cannot retire a finding', async () => {
-    // The dangerous direction. If comments were honoured, writing
-    // "-- DROP TABLE public.orders;" anywhere would silence orders forever.
+    // 注释中的删除语句不能改变模式状态。
     const { findings } = await scan(VULNERABLE)
     const hit = findings.find((f) => f.ruleId === 'supabase/rls-not-enabled' && f.title.includes('orders'))
     assert.ok(hit, 'a comment hid a live table with no RLS')
   })
 
   test('a sign-in route is not reported for having no sign-in check', async () => {
-    // /api/auth/signin using the admin client to mint a magic link is the
-    // correct implementation of passwordless auth. There is nobody to
-    // authenticate yet.
+    // 登录入口可执行必要的身份创建操作。
     const { findings } = await scan(CLEAN)
     const hits = findings.filter((f) => f.file?.startsWith('app/api/auth/'))
     assert.deepEqual(hits.map((f) => f.ruleId), [], 'false positive on an auth endpoint')
   })
 
   test('a write through a session-scoped client is not reported', async () => {
-    // The rule's own advice is to use the request's session instead of the
-    // service_role key and let Row Level Security enforce the boundary. A
-    // route that does exactly that was being reported — the tool flagging its
-    // own fix. Whether RLS is switched on is supabase/rls-not-enabled's job.
+    // 会话客户端交由数据库策略实施访问控制。
     const { findings } = await scan(CLEAN)
     const hits = findings.filter((f) => f.file?.startsWith('app/api/notes'))
     assert.deepEqual(hits.map((f) => f.ruleId), [], 'flagged the architecture the tool recommends')
   })
 
   test('a value that starts with test_ is not a credential', async () => {
-    // .env.test carrying GITHUB_TOKEN=test_token. The separator is what makes
-    // this safe to suppress: real keys do not start with "test_", though
-    // plenty contain "test" somewhere in the middle.
+    // 明确测试前缀属于占位符。
     await withGitRepo(
       { '.env.test': 'GITHUB_TOKEN=test_token\nSENTRY_AUTH_TOKEN=test_token\nSENTRY_ORG=test_org\n' },
       async (root) => {
@@ -637,9 +544,7 @@ describe('findings that only real repositories exposed', () => {
   })
 
   test('a type argument does not hide the client constructor', async () => {
-    // createClient<Database>() is the form Supabase's documentation
-    // recommends. Requiring "(" straight after the name downgraded a real
-    // finding from certain to likely, hiding it behind --all.
+    // 带泛型参数的客户端构造仍需识别。
     const admin = (await import('node:fs')).readFileSync(
       join(VULNERABLE, 'lib', 'supabase-admin.ts'),
       'utf8',
@@ -653,20 +558,11 @@ describe('findings that only real repositories exposed', () => {
 })
 
 describe('redaction is an output-boundary invariant, not a rule responsibility', () => {
-  // One line, two providers. Redaction used to be each rule's job, so the
-  // OpenAI finding masked the OpenAI key and printed the GitHub token in full,
-  // and the GitHub finding did the reverse. Both keys reached the output.
+  // 同一行不同提供方的凭据必须全部脱敏。
   const OPENAI = 'sk-proj-A9dKfM2xQwRt7YuIoPa1SdFgHjKlZxCvBn'
   const GITHUB = 'ghp_9dKfM2xQwRt7YuIoPa1SdFgHjKlZxCvBn123'
 
-  /**
-   * The longest prefix of `secret` that appears anywhere in `text`, or null if
-   * nothing recognisable does.
-   *
-   * Twelve is the floor: every format here carries a fixed prefix — `sk-proj-`,
-   * `ghp_` — so a dozen characters is the first point at which the output is
-   * showing something specific to *this* key rather than to its provider.
-   */
+  /** 查找残留凭据前缀，检测截断导致的部分泄露。 */
   function longestPrefixIn(text: string, secret: string): string | null {
     for (let n = secret.length; n >= 12; n--) {
       const prefix = secret.slice(0, n)
@@ -686,22 +582,17 @@ describe('redaction is an output-boundary invariant, not a rule responsibility',
   })
 
   test('no output surface can print either credential', async () => {
-    // The bug was invisible from any single renderer, so all four are checked.
-    // Every one of them reads Finding.excerpt straight through.
+    // 各输出渠道均需满足统一脱敏约束。
     const result = await scan(VULNERABLE)
     const surfaces: Record<string, string> = {
       json: JSON.stringify(result.findings),
       terminal: renderReport(result, { root: VULNERABLE, showingLikely: true, hiddenLikely: 0 }),
-      // null only when there is nothing to fix, which is not this fixture.
+      // 有修复步骤的夹具应生成提示。
       prompt: renderFixPrompt(result.findings) ?? '',
       html: renderHtml(result, { root: VULNERABLE, generatedAt: '1970-01-01T00:00:00.000Z' }),
     }
     for (const [name, text] of Object.entries(surfaces)) {
-      // Prefixes, not just the whole string. Asserting only on the complete key
-      // measures the crudest possible violation: a truncation that cut a key in
-      // half published nineteen of its characters to all four of these surfaces
-      // while this test stayed green. Twelve characters past the format prefix
-      // is already enough to search for.
+      // 同时检查完整值和足够长的前缀。
       for (const secret of [OPENAI, GITHUB]) {
         const leaked = longestPrefixIn(text, secret)
         assert.ok(
@@ -713,15 +604,14 @@ describe('redaction is an output-boundary invariant, not a rule responsibility',
   })
 
   test('redactAll masks a credential nobody asked it about', async () => {
-    // The property that makes the boundary safe: the caller does not have to
-    // know what is in the string.
+    // 脱敏调用者无需提前知道文本中的凭据。
     const masked = redactAll(`a ${OPENAI} b ${GITHUB} c`)
     assert.ok(!masked.includes(OPENAI))
     assert.ok(!masked.includes(GITHUB))
     assert.match(masked, /^a .+ b .+ c$/, 'the surrounding text should survive')
   })
 
-  /** Codes rather than a character class, so nothing here can become one by accident */
+  /** 按码位检查控制字符。 */
   const hasControlChar = (s: string): boolean =>
     [...s].some((ch) => {
       const c = ch.codePointAt(0) ?? 0
@@ -729,12 +619,7 @@ describe('redaction is an output-boundary invariant, not a rule responsibility',
     })
 
   test('a paragraph break in an explanation survives to every renderer', async () => {
-    // The boundary strips every control character, newline included — and it is
-    // right to: `why` interpolates paths and file contents. But rules used to spell their
-    // paragraph breaks as \n\n *inside* that string, so the boundary removed
-    // those too and two sentences ran together: "…root password.Because the
-    // variable…". The README's own example output showed a break the tool could
-    // no longer produce.
+    // 段落数组应在各报告中保留段落结构。
     const result = await scan(VULNERABLE)
     const hit = result.findings.find((f) => f.ruleId === 'exposure/supabase-service-role-in-client')
     assert.ok(hit, 'the fixture should expose the service_role key')
@@ -749,11 +634,7 @@ describe('redaction is an output-boundary invariant, not a rule responsibility',
   })
 
   test('no paragraph carries a control character of its own', async () => {
-    // Why `why` is a list rather than a string with \n\n in it. It interpolates
-    // file paths and file contents, and a path may legally contain a newline —
-    // so exempting \n at the boundary would let anyone who can add a file to a
-    // repository draw extra lines in the report. Breaks live *between*
-    // elements, which is the one place only a rule can reach.
+    // 每段内部不得包含控制字符。
     const result = await scan(VULNERABLE)
     let paragraphs = 0
     for (const f of result.findings) {
@@ -770,8 +651,7 @@ describe('redaction is an output-boundary invariant, not a rule responsibility',
 })
 
 describe('an incomplete scan must not look like a clean one', () => {
-  // The worst failure a security scanner has is printing "nothing found" when
-  // the honest answer is "nothing was looked at".
+  // 规则异常必须留下记录并标记未完成。
 
   test('a rule that throws is recorded, and the scan is marked partial', async () => {
     const { FILE_RULES } = await import('../src/rules/index.js')
@@ -829,8 +709,7 @@ describe('an incomplete scan must not look like a clean one', () => {
   test('a file too large to read is reported, not dropped', async () => {
     const root = mkdtempSync(join(tmpdir(), 'canship-big-'))
     try {
-      // Comfortably over the cap, with the key at the very end — the position
-      // that a "just read the first chunk" shortcut would miss.
+      // 将凭据放在超限文件尾部，防止仅探测头部造成假通过。
       writeFileSync(
         join(root, 'huge.ts'),
         `// ${'x'.repeat(3 * 1024 * 1024)}\nconst k = 'sk-proj-A9dKfM2xQwRt7YuIoPa1SdFgHjKlZxCvBn'\n`,
@@ -847,19 +726,13 @@ describe('an incomplete scan must not look like a clean one', () => {
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   })
 
   test('a file git still lists but that is gone from disk is not an incomplete scan', async () => {
-    // Uncommitted deletions are an everyday state — one real project produced
-    // 160 of them. Counting those as unreadable would make "partial" fire on
-    // healthy repositories, which is how a warning becomes noise and then gets
-    // ignored on the day it matters.
-    // The surviving file matters: without it the repository scans to zero
-    // files, which is its own kind of incomplete scan and would mask whether
-    // the deletion was handled correctly.
+    // 普通未提交删除不构成读取错误。
     await withGitRepo(
       { 'app/gone.ts': 'export const a = 1\n', 'app/stays.ts': 'export const b = 2\n' },
       async (root) => {
@@ -892,18 +765,13 @@ describe('an incomplete scan must not look like a clean one', () => {
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   })
 
   test('scanning nothing at all is never reported as clean', async () => {
-    // The sharpest version of "found nothing" versus "checked nothing", and
-    // the easiest to hit by accident: the headline command is `npx canship`
-    // with no argument, so the wrong working directory is the ordinary user
-    // error rather than an exotic one. It used to print a green tick and exit
-    // 0 — a scanner telling someone their project is clean while having read
-    // none of it.
+    // 零文件扫描必须明确标记未完成。
     const root = mkdtempSync(join(tmpdir(), 'canship-empty-'))
     try {
       const result = await scan(root)
@@ -914,9 +782,7 @@ describe('an incomplete scan must not look like a clean one', () => {
       assert.doesNotMatch(text, /No exposed credentials found/, 'an empty scan showed the clean verdict')
       assert.match(text, /No files were scanned/, 'the report did not say it had read nothing')
 
-      // The prompt is the output that gets acted on by something which cannot
-      // see the terminal, so it has to carry the same warning — and name the
-      // real cause rather than blaming unreadable files that do not exist.
+      // 修复提示也必须说明没有实际扫描输入。
       const prompt = renderFixPrompt([], { partial: result.partial, filesScanned: 0 })
       assert.ok(prompt !== null, 'the fix prompt said nothing about an empty scan')
       assert.match(prompt, /zero files/)
@@ -936,7 +802,7 @@ describe('an incomplete scan must not look like a clean one', () => {
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   })
@@ -948,7 +814,7 @@ describe('places a credential can hide that an extension list never reaches', ()
     'MIIEowIBAAKCAQEAx7Vv2mQpLk8ZnR4tYwCdEfGhIjKlMnOpQrStUvWxYz0123456\n' +
     '-----END RSA PRIVATE KEY-----\n'
 
-  /** Scan a throwaway directory built from the given files */
+  /** 根据输入构造并扫描临时目录。 */
   async function scanFiles(files: Record<string, string>): Promise<Awaited<ReturnType<typeof scan>>> {
     const root = mkdtempSync(join(tmpdir(), 'canship-walk-'))
     try {
@@ -962,14 +828,13 @@ describe('places a credential can hide that an extension list never reaches', ()
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   }
 
   test('a .pem private key is read', async () => {
-    // The README advertised private-key detection while .pem was missing from
-    // the extension list, so the commonest way to ship one was invisible.
+    // 常见私钥文件扩展名必须参与扫描。
     const { findings } = await scanFiles({ 'server.pem': PRIVATE_KEY })
     assert.ok(
       findings.some((f) => f.ruleId === 'secrets/hardcoded/private-key'),
@@ -977,13 +842,7 @@ describe('places a credential can hide that an extension list never reaches', ()
     )
   })
 
-  /**
-   * The walker already listed .npmrc as a file whose name is the tell, so the
-   * file was being opened and read — and then nothing in the pattern table knew
-   * what an npm token looked like, so the read found nothing. A credential file
-   * canship opens on purpose and cannot describe the contents of is the quietest
-   * kind of gap: every surface reports a clean scan.
-   */
+  /** 包管理配置中的令牌需有对应检测模式。 */
   test('an npm token in .npmrc is reported', async () => {
     const { findings } = await scanFiles({
       '.npmrc': '//registry.npmjs.org/:_authToken=npm_aB3xY9zQ1wE5rT7yU2iO4pA6sD8fG0hJ2kL4\n',
@@ -995,9 +854,7 @@ describe('places a credential can hide that an extension list never reaches', ()
   })
 
   test('a template npm token is not', async () => {
-    // The second fixture matters more than the first: CI setup instructions are
-    // copied with the placeholder still in them more often than with a real
-    // token, and a rule that shouts at those gets muted.
+    // 令牌占位符不得误报。
     const { findings } = await scanFiles({
       '.npmrc': '//registry.npmjs.org/:_authToken=npm_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n',
       'setup.md': 'Set `npm_yourTokenHereReplaceMe0123456789ab` before publishing.\n',
@@ -1018,10 +875,7 @@ describe('places a credential can hide that an extension list never reaches', ()
   })
 
   test('an extensionless file that is not a key is left alone', async () => {
-    // app.ts is the control. It keeps the scan from reaching zero files —
-    // which is now reported as an incomplete scan in its own right — so the
-    // count below is evidence about README and LICENSE specifically rather
-    // than about an empty directory.
+    // 提供正常文件，避免零文件状态干扰断言。
     const result = await scanFiles({
       README: 'just some notes\n',
       LICENSE: 'MIT\n',
@@ -1032,9 +886,7 @@ describe('places a credential can hide that an extension list never reaches', ()
   })
 
   test('a gitignored .env buried in a monorepo is still found', async () => {
-    // The old search looked at the root plus a fixed list of directory names,
-    // one level down. services/web/.env was invisible to it, and the report
-    // said zero findings with complete confidence.
+    // 递归发现工作区中被 Git 忽略的环境文件。
     await withGitRepo(
       {
         '.gitignore': '.env\n**/.env\n',
@@ -1052,8 +904,7 @@ describe('places a credential can hide that an extension list never reaches', ()
   })
 
   test('a gitignored .env holding a server-side secret is correct usage', async () => {
-    // The counterpart. Finding these files must not turn into reporting them:
-    // keeping a secret in an ignored .env is the thing everyone is told to do.
+    // 被忽略的服务端环境凭据属于正常使用。
     await withGitRepo(
       {
         '.gitignore': '.env\n**/.env\n',
@@ -1068,9 +919,7 @@ describe('places a credential can hide that an extension list never reaches', ()
   })
 
   test('a credential in a test directory is reported, at lower confidence', async () => {
-    // Test directories used to be waved through entirely. A real key committed
-    // to test/ is exactly as stolen as one in src/ — it is just less likely to
-    // be real, which is what "likely" means.
+    // 测试凭据降低置信度，但不丢弃。
     const { findings } = await scanFiles({
       'test/integration.ts': "const k = 'sk-proj-A9dKfM2xQwRt7YuIoPa1SdFgHjKlZxCvBn'\n",
     })
@@ -1081,10 +930,7 @@ describe('places a credential can hide that an extension list never reaches', ()
   })
 
   test('merely mentioning the opt-out does not trigger it', async () => {
-    // Found by canship scanning itself: walker.ts and secrets.ts had quietly
-    // excluded themselves, because both *explain* the marker in a comment. A
-    // substring search turns one stray word into a blindfold over a whole
-    // file — and a very quiet one. The marker has to be the whole line.
+    // 仅提及忽略标记的注释不能排除整文件。
     const marker = `canship-ignore` + `-file`
     const { findings } = await scanFiles({
       'docs.ts': `// Add ${marker} to a line of its own to exclude a file.\nconst k = 'sk-proj-A9dKfM2xQwRt7YuIoPa1SdFgHjKlZxCvBn'\n`,
@@ -1100,12 +946,11 @@ describe('places a credential can hide that an extension list never reaches', ()
     const root = mkdtempSync(join(tmpdir(), 'canship-opt-'))
     try {
       writeFileSync(join(root, 'fixture.ts'), `// ${marker}\nconst a = 1\n`, 'utf8')
-      // A file that is actually scanned, so "partial" below reports on the
-      // opt-out rather than on the directory having nothing left in it.
+      // 保留一个可扫描文件，单独验证忽略语义。
       writeFileSync(join(root, 'app.ts'), 'export const a = 1\n', 'utf8')
       const result = await scan(root)
       assert.deepEqual(result.ignored, ['fixture.ts'], 'the exclusion left no trace')
-      // Deliberate is not broken: this must not make the scan look failed.
+      // 主动忽略不应产生未完成状态。
       assert.equal(result.partial, false)
       const text = renderReport(result, { root, showingLikely: true, hiddenLikely: 0 })
       assert.match(text, /excluded by canship-ignore-file/, 'the report said nothing about it')
@@ -1113,13 +958,13 @@ describe('places a credential can hide that an extension list never reaches', ()
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   })
 
   test('the file-level opt-out silences a file completely', async () => {
-    // Built by concatenation so this test does not disable itself.
+    // 拼接标记，避免测试源码自身被忽略。
     const marker = `canship-ignore` + `-file`
     const { findings } = await scanFiles({
       'test/integration.ts': `// ${marker}\nconst k = 'sk-proj-A9dKfM2xQwRt7YuIoPa1SdFgHjKlZxCvBn'\n`,
@@ -1129,11 +974,7 @@ describe('places a credential can hide that an extension list never reaches', ()
 })
 
 describe('variable names are read as words, not as a regex accident', () => {
-  // `\b` sits between a word character and a non-word one, and `_` is a word
-  // character. So /\bSECRET\b/ never matched STRIPE_SECRET_KEY and
-  // /\bSERVICE_ROLE\b/ never matched SUPABASE_SERVICE_ROLE_KEY. Both patterns
-  // read as if they worked. Neither matched a single realistic name, which
-  // made two of this project's lists dead code for as long as they existed.
+  // 下划线不构成正则词边界，变量名需独立分词。
 
   test('a name splits into its words', () => {
     assert.deepEqual(nameWords('SUPABASE_SERVICE_ROLE_KEY'), ['SUPABASE', 'SERVICE', 'ROLE', 'KEY'])
@@ -1147,8 +988,7 @@ describe('variable names are read as words, not as a regex accident', () => {
   })
 
   test('a word is a word, not a substring', () => {
-    // The reason for matching whole words rather than searching for the text:
-    // SECRETARY contains SECRET.
+    // 普通单词中的片段不能匹配私密词。
     assert.equal(looksClearlyPrivate('SECRETARY_EMAIL'), false)
   })
 
@@ -1159,9 +999,7 @@ describe('variable names are read as words, not as a regex accident', () => {
   })
 
   test('a private-sounding public variable is reported once the name is readable', async () => {
-    // NEXT_PUBLIC_INTERNAL_SECRET with a value matching no known key format.
-    // The name is the only evidence there is, so this is a lower-confidence
-    // finding — but it used to be no finding at all.
+    // 仅凭变量名判断的私密值使用疑似置信度。
     const { findings } = await scan(VULNERABLE)
     const hit = findings.find((f) => f.ruleId === 'exposure/private-name-in-public-env')
     assert.ok(hit, 'the name heuristic is still not reading snake_case')
@@ -1169,24 +1007,19 @@ describe('variable names are read as words, not as a regex accident', () => {
   })
 
   test('the public prefix does not exempt the variable it prefixes', async () => {
-    // The trap that only appears once tokenisation works: every NEXT_PUBLIC_
-    // name contains the word PUBLIC, so testing the whole name marks all of
-    // them intentionally public and silences the branch everywhere. The
-    // question has to be asked of the name after the prefix.
+    // 移除公开前缀后再判断变量用途。
     const { findings } = await scan(VULNERABLE)
     assert.ok(
       findings.some((f) => f.ruleId === 'exposure/private-name-in-public-env'),
       'the prefix exempted the variable it was prefixing',
     )
-    // And the genuinely public ones stay quiet.
+    // 按设计公开的变量仍不报告。
     const anon = findings.find((f) => f.excerpt?.includes('ANON_KEY'))
     assert.equal(anon, undefined, 'the anon key is public by design')
   })
 
   test('a trailing comment does not hide the key it annotates', async () => {
-    // NEXT_PUBLIC_GITHUB_TOKEN=ghp_… # production. The comment used to stay
-    // glued to the value, which then matched no known format — so the most
-    // dangerous line in the file was reported as nothing.
+    // 行尾注释不应混入凭据值。
     const { findings } = await scan(VULNERABLE)
     const hit = findings.find(
       (f) => f.ruleId === 'exposure/secret-in-public-env' && f.title.includes('GitHub'),
@@ -1196,17 +1029,13 @@ describe('variable names are read as words, not as a regex accident', () => {
   })
 
   test('a # inside a quoted value is part of the password', async () => {
-    // The counterpart: stripping comments must not corrupt values. The clean
-    // fixture holds DATABASE_PASSWORD="p@ss#word-2026".
+    // 引号内井号必须保留为值的一部分。
     const { findings } = await scan(CLEAN)
     assert.deepEqual(findings.map((f) => f.ruleId), [], 'a quoted # was read as a comment')
   })
 
   test('a UTF-16 source file is decoded, not written off as binary', async () => {
-    // Vercel's own Next.js + Supabase template ships types_db.ts in UTF-16 LE.
-    // Read as UTF-8 its text comes out as e\0x\0p\0, the NUL check calls it
-    // binary, and the file is never scanned — in the flagship template of the
-    // exact stack canship targets.
+    // 带 BOM 的 UTF-16 源码应被正确解码。
     const root = mkdtempSync(join(tmpdir(), 'canship-bom-'))
     try {
       const text = "const k = 'sk-proj-A9dKfM2xQwRt7YuIoPa1SdFgHjKlZxCvBn'\n"
@@ -1222,15 +1051,13 @@ describe('variable names are read as words, not as a regex accident', () => {
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   })
 
   test('a comment mentioning a variable is not a variable', async () => {
-    // Found by canship on its own source: a comment giving an example of the
-    // pattern being matched became a finding. A commented-out *key* is still
-    // leaked; a commented-out *name* is prose, and nothing ships.
+    // 注释中的变量名示例不能视为实际访问。
     const root = mkdtempSync(join(tmpdir(), 'canship-cmt-'))
     try {
       writeFileSync(
@@ -1244,14 +1071,14 @@ describe('variable names are read as words, not as a regex accident', () => {
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   })
 })
 
 describe('SQL is read as SQL, not as text that happens to contain keywords', () => {
-  /** Scan a throwaway Supabase-looking project with one migration */
+  /** 构造含单条迁移的临时 Supabase 项目。 */
   async function migration(body: string): Promise<string[]> {
     const root = mkdtempSync(join(tmpdir(), 'canship-sql-'))
     try {
@@ -1266,15 +1093,13 @@ describe('SQL is read as SQL, not as text that happens to contain keywords', () 
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   }
 
   test('a DROP inside a string literal does not drop anything', async () => {
-    // One sentence of SQL used to be enough to hide a vulnerability: the text
-    // inside the quotes was read as a statement, the table left the replay, and
-    // canship said nothing about a live table with no RLS.
+    // 字符串内的 SQL 不能改变结构重放。
     assert.deepEqual(
       await migration("CREATE TABLE public.live_data (id int);\nSELECT 'DROP TABLE public.live_data;';\n"),
       ['live_data'],
@@ -1289,7 +1114,7 @@ describe('SQL is read as SQL, not as text that happens to contain keywords', () 
   })
 
   test('block comments nest, the way Postgres says they do', async () => {
-    // Stopping at the first */ leaves the tail of the comment looking like code.
+    // 块注释需完整处理嵌套层级。
     assert.deepEqual(
       await migration('CREATE TABLE public.t (id int);\n/* outer /* inner */ DROP TABLE public.t; */\n'),
       ['t'],
@@ -1313,8 +1138,7 @@ describe('SQL is read as SQL, not as text that happens to contain keywords', () 
   })
 
   test('RLS turned back off is RLS that is off', async () => {
-    // The state where silence is most expensive: somebody did think about RLS
-    // here, and then changed their mind.
+    // 后续关闭行级安全必须反映在最终状态中。
     assert.deepEqual(
       await migration(
         'CREATE TABLE public.accounts (id int);\nALTER TABLE public.accounts ENABLE ROW LEVEL SECURITY;\nALTER TABLE public.accounts DISABLE ROW LEVEL SECURITY;\n',
@@ -1352,10 +1176,7 @@ describe('SQL is read as SQL, not as text that happens to contain keywords', () 
     const tables = findings
       .filter((f) => f.ruleId === 'supabase/rls-not-enabled')
       .map((f) => /"([^"]+)"/.exec(f.title)?.[1])
-    // invoices: enabled then disabled. orders: named in a string that must not
-    // count as a DROP. payment_receipts and ghost_from_body must not appear —
-    // one is protected through a rename, the other exists only inside a
-    // function body.
+    // 分别验证关闭保护、无效字符串语句及被删除表。
     assert.ok(tables.includes('invoices'), 'a table whose RLS was switched off went unreported')
     assert.ok(tables.includes('orders'), 'a string literal retired a real finding')
     assert.ok(!tables.includes('payment_receipts'), 'a rename lost its protection')
@@ -1387,15 +1208,13 @@ describe('what silences the API check has to be what actually protects the route
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   }
 
   test('middleware covering one narrow path does not cover the rest', async () => {
-    // The hole this closes: the answer used to be one boolean for the whole
-    // project, so middleware protecting only /api/admin/* reported "the API is
-    // covered" and every unauthenticated route went unreported.
+    // 中间件必须逐路由判断覆盖。
     const found = await scanProject({
       'app/api/users/route.ts': ADMIN_ROUTE,
       'middleware.ts': middleware('["/api/admin/:path*"]'),
@@ -1412,7 +1231,7 @@ describe('what silences the API check has to be what actually protects the route
   })
 
   test('a comment is not an authorisation check', async () => {
-    // A note reminding you the check is missing, read as the check itself.
+    // 提醒添加鉴权的注释不构成鉴权。
     const found = await scanProject({
       'app/api/users/route.ts': `// TODO validate token\n${ADMIN_ROUTE}`,
     })
@@ -1427,7 +1246,7 @@ describe('what silences the API check has to be what actually protects the route
   })
 
   test('sitting under /api/auth is not an argument', async () => {
-    // Sign-in cannot check a caller; a bulk export next to it has no excuse.
+    // 身份入口的相邻导出接口不享受豁免。
     const exported = await scanProject({ 'app/api/auth/export-all/route.ts': ADMIN_ROUTE })
     assert.deepEqual(exported, ['api/admin-db-access-without-auth'])
 
@@ -1459,7 +1278,7 @@ describe('a comment, a template, and a setting are not what they resemble', () =
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   }
@@ -1483,8 +1302,7 @@ describe('a comment, a template, and a setting are not what they resemble', () =
   })
 
   test('a template literal wrapping the Origin header is reflection', async () => {
-    // The one shape of reflection canship could not see: every backtick was
-    // read as a literal, so the most direct echo there is looked safe.
+    // 单一模板插值中的来源回显仍需识别。
     assert.deepEqual(
       await scanFiles({
         's.js': "res.setHeader('Access-Control-Allow-Origin', `${req.headers.origin}`)\n" + CREDS,
@@ -1503,10 +1321,7 @@ describe('a comment, a template, and a setting are not what they resemble', () =
   })
 
   test('an allowlist that reads the request header is still an allowlist', async () => {
-    // Caught while fixing the template case: the value used to be captured
-    // only as far as the first `)`, which turned
-    // `ALLOWED.includes(req.headers.origin) ? … : …` into what looked like a
-    // bare property path ending in "origin".
+    // 允许列表表达式不能被截断成直接回显。
     assert.deepEqual(
       await scanFiles({
         's.js':
@@ -1519,8 +1334,7 @@ describe('a comment, a template, and a setting are not what they resemble', () =
   })
 
   test('a committed .env holding only a setting is not a leak', async () => {
-    // NODE_ENV=development was reported as a certain-confidence credential
-    // leak. A rule that shouts at that gets skipped on the day it is right.
+    // 普通环境设置不属于凭据。
     await withGitRepo({ '.env': 'NODE_ENV=development\n' }, async (root) => {
       const { findings } = await scan(root)
       assert.deepEqual(findings.filter((f) => f.ruleId.startsWith('gitleak/')).map((f) => f.title), [])
@@ -1549,8 +1363,7 @@ describe('a comment, a template, and a setting are not what they resemble', () =
   })
 
   test('history is asked about the directory being scanned, not the repository', async () => {
-    // Scanning one package of a monorepo used to report .env files belonging
-    // to its siblings, because the history query carried no pathspec.
+    // 子目录扫描只检查该目录范围内的历史。
     await withGitRepo(
       {
         'app/index.ts': 'export const a = 1\n',
@@ -1569,10 +1382,7 @@ describe('a comment, a template, and a setting are not what they resemble', () =
 })
 
 describe('the CLI contract', () => {
-  // Everything a CI pipeline actually depends on: the exit code, the shape of
-  // --json, and the flags composing. None of it was covered until now, which
-  // is uncomfortable for the part of the tool whose whole job is to be the
-  // gate in front of a deploy.
+  // 验证退出码、机器输出结构和选项组合。
   const CLI = join(here, '..', 'src', 'cli.ts')
 
   interface Run {
@@ -1602,9 +1412,7 @@ describe('the CLI contract', () => {
   })
 
   test('a confirmed P2 exits 2, not 1', () => {
-    // Severity decides whether shipping is a mistake. A CORS pairing browsers
-    // reject on your behalf is a bug to fix, not a reason to fail a deploy —
-    // and it used to fail one, because the exit code counted certainty.
+    // 确定的低严重度问题不阻断发布。
     const root = mkdtempSync(join(tmpdir(), 'canship-cli-'))
     try {
       writeFileSync(
@@ -1619,7 +1427,7 @@ describe('the CLI contract', () => {
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   })
@@ -1649,29 +1457,11 @@ describe('the CLI contract', () => {
     assert.match(version.stdout.trim(), /^\d+\.\d+\.\d+/)
   })
 
-  /**
-   * The test above pins --help to literals, which stops it regressing but says
-   * nothing about the READMEs: both documents could describe a flag that no
-   * longer exists, or miss one that does, and stay green. Two of the three were
-   * already out of step once — --help still carried the old tagline and the old
-   * --best-effort wording after both READMEs had been corrected.
-   *
-   * So compare the three as sets. Wording is deliberately not compared: the
-   * documents explain at different lengths and in different languages, and a
-   * test that demanded identical sentences would be rewritten every time one of
-   * them was improved. What must not drift is which options exist.
-   */
+  /** 同时核对帮助文本和两份 README 的选项与退出码。 */
   describe('the documented options match the ones the CLI has', () => {
     const readme = (name: string): string => readFileSync(join(here, '..', name), 'utf8')
 
-    /**
-     * Options named in a README's own option table.
-     *
-     * Scoped to the table rather than the whole document because prose
-     * elsewhere names other programs' flags, and `git rm --cached` is not one
-     * of canship's options. The table's rows are the only ones whose first cell
-     * opens with a backticked dash.
-     */
+    /** 仅提取 README 选项表，避免混入其他工具参数。 */
     const documented = (markdown: string): Set<string> => {
       const found = new Set<string>()
       for (const line of markdown.split(/\r?\n/)) {
@@ -1682,7 +1472,7 @@ describe('the CLI contract', () => {
       return found
     }
 
-    /** Options named in the Options block of --help, past any `[=F]` placeholder */
+    /** 提取帮助文本中实际提供的选项。 */
     const offered = (help: string): Set<string> => {
       const block = help.slice(help.indexOf('Options'), help.indexOf('Exit codes'))
       const found = new Set<string>()
@@ -1695,8 +1485,7 @@ describe('the CLI contract', () => {
     test('--help and both READMEs name the same options', () => {
       const help = sorted(offered(run(['--help']).stdout))
 
-      // Non-empty is asserted separately: two extractors that both silently
-      // matched nothing would agree perfectly and prove nothing at all.
+      // 先断言提取结果非空，避免两个空集合造成假通过。
       assert.ok(help.length >= 7, `--help named only ${help.length} options`)
       assert.deepEqual(sorted(documented(readme('README.md'))), help)
       assert.deepEqual(sorted(documented(readme('README.zh-CN.md'))), help)
@@ -1777,7 +1566,7 @@ describe('the CLI contract', () => {
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* a temp directory that will not delete is not a test failure */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   })
@@ -1787,7 +1576,7 @@ describe('the CLI contract', () => {
     const target = join(dir, 'r.html')
     try {
       const result = run([VULNERABLE, '--json', `--report=${target}`])
-      // stdout stays machine-readable even though a report was written
+      // 写入报告后标准输出仍需为合法 JSON。
       JSON.parse(result.stdout)
       const html = readFileSync(target, 'utf8')
       assert.match(html, /<!doctype html>/i)
@@ -1795,7 +1584,7 @@ describe('the CLI contract', () => {
       try {
         rmSync(dir, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   })
@@ -1822,17 +1611,13 @@ describe('failures found only by pointing canship at real repositories', () => {
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   }
 
   test('the matcher from the Next.js docs does not silence the rule', async () => {
-    // The one Next.js prints for excluding static files. Rewriting `:svg`
-    // inside `(?:svg|png|…)` produced an invalid group, the pattern failed to
-    // compile, an unreadable matcher counted as coverage — and every API route
-    // in every project using that matcher went unreported. Found by a scan of
-    // a real project quietly losing a finding it had made an hour earlier.
+    // 正则非捕获分组不能被路径参数替换破坏。
     const found = await scanProject({
       'app/api/users/route.ts':
         "import { createClient } from '@supabase/supabase-js'\n" +
@@ -1846,11 +1631,7 @@ describe('failures found only by pointing canship at real repositories', () => {
   })
 
   test('a superseded migration in a subfolder is not part of the schema', async () => {
-    // Supabase applies supabase/migrations/*.sql and nothing below it, so a
-    // subdirectory is where replaced migrations go to retire. One real project
-    // kept an old_migrations/ folder whose last statement was DISABLE ROW
-    // LEVEL SECURITY; replaying it reported five tables that the live schema
-    // protects as wide open.
+    // 嵌套归档迁移不属于直接执行的迁移集合。
     const found = await scanProject({
       'c.ts': "import { createClient } from '@supabase/supabase-js'\n",
       'supabase/migrations/00000000000000_schema.sql':
@@ -1902,7 +1683,7 @@ describe('gaps a second review found, each one a way to a false clean', () => {
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   }
@@ -1910,10 +1691,7 @@ describe('gaps a second review found, each one a way to a false clean', () => {
     (await scanProject(files)).findings.map((f) => f.ruleId)
 
   test('a format the code already recognises is in the pattern table', async () => {
-    // framework.ts has known sb_secret_ since it was written — but only for
-    // classifying a client-exposed value. The table below is what the
-    // hardcoded-secret rule and the redaction boundary both walk, and it was
-    // not in there. Detection and redaction failed together, from one omission.
+    // 共享格式表必须包含已有的私密密钥格式。
     assert.deepEqual(await ids({ 'a.ts': `const k = '${SB}'\n` }), ['secrets/hardcoded/supabase-secret-key'])
   })
 
@@ -1923,15 +1701,12 @@ describe('gaps a second review found, each one a way to a false clean', () => {
   })
 
   test('a real key in .env.example is reported', async () => {
-    // Three rules each had a good reason to skip this file, and between them
-    // nothing looked inside — at the one env file people commit on purpose.
+    // 环境模板中的实际凭据仍需检查。
     assert.deepEqual(await ids({ '.env.example': `OPENAI_API_KEY=${OA}\n` }), ['secrets/hardcoded/openai'])
   })
 
   test('a directory past the search depth leaves a receipt', async () => {
-    // Past the cap, which real projects do not reach — a Next.js app router
-    // with route groups tops out around nine levels, and the limit sits well
-    // clear of that so that hitting it means something.
+    // 超深目录必须显式披露。
     const deep = Array.from({ length: 18 }, (_, i) => `d${i}`).join('/')
     const result = await scanProject({
       'app.ts': 'export const a = 1\n',
@@ -1972,8 +1747,7 @@ describe('gaps a second review found, each one a way to a false clean', () => {
   })
 
   test('but a real Auth.js handler is still recognised', async () => {
-    // Only actually constructing the handler is evidence; an unused import cannot
-    // authenticate a route.
+    // 仅导入认证库不等于构造认证处理函数。
     assert.deepEqual(
       await ids({ 'app/api/auth/[...nextauth]/route.ts': "import NextAuth from 'next-auth'\n" + ADMIN_ROUTE }),
       ['api/admin-db-access-without-auth'],
@@ -2003,7 +1777,7 @@ describe('gaps a second review found, each one a way to a false clean', () => {
       }),
       ['cors/reflected-origin-with-credentials'],
     )
-    // And a configured origin on its own is still correct.
+    // 固定来源配置本身仍应通过。
     assert.deepEqual(
       await ids({ 's.js': "res.setHeader('Access-Control-Allow-Origin', process.env.APP_ORIGIN)\n" + CREDS }),
       [],
@@ -2023,8 +1797,7 @@ describe('gaps a second review found, each one a way to a false clean', () => {
   })
 
   test('a quoted identifier cannot smuggle a DROP statement', async () => {
-    // A legal Postgres column name that contains a whole DDL statement. The
-    // replay obeyed it and retired the very table it was declared in.
+    // 引用标识符内的 SQL 不能改变重放结果。
     assert.deepEqual(
       await ids({
         'c.ts': "import { createClient } from '@supabase/supabase-js'\n",
@@ -2057,7 +1830,7 @@ describe('gaps a second review found, each one a way to a false clean', () => {
   })
 
   test('a hash with no space before it still starts a comment', async () => {
-    // What dotenv does, and disagreeing with the runtime hid the value.
+    // 环境注释解析应与运行时保持一致。
     assert.deepEqual(await ids({ '.env.local': `NEXT_PUBLIC_OPENAI_API_KEY=${OA}#production\n` }), [
       'exposure/secret-in-public-env',
     ])
@@ -2071,7 +1844,7 @@ describe('gaps a second review found, each one a way to a false clean', () => {
       }),
       ['firebase/open-rules'],
     )
-    // A deny in the same scope still means what it meant.
+    // 同级拒绝规则仍按原语义生效。
     assert.deepEqual(
       await ids({ 'firestore.rules': 'match /pub/{id} {\n  allow read: if true;\n  allow write: if false;\n}\n' }),
       [],
@@ -2079,8 +1852,7 @@ describe('gaps a second review found, each one a way to a false clean', () => {
   })
 
   test('a key added after the first commit is still in history', async () => {
-    // Commit a harmless .env, add the key later, delete the file when you
-    // notice. Reading only the revision that added the file saw nothing.
+    // 检查后续提交加入的凭据，不能只检查首次添加版本。
     await withGitRepo({ '.env': 'NODE_ENV=development\n', 'a.ts': 'export const a = 1\n' }, async (root) => {
       const git = (...args: string[]): void => {
         execFileSync('git', ['-c', 'user.email=t@e.com', '-c', 'user.name=t', ...args], { cwd: root, stdio: 'ignore' })
@@ -2112,8 +1884,7 @@ describe('gaps a second review found, each one a way to a false clean', () => {
   })
 
   test('history for a subdirectory asks git the right question', async () => {
-    // A pathspec is relative to the current directory; `rev:path` is relative
-    // to the repository root. Using one form for both looked for app/app/.env.
+    // 分别使用扫描相对路径和仓库对象路径。
     await withGitRepo({ 'app/.env': `STRIPE_SECRET_KEY=${SK}\n`, 'app/x.ts': 'export const a = 1\n' }, async (root) => {
       rmSync(join(root, 'app', '.env'))
       execFileSync('git', ['-c', 'user.email=t@e.com', '-c', 'user.name=t', 'commit', '-aqm', 'remove'], {
@@ -2133,9 +1904,7 @@ describe('gaps a second review found, each one a way to a false clean', () => {
   })
 
   test('the fix prompt says when the scan did not finish', async () => {
-    // This output exists to be pasted into an assistant, which will act on it
-    // and report success. "Nothing to fix" on a broken scan is the one place
-    // the result must not stay silent about that.
+    // 扫描失败时修复提示不能宣称无需修复。
     const prompt = renderFixPrompt([], { partial: true })
     assert.ok(prompt !== null, 'an incomplete scan produced no prompt at all')
     assert.match(prompt, /did not finish/i)
@@ -2143,10 +1912,7 @@ describe('gaps a second review found, each one a way to a false clean', () => {
 })
 
 describe('dogfooding — canship on its own repository', () => {
-  // These tests come from the first dogfooding run, where canship reported its
-  // own fixtures and the example connection string inside its own source
-  // comments. The exemption logic lived only in the secrets rule at the time;
-  // the exposure rule had missed it entirely.
+  // 自扫描应区分真实源码与故意包含问题的夹具。
   const SELF = join(here, '..')
 
   test('produces no certain-confidence finding on its own source', async () => {
@@ -2160,11 +1926,7 @@ describe('dogfooding — canship on its own repository', () => {
   })
 
   test('anything it does report about itself is confined to the fixtures', async () => {
-    // The fixtures really do contain secret-shaped strings, and reporting them
-    // at lower confidence is accurate rather than wrong — they cannot carry
-    // canship-ignore-file, because the tests scan them as project roots and
-    // need the findings. What must never happen is a finding escaping into
-    // src/: that would be the tool misreading its own implementation.
+    // 夹具保留疑似结果，用于验证实际规则行为。
     const { findings } = await scan(SELF)
     const outsideFixtures = findings.filter((f) => !f.file?.includes('test/fixtures/'))
     assert.deepEqual(
@@ -2262,9 +2024,7 @@ describe('--fix-prompt', () => {
     assert.ok(endOfPrompt > 0, 'missing the end-of-prompt marker')
 
     const pasteable = prompt.slice(0, endOfPrompt)
-    // Rotation is the step that actually revokes access, and an assistant
-    // cannot do it. If it appeared inside the pasted block, the assistant would
-    // claim it was handled.
+    // 凭据轮换必须位于人工步骤区。
     assert.ok(
       !/rotate/i.test(pasteable),
       'a rotation step leaked into the section meant for the AI assistant',
@@ -2275,10 +2035,7 @@ describe('--fix-prompt', () => {
   test('deduplicates identical human steps', async () => {
     const { findings } = await scan(VULNERABLE)
     const prompt = renderFixPrompt(findings)!
-    // Asserted on whole lines rather than a substring: two different steps can
-    // legitimately mention the same dashboard, and counting occurrences of a
-    // phrase turned that into a failure the moment a second rule pointed at
-    // the same page.
+    // 按完整步骤去重，避免错误合并提及相同平台的不同操作。
     const steps = prompt
       .split('\n')
       .map((l) => l.trim())
@@ -2308,7 +2065,7 @@ describe('HTML report', () => {
   test('is fully self-contained — no external requests', async () => {
     const result = await scan(VULNERABLE)
     const html = renderHtml(result, opts)
-    // Must work offline, from file://, and behind a restrictive network.
+    // HTML 报告必须离线可用。
     assert.ok(!/<script\s+src=/i.test(html), 'external script')
     assert.ok(!/<link[^>]+stylesheet/i.test(html), 'external stylesheet')
     assert.ok(!/@import/i.test(html), 'CSS @import')
@@ -2328,9 +2085,7 @@ describe('HTML report', () => {
   })
 
   test('escapes HTML in user-controlled data', () => {
-    // File paths and code excerpts come from the scanned project. canship is a
-    // security tool; a report that executes a project's content would be an
-    // embarrassing hole. A file literally named <script> must stay inert.
+    // 来自项目的路径和内容必须转义。
     const hostile: Finding = {
       ruleId: 'test/hostile',
       severity: 'P0',
@@ -2349,13 +2104,11 @@ describe('HTML report', () => {
       ruleSelection: null, vendored: 0, partial: false },
       opts,
     )
-    // Check that no new element can be created from user data. Testing for the
-    // substring "onerror=alert" would be wrong: once escaped it is inert text,
-    // and the escaped form legitimately contains it.
+    // 验证输入不能构造新的 HTML 元素。
     assert.ok(!html.includes('<script>alert'), 'unescaped script tag reached the report')
     assert.ok(!html.includes('<img'), 'unescaped img tag reached the report')
     assert.ok(!html.includes('</pre><script>'), 'excerpt broke out of its code block')
-    // Escaped, not stripped — the user still needs to see what was found.
+    // 保留转义后的证据文本。
     assert.ok(html.includes('&lt;img src=x onerror=alert(2)&gt;'), 'expected escaping, not stripping')
     assert.ok(html.includes('&lt;script&gt;'), 'expected the markup to be escaped, not stripped')
   })
@@ -2370,9 +2123,7 @@ describe('HTML report', () => {
     const result = await scan(VULNERABLE)
     const html = renderHtml(result, opts)
     assert.match(html, /file paths and project/i)
-    // The banner also has to state the limit of the redaction itself. Masking
-    // covers the formats canship has patterns for and nothing else, and a
-    // reader deciding who to forward this to needs that in front of them.
+    // 明确脱敏仅覆盖已识别格式。
     assert.match(html, /recognises are masked/i)
     assert.match(html, /pattern for can still appear/i)
   })
@@ -2399,7 +2150,7 @@ describe('a third review — checks that went quiet instead of failing', () => {
     'const a = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)\n' +
     'export async function GET(){ const { data } = await a.from("users").select("*"); return Response.json(data) }\n'
 
-  /** A temp tree with no repository in it */
+  /** 构造非仓库临时目录。 */
   async function tree(files: Record<string, string>): Promise<Awaited<ReturnType<typeof scan>>> {
     const root = mkdtempSync(join(tmpdir(), 'canship-r3-'))
     try {
@@ -2413,18 +2164,18 @@ describe('a third review — checks that went quiet instead of failing', () => {
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   }
 
-  /** Rule ids from one family, so an unrelated rule firing cannot fail the test */
+  /** 仅提取目标规则族，隔离无关规则结果。 */
   async function ids(files: Record<string, string>, prefix = ''): Promise<string[]> {
     const { findings } = await tree(files)
     return findings.filter((f) => f.ruleId.startsWith(prefix)).map((f) => f.ruleId)
   }
 
-  /** A repository, plus whatever commits the test needs on top of the first */
+  /** 构造可追加提交的临时仓库。 */
   function withRepo(
     files: Record<string, string>,
     after: (root: string, commit: (msg: string) => void) => void,
@@ -2441,7 +2192,7 @@ describe('a third review — checks that went quiet instead of failing', () => {
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
     try {
@@ -2465,11 +2216,7 @@ describe('a third review — checks that went quiet instead of failing', () => {
   }
 
   test('a repository git cannot read is an incomplete scan, not a clean one', async () => {
-    // A .git git refuses stands in for every way this happens in the field:
-    // git not installed, dubious ownership, a permission problem. All of them
-    // used to be answered as "not a repository", and the history rule skips
-    // itself on that answer without a word — so a repository with a live key
-    // in its history scanned to zero findings, zero errors and exit 0.
+    // 存在元数据但不可读取时不能视为非仓库。
     const result = await tree({
       '.git/not-really': 'this is not a git directory\n',
       'app.ts': 'export const a = 1\n',
@@ -2482,9 +2229,7 @@ describe('a third review — checks that went quiet instead of failing', () => {
   })
 
   test('a directory that is simply not a repository stays silent', async () => {
-    // The other half, and the reason the two cases have to be told apart. Most
-    // scans are of plain directories; warning on those makes the warning worth
-    // nothing on the day it means something.
+    // 普通非仓库目录不应触发 Git 失败提示。
     const result = await tree({ 'app.ts': 'export const a = 1\n' })
     assert.deepEqual(
       result.errors.filter((e) => e.ruleId.startsWith('gitleak/')),
@@ -2494,9 +2239,7 @@ describe('a third review — checks that went quiet instead of failing', () => {
   })
 
   test('editing the key out of a tracked .env does not clean the history', async () => {
-    // The ordinary way people "fix" this. Case A reads only the current
-    // contents and found them clean; case B skipped every tracked path on the
-    // grounds that case A had it covered. Between them, nothing was said.
+    // 修改当前值不能消除历史中的凭据。
     await withRepo(
       { '.env': `STRIPE_SECRET_KEY=${SK}\n`, 'app.ts': 'export const a = 1\n' },
       (root, commit) => {
@@ -2507,8 +2250,7 @@ describe('a third review — checks that went quiet instead of failing', () => {
         const { findings } = await scan(root)
         const hit = findings.find((f) => f.ruleId.startsWith('gitleak/'))
         assert.ok(hit, 'a key left in history was reported by neither branch')
-        // The file is still in the index, so "was removed" would be the
-        // confident false statement this rule exists never to make.
+        // 仍被跟踪的文件不能描述为已删除。
         assert.doesNotMatch(hit.title, /was removed/, 'claimed a still-tracked file had been deleted')
       },
     )
@@ -2536,9 +2278,7 @@ describe('a third review — checks that went quiet instead of failing', () => {
   })
 
   test('a token or session that is never checked does not stand in for a check', async () => {
-    // `const token = await request.json()` silenced a route that held the
-    // service_role key and checked nobody. The word is present; nothing is
-    // being authorised with it.
+    // 读取名为令牌的变量不等于鉴权。
     assert.deepEqual(
       await ids({ 'app/api/u/route.ts': ADMIN_ROUTE.replace('{ const', '{ const token = 1; const') }, 'api/'),
       ['api/admin-db-access-without-auth'],
@@ -2562,8 +2302,7 @@ describe('a third review — checks that went quiet instead of failing', () => {
   })
 
   test('a session that is actually consulted still silences the rule', async () => {
-    // The other direction, and the more expensive mistake. Narrowing these
-    // signals must not start reporting routes that really are protected.
+    // 收紧鉴权判断时仍需保留合法保护方式。
     const guards = [
       'const { data: { session } } = await a.auth.getSession(); if (!session) return new Response("no", { status: 401 });',
       'const session = await getServerSession(); if (session.user == null) return new Response("no", { status: 401 });',
@@ -2579,8 +2318,7 @@ describe('a third review — checks that went quiet instead of failing', () => {
   })
 
   test('a sub-path under an auth endpoint is not an auth endpoint', async () => {
-    // /api/auth/export-all was already pinned as reportable. Moving the same
-    // bulk export one segment deeper used to turn it invisible.
+    // 身份路径下更深的业务接口不享受入口豁免。
     for (const at of ['app/api/auth/signin/export-all/route.ts', 'app/api/auth/session/export-all/route.ts']) {
       assert.deepEqual(await ids({ [at]: ADMIN_ROUTE }, 'api/'), ['api/admin-db-access-without-auth'], at)
     }
@@ -2626,9 +2364,7 @@ describe('a third review — checks that went quiet instead of failing', () => {
   })
 
   test('two Supabase apps in one repository do not answer for each other', async () => {
-    // apps/b enabling RLS on its own public.users marked apps/a's unprotected
-    // table as protected, so scanning the whole repository reported less than
-    // scanning one app inside it.
+    // 不同应用的迁移不能互相提供保护。
     const client =
       "import { createClient } from '@supabase/supabase-js'\n" +
       'export const s = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)\n'
@@ -2661,8 +2397,7 @@ describe('a third review — checks that went quiet instead of failing', () => {
   })
 
   test('a filename a shell would act on is not handed back as a command', async () => {
-    // The fix steps are meant to be run, and the path in them is chosen by
-    // whoever added the file.
+    // 修复命令中的路径可能含特殊字符。
     await withRepo(
       { 'x;whoami;#/.env': `STRIPE_SECRET_KEY=${SK}\n`, 'app.ts': 'export const a = 1\n' },
       () => {},
@@ -2697,9 +2432,7 @@ describe('a third review — checks that went quiet instead of failing', () => {
   })
 
   test('a credential word outranks a public one in client code too', async () => {
-    // checkEnvFile already knew this and named this very variable in a comment.
-    // The branch reading process.env did the opposite: "analytics" excused
-    // "password".
+    // 源码引用与环境值判断采用相同私密词优先级。
     assert.deepEqual(
       await ids({ 'a.tsx': "'use client'\nexport const A = process.env.NEXT_PUBLIC_ANALYTICS_PASSWORD\n" }, 'exposure/'),
       ['exposure/private-name-in-public-env'],
@@ -2707,8 +2440,7 @@ describe('a third review — checks that went quiet instead of failing', () => {
   })
 
   test('a publishable key is still not a secret', async () => {
-    // The guard on the change above: PRIVATE_PHRASES holds no bare KEY, so the
-    // keys that are meant to be public stay unreported.
+    // 按设计公开的键仍不能误报。
     assert.deepEqual(
       await ids({ 'a.tsx': "'use client'\nexport const A = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY\n" }, 'exposure/'),
       [],
@@ -2745,7 +2477,7 @@ describe('bounds and precedence, decided rather than inherited', () => {
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   }
@@ -2760,9 +2492,7 @@ describe('bounds and precedence, decided rather than inherited', () => {
     `export const config = { matcher: [${matcher}] }\n`
 
   test('a confirmed leak outranks an unfinished scan in the exit code', () => {
-    // Both are true at once and one number has to be chosen. Exit 3 says "I
-    // could not tell you", and a service_role key in the browser bundle is not
-    // that. Pinned here so it stays a decision.
+    // 确定严重问题的退出码优先于扫描未完成。
     inTemp(
       {
         'leak.ts': "'use client'\nexport const k = 'sk_live_51Nc7RtKm9Zp3WqLvB8Hd2Ys6'\n",
@@ -2771,8 +2501,7 @@ describe('bounds and precedence, decided rather than inherited', () => {
       (root) => {
         const r = run([root])
         assert.equal(r.status, 1, 'a confirmed leak was reported as a tool error')
-        // The other half of the bargain: choosing 1 is only acceptable because
-        // nothing is hidden by it.
+        // 退出码优先级不能隐藏完整性提示。
         assert.match(r.stdout, /not everything was checked/i, 'the findings buried what went unread')
       },
     )
@@ -2796,8 +2525,7 @@ describe('bounds and precedence, decided rather than inherited', () => {
   })
 
   test('the fix prompt tells the assistant that quoted repository text is data', async () => {
-    // Paths and excerpts are chosen by whoever wrote the files, and this output
-    // exists to be pasted into something that acts on it.
+    // 引用的项目内容必须标识为数据。
     const findings = (await scan(VULNERABLE)).findings
     const prompt = renderFixPrompt(findings, { partial: false, filesScanned: 16 })
     assert.ok(prompt, 'the vulnerable fixture should produce a prompt')
@@ -2806,9 +2534,7 @@ describe('bounds and precedence, decided rather than inherited', () => {
   })
 
   test('a matcher that could run forever is refused, and said to be refused', () => {
-    // A nested quantifier plus a long path is exponential backtracking, run
-    // synchronously on the main thread against a pattern taken from the
-    // repository being scanned.
+    // 拒绝可能产生高成本回溯的匹配器。
     inTemp(
       {
         [`app/api/${'a'.repeat(40)}/route.ts`]: ADMIN_ROUTE,
@@ -2829,8 +2555,7 @@ describe('bounds and precedence, decided rather than inherited', () => {
   })
 
   test('the matcher Next.js documents is still read, not refused', async () => {
-    // The guard on the change above. This pattern has groups and quantifiers;
-    // what it does not have is a quantifier wrapped around a quantifier.
+    // 正常分组和量词组合仍应可用。
     const root = mkdtempSync(join(tmpdir(), 'canship-b2-'))
     try {
       mkdirSync(join(root, 'app', 'api', 'users'), { recursive: true })
@@ -2842,8 +2567,7 @@ describe('bounds and precedence, decided rather than inherited', () => {
       )
       const result = await scan(root)
       assert.deepEqual(result.errors, [], 'a legitimate matcher was declined as dangerous')
-      // That matcher deliberately excludes /api, so the route is not covered
-      // and the finding stands.
+      // 排除 API 的匹配器不能提供保护。
       assert.ok(
         result.findings.some((f) => f.ruleId.startsWith('api/')),
         'refusing to read the matcher would have silenced this route',
@@ -2852,14 +2576,13 @@ describe('bounds and precedence, decided rather than inherited', () => {
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   })
 
   test('one file cannot produce an unbounded report', async () => {
-    // Under the size cap and still able to name tens of thousands of matches,
-    // each of which used to become a finding carrying paragraphs of prose.
+    // 单文件大小合规也可能产生大量匹配。
     const root = mkdtempSync(join(tmpdir(), 'canship-b3-'))
     try {
       const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
@@ -2881,14 +2604,13 @@ describe('bounds and precedence, decided rather than inherited', () => {
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   })
 
   test('a line number is still correct once it is no longer counted from zero', async () => {
-    // The binary search replaced a scan from the start of the file per match.
-    // Same answer, or the excerpt belongs to the wrong line.
+    // 行号索引优化必须保持定位正确。
     const root = mkdtempSync(join(tmpdir(), 'canship-b4-'))
     try {
       writeFileSync(
@@ -2904,19 +2626,14 @@ describe('bounds and precedence, decided rather than inherited', () => {
       try {
         rmSync(root, { recursive: true, force: true })
       } catch {
-        /* ignore */
+        /* 临时目录清理失败不覆盖测试结果。 */
       }
     }
   })
 })
 
 describe('the fix prompt is not silent either', () => {
-  // The fifth output surface, and the one that gets *acted on*: it is pasted
-  // into an assistant, which reads "no findings" and tells somebody their
-  // project is clear while a live key sits in the file a marker was written
-  // above. The header on renderFixPrompt already said "nothing to fix" is a
-  // claim and an incomplete scan makes it the wrong one; a baseline, a rule
-  // selection and a line marker each make it the wrong one too.
+  // 修复提示也需披露被基线隐藏的结果。
   test('a baseline that emptied the list is named', () => {
     const out = renderFixPrompt([], { partial: false, baselineSuppressed: 3 })
     assert.notEqual(out, null)
@@ -2942,8 +2659,7 @@ describe('the fix prompt is not silent either', () => {
   })
 
   test('the notes come before the paste marker', () => {
-    // What follows that marker is addressed to an assistant and will be acted
-    // on. This is addressed to the person deciding whether the list is whole.
+    // 抑制说明位于面向助手的粘贴区之前。
     const out =
       renderFixPrompt([{ ruleId: "secrets/hardcoded/openai", severity: "P0", confidence: "certain", title: "t", file: "lib/db.ts", line: 1, excerpt: null, why: ["w"], fix: ["f"] }], {
         partial: false,
@@ -2956,8 +2672,7 @@ describe('the fix prompt is not silent either', () => {
   })
 
   test('a genuinely clean scan still says nothing', () => {
-    // The note has to stay meaningful; always printing one is the same as
-    // printing none.
+    // 没有相关状态时不输出多余提示。
     assert.equal(renderFixPrompt([], { partial: false }), null)
   })
 })

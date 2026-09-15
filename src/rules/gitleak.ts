@@ -1,14 +1,4 @@
-/**
- * P0-4: .env files committed to git.
- *
- * This rule has to inspect **history**, not just the current state.
- * The usual reaction to discovering a committed .env is `git rm --cached .env`
- * followed by another commit. The file disappears from the working tree while
- * every version of it stays in history. If the repository was ever pushed to a
- * public remote, those keys have already been scraped. A tool that only looks
- * at the current state would report "all clear", which is worse than not
- * checking at all.
- */
+/** 检查当前跟踪及历史版本中的环境文件凭据。 */
 
 import type { Finding, ProjectRule, ScanContext } from '../types.js'
 import { isEnvFile, isExampleContext, isTemplateName } from '../walker.js'
@@ -19,63 +9,22 @@ import { parseEnvLine } from './envfile.js'
 import { execGitBatch, execGitSync, hasContainedGitMetadata } from '../git.js'
 import { createHash } from 'node:crypto'
 
-/**
- * Template files are meant to be committed and are not a leak.
- *
- * This delegates to the project-wide definition rather than keeping a local
- * one. It used to keep a local one, matching only `.env.example` exactly, and
- * running canship against real repositories showed what that costs: three of
- * six well-known Next.js starters were reported for committing
- * `.env.local.example`, including Vercel's own template. The shared helper
- * already handled it — an exemption that lives in one rule is an exemption the
- * next rule forgets.
- *
- * What it deliberately no longer covers is *location*. This used to ask
- * isExampleContext, which also waves through anything under `test/`, `e2e/`,
- * `fixtures/` or `docs/`, and a committed `e2e/.env` then vanished from the
- * report entirely — not downgraded, absent. That is the worst place to be
- * silent: once the file is deleted from the working tree, no other rule can
- * read it, so this one going quiet means nothing reports it at all. A green
- * tick over a live key in `e2e/.env` is precisely what the header comment
- * calls worse than not checking.
- */
+/** 复用模板文件判断；模板本身不视为误提交。 */
 function isEnvTemplate(path: string): boolean {
   return isTemplateName(path)
 }
 
-/**
- * Whether this env file merely *lives* where fake keys are normal.
- *
- * A confidence cap, not an exemption — the same signal the secrets rule uses
- * for the same reason. A real key committed to `test/` is exactly as stolen as
- * one in `src/`; it is just less likely to be real, which is what `likely`
- * means. Reported quietly keeps it out of the default output and out of the
- * exit code, so the noise stays opt-in while the finding still exists.
- */
+/** 示例目录仅降低置信度，不直接豁免。 */
 function isScaffolding(path: string): boolean {
   return isExampleContext(path)
 }
 
-/**
- * Whether a path can be pasted into a shell command as itself.
- *
- * The fix steps are meant to be *run*, and one of them is a git command with
- * the offending path in it — a path chosen by whoever added the file. Filenames
- * may legally contain semicolons, backticks, `$(…)`, newlines and spaces, so
- * interpolating one produced `git rm --cached x;whoami;#/.env`. canship never
- * runs that, but it prints it for the user to run and `--fix-prompt` hands it
- * to an assistant that may hold a terminal. A leading dash is the quiet half of
- * the same problem: git would read the name as an option.
- *
- * Anything outside this set gets prose instead of a command. Refusing to spell
- * out a runnable line is a small cost; the alternative is shipping one that
- * runs something else.
- */
+/** 判断路径能否安全出现在可复制的命令中。 */
 function shellSafePath(path: string): boolean {
   return /^[A-Za-z0-9._/-]+$/.test(path) && !path.startsWith('-')
 }
 
-/** The "stop tracking it" step, as a command only when that is safe to do */
+/** 仅为安全路径生成取消跟踪命令。 */
 function untrackStep(path: string): string {
   return shellSafePath(path)
     ? `Stop tracking it: git rm --cached -- ${path}`
@@ -84,7 +33,7 @@ function untrackStep(path: string): string {
         `characters a shell would act on instead of treating as part of a filename.`
 }
 
-/** Appended when the finding is only reported because the directory is not an excuse */
+/** 说明示例目录中的结果为何仍需审阅。 */
 const SCAFFOLD_NOTE =
   `This file sits in a test, fixture, example or docs directory, where fake keys are normal — so ` +
   `this is probably scaffolding rather than a leak, and it is reported quietly for that reason. It is ` +
@@ -92,33 +41,17 @@ const SCAFFOLD_NOTE =
   `src/. If the values in it are deliberately fake, put canship-ignore-file on a line of its own in that ` +
   `file and canship will skip it and say so.`
 
-/**
- * How strong the evidence is that a committed env file holds a credential.
- *
- * "Any value at all" was the previous bar, and it produced a certain-grade
- * leak report for a file whose entire contents were `NODE_ENV=development`.
- * A rule that cries wolf at the top severity teaches people to skip it, which
- * is expensive here — when this one is right, it is very right.
- *
- *   proof   a value in a known credential format, or a value under a name that
- *           says credential. Nothing to argue about.
- *   hint    something substantial that is neither public nor a placeholder.
- *           Worth mentioning, not worth shouting about.
- *   none    only public values, placeholders, or short settings.
- */
+/** 凭据证据分为确定、疑似和无证据。 */
 type Evidence = 'proof' | 'hint' | 'none'
 
-/** Long enough that a stray setting like an environment name does not qualify */
+/** 排除过短的普通设置值。 */
 const SUBSTANTIAL_VALUE = 12
 
 function evidenceIn(lines: string[]): Evidence {
   let best: Evidence = 'none'
 
   for (const raw of lines) {
-    // Parsed by the same code the exposure rule uses. This used to be a local
-    // three-line version that stripped the outer quotes and nothing else, so a
-    // trailing `# production` stayed glued to the value — see envfile.ts for
-    // what that cost.
+    // 复用环境赋值解析，正确处理引号及注释。
     const assignment = parseEnvLine(raw)
     if (!assignment) continue
 
@@ -127,20 +60,15 @@ function evidenceIn(lines: string[]): Evidence {
 
     if (!value || isPlaceholder(value)) continue
 
-    // A value in a known credential format is a credential, whatever it is
-    // called. Asking about the name first meant that
-    // NEXT_PUBLIC_STRIPE_SECRET_KEY=sk_live_… was dismissed as a public value:
-    // the name said browser, and nothing ever looked at what was in it.
+    // 已知凭据格式优先于变量名用途判断。
     const known = findKnownSecret(value)
     if (known) {
-      // A format the provider designs to be public in a front end is not evidence
-      // of a committed credential.
+      // 按设计公开的标识符不作为凭据证据。
       if (known.publicByDesign) continue
       return 'proof'
     }
 
-    // Only now does the name get to excuse it. Values meant for the browser
-    // are public by design, and committing one leaks nothing.
+    // 无法确认格式时再根据公开用途排除。
     if (publicPrefixOf(key) !== null || looksIntentionallyPublic(key)) continue
 
     if (looksClearlyPrivate(key)) return 'proof'
@@ -159,34 +87,14 @@ function git(root: string, gitExecutable: string | null, args: string[]): string
   }
 }
 
-/**
- * Read many blobs from one git process, in the order they were asked for.
- *
- * `cat-file --batch` answers each line of stdin with either
- *
- *     <sha> <type> <size>\n<size bytes>\n
- *
- * or, when the object is not there, a line ending in ` missing`. Both are
- * parsed here rather than by splitting on newlines, because a blob contains
- * newlines of its own — the byte count in the header is the only thing that
- * says where one object stops.
- *
- * Returns one entry per requested revision, `null` where git had nothing, so
- * the caller can still count what it could not read.
- */
+/** 通过单个 Git 进程批量读取对象，按字节帧解析结果。 */
 function batchBlobs(
   root: string,
   gitExecutable: string | null,
   specs: string[],
 ): (string | null)[] {
   if (gitExecutable === null || specs.length === 0) return specs.map(() => null)
-  // `cat-file --batch` reads one request per line, so a path containing a
-  // newline splits into two and every answer after it is off by one. Filenames
-  // may legally contain newlines — this file says so a hundred lines up, about
-  // a different hazard from the same fact — and the `git show` this replaced
-  // was immune, because there the path was an argv element rather than a line
-  // of input. Falling back keeps that immunity for the paths that need it and
-  // the single process for the ones that do not.
+  // 含换行的路径不适用逐行批协议，回退为独立读取。
   if (specs.some((spec) => spec.includes('\n') || spec.includes('\r'))) {
     return specs.map((spec) => git(root, gitExecutable, ['show', '--no-ext-diff', '--no-textconv', spec]))
   }
@@ -199,8 +107,7 @@ function batchBlobs(
       `${specs.join('\n')}\n`,
     )
   } catch {
-    // One failed batch is every revision unread, which is what the caller
-    // already knows how to report.
+    // 批次失败时将全部对象标记为不可读。
     return specs.map(() => null)
   }
 
@@ -211,45 +118,34 @@ function batchBlobs(
     if (newline === -1) break
     const header = out.toString('utf8', at, newline)
     at = newline + 1
-    // "<name> missing", and also "<name> ambiguous" — anything git could not
-    // resolve to exactly one object. The size field is what distinguishes a
-    // real answer, so its absence is the test rather than the word itself.
+    // 缺少合法大小字段时表示对象无法解析。
     const size = Number(header.slice(header.lastIndexOf(' ') + 1))
     if (!Number.isInteger(size) || size < 0) {
       blobs.push(null)
       continue
     }
     blobs.push(out.toString('utf8', at, at + size))
-    // The body is followed by a newline git adds itself, which is not part of
-    // the object and must not be counted into the next header's offset.
+    // 对象后的分隔换行不属于对象内容。
     at += size + 1
   }
-  // A truncated stream leaves the tail unanswered rather than misaligned.
+  // 截断响应的剩余对象标记为不可读。
   while (blobs.length < specs.length) blobs.push(null)
   return blobs
 }
 
-/** Run a git command the rule cannot work without; a failure becomes the engine's incomplete-scan record */
+/** 必需的 Git 查询失败时抛出异常，由引擎记录。 */
 function gitOrThrow(root: string, gitExecutable: string | null, args: string[]): string {
   const out = git(root, gitExecutable, args)
   if (out === null) throw new Error(`git ${args.slice(0, 2).join(' ')} failed in ${root}`)
   return out
 }
 
-/**
- * Where the scanned directory sits inside the repository.
- *
- * git speaks two dialects of path at once: a pathspec is relative to the
- * current directory, while `rev:path` is relative to the repository root.
- * Scanning `app/` in a monorepo, history reported `app/.env` and the follow-up
- * query then asked for `app/app/.env`, found nothing, and downgraded a real
- * leak to a guess.
- */
+/** 获取扫描目录在仓库中的路径前缀。 */
 function repoPrefix(root: string, gitExecutable: string | null): string {
   return (git(root, gitExecutable, ['rev-parse', '--show-prefix']) ?? '').trim()
 }
 
-/** .env files currently tracked by git */
+/** 列出当前跟踪的环境文件。 */
 function trackedEnvFiles(root: string, gitExecutable: string | null): string[] {
   const out = gitOrThrow(root, gitExecutable, ['ls-files', '-z'])
   return out
@@ -258,36 +154,17 @@ function trackedEnvFiles(root: string, gitExecutable: string | null): string[] {
     .filter((p) => isEnvFile(basename(p)) && !isEnvTemplate(p))
 }
 
-/**
- * One env file seen in history, held in both of the spellings git uses.
- *
- * git answers in two dialects and neither command lets you pick: `ls-files`
- * reports relative to the directory being scanned, `log --name-only` relative
- * to the repository root. Keeping one string and hoping is what made a
- * subdirectory scan compare `.env` against `services/api/.env`, conclude they
- * were different files, and report the same `.env` twice — the second time
- * under a headline saying it had been *removed*, about a file that was sitting
- * right there in the index.
- *
- * That is the worst kind of bug this tool can have. Someone reading "was
- * removed, but it is still in your history" reasonably concludes the working
- * tree is clean and only history needs rewriting; here the live file was still
- * tracked, still holding a live key, and the report had just talked them out
- * of looking. A missed finding costs a favour. A confident false statement
- * costs the premise.
- */
+/** 保存仓库相对路径和扫描目录相对路径。 */
 interface HistoricalPath {
-  /** Repository-root relative — the only spelling `git show rev:path` accepts */
+  /** 相对仓库根目录的对象路径。 */
   repoPath: string
-  /** Relative to the scanned directory — what the user sees, and what dedup compares */
+  /** 相对扫描目录的展示和去重路径。 */
   localPath: string
 }
 
-/** .env files that appeared in history at some point, even if deleted since */
+/** 列出历史中出现过的环境文件，包括已删除文件。 */
 function historicalEnvFiles(root: string, gitExecutable: string | null, prefix: string): HistoricalPath[] {
-  // With rename detection off, a file renamed to .env shows up as an addition too.
-  // The NUL separator is what keeps Unicode, spaces and newlines out of git's
-  // quoting and out of a line-by-line parse.
+  // 禁用重命名检测并使用空字符分隔，保留原始文件名。
   const out = gitOrThrow(root, gitExecutable, [
     'log',
     '--no-ext-diff',
@@ -304,46 +181,24 @@ function historicalEnvFiles(root: string, gitExecutable: string | null, prefix: 
   const seen = new Map<string, HistoricalPath>()
   for (const repoPath of out.split('\0')) {
     if (!repoPath || !isEnvFile(basename(repoPath)) || isEnvTemplate(repoPath)) continue
-    // The pathspec above already restricts the answer to the scanned
-    // directory, so every result sits under the prefix. The conditional is
-    // there for the root-scan case, where the prefix is empty.
+    // 按扫描范围去除仓库路径前缀。
     const localPath = prefix && repoPath.startsWith(prefix) ? repoPath.slice(prefix.length) : repoPath
     if (!seen.has(localPath)) seen.set(localPath, { repoPath, localPath })
   }
   return [...seen.values()]
 }
 
-/**
- * How many historical versions of one file to read before giving up.
- *
- * A bound on work, not a claim about history — and the difference has to reach
- * the user. At twenty, silently, "canship checks your git history" quietly
- * meant "canship checks the last twenty versions of it": a key three commits
- * further back scanned to zero findings and `partial: false`. Hitting this now
- * marks the scan incomplete, so the ceiling can be raised or lowered on its
- * merits without the number ever being load-bearing again.
- */
+/** 每个文件最多检查的历史版本数。 */
 const MAX_HISTORY_REVISIONS = 100
 
-/**
- * The strongest evidence any version of this file ever held.
- *
- * Reading only the revision that *added* the file misses the ordinary shape of
- * this accident: commit a harmless .env, add the key in a later commit, delete
- * the file when you notice. The add snapshot is innocent, every version after
- * it is not, and canship reported nothing at all — while the README promised
- * to check history.
- *
- * Versions are read newest first and stop at the first proof, so the usual
- * case costs one extra git call.
- */
+/** 历史版本中的最强证据及未完成统计。 */
 interface HistoryScan {
   evidence: Evidence
   /** 用于区分历史版本的新凭据，不保存历史原文。 */
   sourceFingerprint?: string
-  /** Older revisions left unread because the ceiling was reached */
+  /** 超过检查上限的版本数下界。 */
   unread: number
-  /** Revisions git show could not read at all */
+  /** 无法读取的历史版本数。 */
   unreadable: number
 }
 
@@ -352,9 +207,7 @@ function historicalEvidence(
   gitExecutable: string | null,
   entry: HistoricalPath,
 ): HistoryScan | null {
-  // Both dialects are used here, one per command, which is the whole reason
-  // the pair is carried around together: the pathspec is relative to the
-  // directory being scanned, `rev:path` is relative to the repository root.
+  // 路径筛选使用扫描相对路径，对象读取使用仓库相对路径。
   const all =
     (git(root, gitExecutable, [
       'log',
@@ -362,6 +215,7 @@ function historicalEvidence(
       '--no-textconv',
       '--all',
       '--format=%H',
+      `--max-count=${MAX_HISTORY_REVISIONS + 1}`,
       '--',
       entry.localPath,
     ]) ?? '')
@@ -370,14 +224,7 @@ function historicalEvidence(
   if (all.length === 0) return null
   const revs = all.slice(0, MAX_HISTORY_REVISIONS)
 
-  // One process for every revision, rather than one process per revision.
-  // This loop used to spawn `git show` up to MAX_HISTORY_REVISIONS times, and
-  // it is the loop that runs to the end precisely when the history is clean —
-  // so the common good case was the expensive one. A hundred revisions of a
-  // single .env file measured about 3.6 seconds that way and 64ms as a batch.
-  //
-  // Nothing about textconv or external diffs is passed now because `cat-file`
-  // does not have those doors: it prints the object, never a rendering of it.
+  // 一次读取所有选定版本，避免逐版本启动进程。
   const bodies = batchBlobs(
     root,
     gitExecutable,
@@ -393,9 +240,7 @@ function historicalEvidence(
       continue
     }
     const evidence = evidenceIn(body.split(/\r?\n/))
-    // Proof ends the search, and the count of unread revisions goes with it:
-    // nothing further back can strengthen a verdict that is already the
-    // strongest one available.
+    // 已确认凭据后无需继续寻找更强证据。
     if (evidence === 'proof') return {
       evidence: 'proof', unread: 0, unreadable,
       sourceFingerprint: createHash('sha256').update(body.trim(), 'utf8').digest('hex'),
@@ -411,22 +256,13 @@ function historicalEvidence(
   }
 }
 
-/** Whether a remote is configured — if so, the keys have probably left the machine */
+/** 检查是否配置远程仓库，用于提示可能的传播范围。 */
 function hasRemote(root: string, gitExecutable: string | null): boolean {
   const out = git(root, gitExecutable, ['remote'])
   return out !== null && out.trim().length > 0
 }
 
-/**
- * Why the history went unread, in the terms of whichever thing refused.
- *
- * `unavailable` collapses three causes, and they used to arrive as one sentence
- * naming all of them — so a reader with no git installed was told to review
- * their repository for dubious ownership, and a reader whose `.git` file
- * pointed elsewhere was told to install git. A message that covers every cause
- * identifies none of them, and this is the line someone reads when a scan they
- * expected to be clean exits 3 instead.
- */
+/** 根据 Git 状态说明历史检查失败原因。 */
 function unavailableReason(root: string, gitExecutable: string | null): string {
   const unchecked = "so nothing in this repository's history was checked."
 
@@ -458,23 +294,18 @@ export const gitleakRule: ProjectRule = {
   severity: 'P0',
 
   check(ctx: ScanContext): Finding[] {
-    // Throwing is deliberate: the engine turns it into a recorded error and an
-    // incomplete scan. Returning [] here — which is what "git failed" used to
-    // do — publishes a clean result for a check that never ran.
+    // Git 不可用时必须记录失败，不能返回空结果。
     if (ctx.git === 'unavailable') {
       throw new Error(unavailableReason(ctx.root, ctx.gitExecutable))
     }
     if (ctx.git === 'not-a-repo') return []
-    // Unreachable: 'repo' is only returned after git answered, which requires an
-    // executable. Kept because the calls below need it non-null, and a guard
-    // that states the invariant is better than a non-null assertion on each.
+    // 有效仓库必须对应可用的 Git 可执行文件。
     if (ctx.gitExecutable === null) {
       throw new Error('no trusted git executable was found, so this repository\'s history was not checked')
     }
 
     const findings: Finding[] = []
-    // Resolved once, then handed to everything that needs to translate between
-    // git's two path dialects.
+    // 路径前缀仅解析一次。
     const prefix = repoPrefix(ctx.root, ctx.gitExecutable)
     const tracked = new Set(trackedEnvFiles(ctx.root, ctx.gitExecutable))
     const historical = historicalEnvFiles(ctx.root, ctx.gitExecutable, prefix)
@@ -485,31 +316,23 @@ export const gitleakRule: ProjectRule = {
         `Bots scrape public commits within minutes — assume every key in this file is already in someone else's hands.`
       : `This repository has no remote yet, so the damage may still be contained. Fix it before you push.`
 
-    // What case A actually reported. Case B used to skip every tracked path,
-    // which is only correct when case A said something about it — and case A
-    // stays silent when the *current* contents are clean. Editing the key out
-    // of a still-tracked .env is the ordinary way people "fix" this, and it
-    // left both branches quiet about a key still sitting in the history.
+    // 仅记录已报告的当前文件，当前无问题时仍检查历史。
     const reportedTracked = new Set<string>()
 
-    // ── Case A: the file is still tracked right now ──
+    // 检查当前跟踪的文件。
     for (const path of tracked) {
-      // The contents are readable here, so grade the evidence rather than
-      // report the filename.
+      // 根据实际内容确定证据强度。
       const scanned = ctx.files.find((f) => f.path === path)
       const evidence = scanned ? evidenceIn(scanned.lines) : 'hint'
       if (evidence === 'none') continue
 
-      // Location does not excuse the file, it only caps how loudly this is
-      // said. See isScaffolding.
+      // 示例路径只降低置信度。
       const scaffolding = isScaffolding(path)
 
       findings.push({
         ruleId: 'gitleak/env-tracked',
         severity: 'P0',
-        // Only claim certainty when the file actually holds something that is
-        // recognisably a credential. Everything else is a committed env file
-        // that might hold one, which is worth saying quietly.
+        // 只有非示例中的明确凭据使用确定置信度。
         confidence: evidence === 'proof' && !scaffolding ? 'certain' : 'likely',
         title:
           evidence === 'proof' && !scaffolding
@@ -537,29 +360,21 @@ export const gitleakRule: ProjectRule = {
       reportedTracked.add(path)
     }
 
-    // ── Case B: an older version held something, whether or not the file is
-    //    still there — the case most often mistaken for "already fixed" ──
+    // 检查历史版本，无论当前文件是否仍存在。
     for (const entry of historical) {
-      // Compared in the scanned directory's dialect, because that is the one
-      // `tracked` speaks. Comparing across dialects is what produced a
-      // duplicate report claiming a still-tracked file had been deleted.
-      if (reportedTracked.has(entry.localPath)) continue // case A covered it
+      // 以扫描相对路径去重。
+      if (reportedTracked.has(entry.localPath)) continue // 当前状态已报告。
       const path = entry.localPath
-      // Whether the file survives in the working tree decides the wording, not
-      // whether this branch runs. Saying "was removed" about a file sitting in
-      // the index is the confident false statement this rule must never make.
+      // 文件是否仍被跟踪仅影响说明文字。
       const stillTracked = tracked.has(entry.localPath)
-      // The old versions are readable even when the current one is clean, and
-      // reading them is the difference between knowing and guessing.
+      // 当前内容正常时仍需检查历史。
       const history = historicalEvidence(ctx.root, ctx.gitExecutable, entry)
-      // A ceiling reached is a part of the scan that did not happen. Reported
-      // even when the visible versions were clean — especially then, since that
-      // is exactly when "nothing found" is least trustworthy.
+      // 达到历史上限必须披露扫描缺口。
       if (history && history.unread > 0) {
         ctx.reportIncomplete(
           'gitleak/env-in-history',
           `only the ${MAX_HISTORY_REVISIONS} most recent versions of ${path} were read; ` +
-            `${history.unread} older ${history.unread === 1 ? 'version was' : 'versions were'} not checked`,
+            `at least ${history.unread} older ${history.unread === 1 ? 'version was' : 'versions were'} not checked`,
         )
       }
       if (history && history.unreadable > 0) {
@@ -570,26 +385,18 @@ export const gitleakRule: ProjectRule = {
             `the repository may be incomplete or the file may exceed the Git output limit`,
         )
       }
-      // 'hint' rather than a fourth value invented here. When history cannot be
-      // read the honest grade is "something may be in there, quietly" — which
-      // is what 'hint' already means, and what Case A uses for the same
-      // situation. A string outside the union widened the type, made the two
-      // branches disagree about how to spell one state, and cost the compiler
-      // its exhaustiveness check over `Evidence`.
+      // 无法读取历史时保留疑似证据，不宣称确定泄露。
       const evidence: Evidence = history?.evidence ?? 'hint'
       if (evidence === 'none') continue
 
-      // This is the branch the location exemption used to silence completely.
-      // When the file is gone from disk no other rule can see it — quiet is the
-      // most this may be, and absent is not an option.
+      // 已删除的示例文件仍可存在历史风险。
       const scaffolding = isScaffolding(path)
 
       findings.push({
         ruleId: 'gitleak/env-in-history',
         ...(history?.sourceFingerprint === undefined ? {} : { sourceFingerprint: history.sourceFingerprint }),
         severity: 'P0',
-        // Claiming certainty about a file nobody could read would be the same
-        // overreach the tracked branch just stopped making.
+        // 证据或上下文不足时降低置信度。
         confidence: evidence === 'proof' && !scaffolding ? 'certain' : 'likely',
         title: stillTracked
           ? `${path} is committed to git, and an older version of it held a credential`

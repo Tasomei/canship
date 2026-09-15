@@ -1,4 +1,4 @@
-// Test fixture: an ordinary API server. No Supabase anywhere in this project.
+// 普通后端数据库项目，不使用 Supabase。
 import express from 'express'
 import pg from 'pg'
 

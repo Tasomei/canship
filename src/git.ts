@@ -3,6 +3,7 @@ import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSyn
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 const MAX_GIT_OUTPUT = 32 * 1024 * 1024
+const GIT_TIMEOUT_MS = 30_000
 
 function canonical(path: string): string {
   try {
@@ -36,7 +37,7 @@ export function hasGitMetadataAbove(root: string): boolean {
   return gitRootAbove(root) !== null
 }
 
-/** Read a file git wrote inside its own metadata, refusing anything unexpectedly large */
+/** 限制 Git 元数据文件的读取大小。 */
 function readSmallFile(path: string, limit: number): string | null {
   try {
     const stat = lstatSync(path)
@@ -47,14 +48,7 @@ function readSmallFile(path: string, limit: number): string | null {
   }
 }
 
-/**
- * `core.worktree` out of a git config file, without a config library.
- *
- * Only the plain `[core]` section counts: `[core "sub"]` is a different section
- * and must not answer for this one. A value that cannot be read leaves the
- * caller to reject, which is the direction that costs a scan rather than a
- * disclosure.
- */
+/** 仅解析普通 core 节中的工作区路径，无法确认时保持保守。 */
 function coreWorktreeOf(path: string): string | null {
   const text = readSmallFile(path, 256 * 1024)
   if (text === null) return null
@@ -80,23 +74,7 @@ function samePath(a: string, b: string): boolean {
   return comparable(canonical(a)) === comparable(canonical(b))
 }
 
-/**
- * Whether metadata outside the checkout names that checkout as its own.
- *
- * `git worktree` and `git submodule` both put a repository's metadata outside
- * the directory it belongs to, so "the gitdir has to sit inside the checkout" —
- * the rule that stops a handed-over `.git` file from pointing the scan at an
- * unrelated repository — rejected two structures git itself creates. Scanning a
- * linked worktree lost every history check and exited 3.
- *
- * What separates those from a redirect is that git writes the link in *both*
- * directions. Whoever hands you a `.git` file can make it say anything; what
- * they cannot do is reach into somebody else's repository and make it name
- * their directory back.
- *
- *   linked worktree   <target>/gitdir   holds the path of this .git file
- *   submodule         <target>/config   sets core.worktree to this checkout
- */
+/** 验证外部 Git 元数据回指当前工作区，支持工作树及子模块。 */
 function linksBackTo(target: string, boundary: string, marker: string): boolean {
   const named = readSmallFile(join(target, 'gitdir'), 4096)?.trim()
   if (named) {
@@ -104,8 +82,7 @@ function linksBackTo(target: string, boundary: string, marker: string): boolean 
     if (samePath(back, marker)) return true
   }
 
-  // Relative to the gitdir, not to the checkout: `core.worktree = ../../../x`
-  // in .git/modules/x resolves to the submodule directory.
+  // core.worktree 相对 Git 元数据目录解析。
   const worktree = coreWorktreeOf(join(target, 'config'))
   if (worktree === null || worktree === '') return false
   return samePath(isAbsolute(worktree) ? worktree : resolve(target, worktree), boundary)
@@ -255,14 +232,7 @@ export interface GitExecOptions {
   stderr?: 'ignore' | 'pipe'
 }
 
-/**
- * The `-c` settings every git invocation is hardened with.
- *
- * Shared rather than written per call site, because this list is a security
- * boundary: `core.hooksPath` pointing at nothing is what stops a repository
- * canship was pointed at from executing its own hook during a read-only scan.
- * A second copy is a second place for one of these to be left out.
- */
+/** 统一禁用钩子和文件监视器，并固定工作区。 */
 function hardeningArgs(root: string): string[] {
   const worktree = gitRootAbove(root) ?? root
   const noHooks = process.platform === 'win32' ? 'NUL' : '/dev/null'
@@ -285,6 +255,7 @@ export function execGitSync(
   options: GitExecOptions = {},
 ): string {
   return execFileSync(executable, [...hardeningArgs(root), ...args], {
+    timeout: GIT_TIMEOUT_MS,
     cwd: root,
     encoding: 'utf8',
     maxBuffer: options.maxBuffer ?? MAX_GIT_OUTPUT,
@@ -294,20 +265,7 @@ export function execGitSync(
   })
 }
 
-/**
- * Run one git command, feeding it `input` on stdin, and return raw bytes.
- *
- * Exists for `cat-file --batch`, which is the only reader here that wants to
- * ask many questions of one process. The alternative it replaces was a process
- * per revision: reading the hundred-revision ceiling of a single .env file
- * spawned a hundred `git show` calls and took about three and a half seconds,
- * against sixty-odd milliseconds for one batch.
- *
- * Bytes rather than a string, and that is not incidental. `cat-file --batch`
- * frames each object with a byte count, so decoding to UTF-16 before splitting
- * would put the offsets in the wrong units the moment a file contains a
- * non-ASCII character — and .env files hold comments in every language.
- */
+/** 批量读取 Git 对象并保留原始字节，按字节长度解析帧。 */
 export function execGitBatch(
   executable: string,
   root: string,
@@ -316,6 +274,7 @@ export function execGitBatch(
   options: GitExecOptions = {},
 ): Buffer {
   return execFileSync(executable, [...hardeningArgs(root), ...args], {
+    timeout: GIT_TIMEOUT_MS,
     cwd: root,
     input,
     maxBuffer: options.maxBuffer ?? MAX_GIT_OUTPUT,

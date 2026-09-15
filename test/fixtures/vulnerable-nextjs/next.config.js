@@ -1,6 +1,4 @@
-// Test fixture: a wildcard together with credentials. The CORS specification
-// forbids the pair, so browsers reject the response and the cross-origin calls
-// this was meant to enable never work.
+// 通配符与凭据组合会被浏览器拒绝。
 module.exports = {
   async headers() {
     return [

@@ -1,19 +1,14 @@
--- Test fixture: the drop that retires legacy_notes.
+-- 删除历史表。
 DROP TABLE IF EXISTS public.legacy_notes CASCADE;
 
--- And the dangerous case, in the same file: a commented-out drop of a table
--- that is still very much live and still has no RLS. Honouring this would
--- delete "orders" from the schema and silently retire a real finding — a
--- comment must never be able to hide a vulnerability.
--- DROP TABLE public.orders;
+-- 注释不能删除仍存在的表。
+-- 示例：DROP TABLE public.orders;
 
--- A string is not a statement. Reading through the quotes here would delete
--- "orders" from the replay and silently retire a real finding — one sentence of
--- SQL hiding a live table with no RLS.
+-- 字符串中的语句不参与结构重放。
 INSERT INTO audit_log (note) VALUES ('DROP TABLE public.orders;');
 
--- Nor is a function body. The table named in here does not exist.
+-- 函数定义不会直接创建表。
 CREATE OR REPLACE FUNCTION public.noop() RETURNS void AS $fn$
-  -- CREATE TABLE public.ghost_from_body (id uuid);
+  -- 示例：CREATE TABLE public.ghost_from_body (id uuid);
   SELECT 1;
 $fn$ LANGUAGE sql;

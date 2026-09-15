@@ -1,10 +1,9 @@
 'use client'
 
-// Test fixture: a secret deliberately hardcoded into a client component.
-// All values are fake.
+// 故意将模拟凭据写入客户端组件。
 import { useState } from 'react'
 
-// Fatal: an OpenAI key written straight into client-side code
+// 模拟客户端硬编码密钥。
 const OPENAI_KEY = 'sk-proj-A9dKfM2xQwRt7YuIoPa1SdFgHjKlZxCvBn'
 
 export default function Page() {

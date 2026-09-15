@@ -1,19 +1,5 @@
-/**
- * Configuration and rule-selection tests.
- *
- * canship-ignore-file
- *
- * The marker above opts this file out of canship's own scan: it holds
- * credential-shaped strings as assertion data.
- *
- * The load-bearing test in here is the last one. RULE_IDS is a hand-written
- * list of every id a finding can carry, and a hand-written list of things
- * scattered across seven rule files is wrong the moment somebody adds an
- * eighth. It is what config validation checks selectors against, so a missing
- * entry does not fail quietly — it makes canship reject a rule id that is
- * printing in the user's own report. So the list is pinned to what a real scan
- * actually produces.
- */
+/** 验证配置解析、规则选择及规则注册表的一致性。
+ * canship-ignore-file */
 
 import { test, describe, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -41,7 +27,7 @@ function tempDir(): string {
 const OPENAI = 'sk-proj-Ab3xQ9zK7mNpR2tVwY4hJdLcF8gH1nT6bE0s'
 const SENDGRID = 'SG.aB3xQ9zK7mNpR2tVwY4hJd.LcF8gH1nT6bE0sU5iO9jXrZaQwMkPvYdN3C'
 
-/** A throwaway project holding two credentials from two different rules */
+/** 构造含两类模拟凭据的临时项目。 */
 function twoSecrets(): string {
   const root = tempDir()
   mkdirSync(join(root, 'lib'))
@@ -64,9 +50,7 @@ describe('matching a selector against a rule id', () => {
   })
 
   test('a half-typed id matches nothing', () => {
-    // Without the slash boundary, `secrets/hardcoded/open` would turn off
-    // `secrets/hardcoded/openai`, and a truncated id silently disabling a rule
-    // is the failure this area exists to avoid.
+    // 规则选择器必须按完整名称或命名空间边界匹配。
     assert.equal(ruleMatches('secrets/hardcoded/open', 'secrets/hardcoded/openai'), false)
     assert.equal(ruleMatches('cors/w', 'cors/wildcard-with-credentials'), false)
   })
@@ -92,18 +76,17 @@ describe('parsing a config file', () => {
   })
 
   test('a refused setting is named rather than ignored', () => {
-    // Silently dropping it is how somebody keeps believing it is in force.
+    // 明确拒绝不可配置的设置。
     assert.throws(() => parseConfig('{"bestEffort":true}', at), ConfigError)
   })
 
   test('an unknown setting is an error, not something to ignore', () => {
-    // Ignoring it is how "skipp" spends a year looking like it works.
+    // 未知键不能静默忽略。
     assert.throws(() => parseConfig('{"skipp":["secrets"]}', at), ConfigError)
   })
 
   test('a rule id that names nothing is an error', () => {
-    // In "only" a typo disables every rule except one that does not exist,
-    // which is a scan that checks nothing and reports it as clean.
+    // 未知规则不能造成全部规则被误关闭。
     assert.throws(() => parseConfig('{"skip":["secrets/typo"]}', at), ConfigError)
     assert.throws(() => parseConfig('{"only":["nonsense"]}', at), ConfigError)
   })
@@ -129,8 +112,7 @@ describe('parsing a config file', () => {
   })
 
   test('a config file is read from the scanned directory', () => {
-    // Not the working directory: `npx canship ./app` has to mean the same
-    // thing as running it from inside ./app.
+    // 配置从扫描目录加载。
     const root = tempDir()
     writeFileSync(join(root, CONFIG_FILENAME), '{"all":true}', 'utf8')
     assert.equal(loadConfig(root).config.all, true)
@@ -160,7 +142,8 @@ describe('rule selection changes what a scan reports', () => {
   test('a namespace selector covers everything under it', async () => {
     const result = await scan(twoSecrets(), { skip: ['secrets'] })
     assert.equal(result.findings.length, 0)
-    assert.equal(result.ruleSelection?.removed, 2)
+    assert.equal(result.ruleSelection?.removed, 0)
+    assert.deepEqual(result.ruleSelection?.skip, ['secrets'])
   })
 
   test('only keeps exactly what it names', async () => {
@@ -172,11 +155,11 @@ describe('rule selection changes what a scan reports', () => {
   })
 
   test('a selection is never silent', async () => {
-    // A turned-off rule is a check that did not happen. If the result cannot
-    // say so, a config file committed a year ago decides what "clean" means.
+    // 规则未执行时仍须披露选择条件。
     const result = await scan(twoSecrets(), { skip: ['secrets'] })
     assert.notEqual(result.ruleSelection, null)
-    assert.equal(result.ruleSelection?.removed, 2)
+    assert.equal(result.ruleSelection?.removed, 0)
+    assert.deepEqual(result.ruleSelection?.skip, ['secrets'])
   })
 
   test('a selection does not make the scan partial', async () => {
@@ -186,7 +169,7 @@ describe('rule selection changes what a scan reports', () => {
 })
 
 describe('RULE_IDS covers every id a scan can produce', () => {
-  /** The fixtures, copied out of this repository so git state is not an input */
+  /** 将夹具复制到仓库外，避免继承当前 Git 状态。 */
   function fixture(name: string): string {
     const parent = mkdtempSync(join(tmpdir(), 'canship-config-fixture-'))
     tempDirs.push(parent)
@@ -196,9 +179,7 @@ describe('RULE_IDS covers every id a scan can produce', () => {
   }
 
   test('every rule id the vulnerable fixture produces is listed', async () => {
-    // The guard that keeps a hand-written list from drifting. A new finding id
-    // that nobody added to RULE_IDS fails here, rather than becoming an id
-    // that --skip refuses while the user is reading it in their own report.
+    // 所有实际输出的规则 ID 必须已注册。
     const result = await scan(fixture('vulnerable-nextjs'))
     assert.ok(result.findings.length > 0, 'the fixture produced no findings to check')
     for (const f of result.findings) {
@@ -223,12 +204,7 @@ describe('RULE_IDS covers every id a scan can produce', () => {
   })
 
   test('every hand-written id is one a rule can actually emit', () => {
-    // The guard above only sees ids the fixture happens to trigger, so a
-    // hand-written id that is a typo of a real one would sail through it. This
-    // half checks the other direction: every literal in the list appears in the
-    // rule source that emits it. The secrets ids are derived from
-    // SECRET_PATTERNS rather than written out, so they cannot drift and are
-    // excluded here.
+    // 所有显式注册 ID 也必须对应实际实现。
     const sources = ['apiauth', 'cors', 'exposure', 'firebase', 'gitleak', 'supabase']
       .map((name) => readFileSync(join(here, '..', 'src', 'rules', `${name}.ts`), 'utf8'))
       .join('\n')
@@ -240,7 +216,7 @@ describe('RULE_IDS covers every id a scan can produce', () => {
 })
 
 describe('the scanned project cannot lower the exit code', () => {
-  /** A project holding one certain P0 and, optionally, a config file */
+  /** 构造含确定严重问题及可选配置的项目。 */
   function project(config?: string): string {
     const root = tempDir()
     mkdirSync(join(root, 'lib'))
@@ -264,22 +240,19 @@ describe('the scanned project cannot lower the exit code', () => {
   }
 
   test('bestEffort is refused in the config file', () => {
-    // It turns an incomplete scan from exit 3 into exit 0, and exit 3 is the
-    // whole point of canship's exit codes. A file inside the repository being
-    // scanned must not be able to switch off the signal that says the scan
-    // could not finish — arranging for a scan to be incomplete is easy.
+    // 项目配置不能自行接受扫描未完成。
     const out = run(project('{"bestEffort":true}'))
     assert.equal(out.status, 3)
     assert.match(out.stderr, /"bestEffort" is not allowed here/)
   })
 
   test('the flag still works', () => {
-    // Refusing the setting must not break the switch it belongs to.
+    // 拒绝配置键不影响对应命令行选项。
     assert.equal(run(project(), ['--best-effort']).status, 1, 'findings still exit 1')
   })
 
   test('--no-config ignores a config that would hide the finding', () => {
-    // The recourse for scanning code you do not control.
+    // 不可信项目可忽略其自带配置。
     const root = project('{"skip":["secrets"]}')
     assert.equal(run(root).status, 0, 'the config should hide it by default')
     assert.equal(run(root, ['--no-config']).status, 1, '--no-config should restore it')
@@ -287,15 +260,12 @@ describe('the scanned project cannot lower the exit code', () => {
 })
 
 describe('the config file is bounded', () => {
-  // It is read out of the directory being scanned with no flag asking for it,
-  // which makes it the most reachable attacker-controlled input canship has.
-  // The baseline beside it was capped and this was not, which is the kind of
-  // gap that only shows up when somebody goes looking for it.
+  // 自动读取的配置也必须有大小限制。
   test('an oversized config is refused rather than read', () => {
     const root = tempDir()
     mkdirSync(join(root, 'lib'))
     writeFileSync(join(root, 'lib', 'x.ts'), 'export const a = 1\n', 'utf8')
-    // Just over the megabyte cap, without building anything enormous.
+    // 构造略超上限的输入，避免测试占用过多资源。
     writeFileSync(
       join(root, CONFIG_FILENAME),
       `{"baseline":"${'a'.repeat(1024 * 1024 + 16)}"}`,
@@ -316,11 +286,7 @@ describe('the config file is bounded', () => {
   })
 
   test('a very deep baseline path is answered quickly', () => {
-    // Resolving symlinks walks up one ancestor at a time when the path does not
-    // exist, and each turn is a failed filesystem call. Two thousand levels
-    // measured 2.4 seconds before the walk was bounded. Pinned by time, since
-    // the bound is the only thing keeping it fast and nothing else would notice
-    // its removal.
+    // 限制缺失路径的祖先查找深度。
     const root = tempDir()
     mkdirSync(join(root, 'lib'))
     writeFileSync(join(root, 'lib', 'x.ts'), 'export const a = 1\n', 'utf8')
@@ -334,7 +300,7 @@ describe('the config file is bounded', () => {
     try {
       execFileSync('node', ['--import', 'tsx', cli, root, '--json'], { stdio: 'ignore' })
     } catch {
-      /* exits 3 because the baseline is not there, which is the point */
+      /* 缺失基线应以退出码 3 结束。 */
     }
     const took = Date.now() - started
     assert.ok(took < 15_000, `took ${took}ms`)

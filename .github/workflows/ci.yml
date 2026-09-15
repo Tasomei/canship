@@ -5,17 +5,12 @@ on:
     branches: [main]
   pull_request:
 
-# Nothing here writes anything back: the jobs check types, run tests and build.
-# Stated rather than inherited, because the repository default is what decides
-# it otherwise, and a token wider than the work is the kind of thing that only
-# matters on the day something else goes wrong.
+# 检查仅需仓库读取权限。
 permissions:
   contents: read
 
 jobs:
-  # Types, tests and build on the Node versions the test runner supports.
-  # `node --import` arrived in 20.6, so the suite cannot run on 18 — which is
-  # exactly why the job below exists.
+  # 在支持测试加载方式的 Node 版本上执行完整检查。
   check:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -26,9 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The git-history rule reads history, and its tests build their own
-          # repositories — but a shallow checkout would still be a misleading
-          # environment to run the rest in.
+          # 历史规则需完整提交记录。
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
@@ -39,8 +32,7 @@ jobs:
       - run: npm test
       - run: npm run build
 
-  # package.json claims `engines: node >=18`. A claim nobody checks is a guess,
-  # so the built CLI is run on the oldest version it says it supports.
+  # 使用最低支持版本验证构建产物。
   oldest-supported-node:
     runs-on: ubuntu-latest
     steps:
@@ -57,19 +49,11 @@ jobs:
       - name: The built CLI runs on Node 18
         run: |
           node dist/cli.js --version
-          # Scanned as copies outside the checkout, for the reason the test suite
-          # copies them too: a fixture scanned where it lives inherits the git
-          # state around it, and clean-nextjs holds a committed .env.local. In
-          # place it is correctly reported as a leak, so "the clean fixture exits
-          # 0" was a claim about this repository having no commits.
-          # Named rather than assumed: unset, the copy below would target / and
-          # the failure would read as a missing fixture rather than a missing
-          # variable.
+          # 将夹具复制到临时目录，避免继承当前仓库状态；临时目录变量必须有效。
           : "${RUNNER_TEMP:?RUNNER_TEMP is not set}"
           cp -r test/fixtures/clean-nextjs test/fixtures/vulnerable-nextjs "$RUNNER_TEMP/"
           node dist/cli.js "$RUNNER_TEMP/clean-nextjs"
-          # The vulnerable fixture must exit exactly 1. Accepting any non-zero would let
-          # a crash or an incomplete scan pass as success.
+          # 漏洞夹具必须退出 1，其他非零状态不能视为成功。
           set +e
           node dist/cli.js "$RUNNER_TEMP/vulnerable-nextjs"
           status=$?
@@ -79,8 +63,7 @@ jobs:
             exit 1
           fi
 
-  # canship has to survive itself. A security scanner that reports its own
-  # source is not one anybody will trust with theirs.
+  # 用构建后的扫描器检查自身源码。
   dogfood:
     runs-on: ubuntu-latest
     steps:
@@ -99,22 +82,17 @@ jobs:
           node dist/cli.js . --json > self.json
           status=$?
           set -e
-          # Exit 2 is expected and is not a failure here. The deliberately
-          # vulnerable fixtures are real findings held at lower confidence, and
-          # the exit code now reflects hidden ones — so this repository can
-          # never reach 0 while those fixtures exist. Asserting 0, which this
-          # step used to do by running the CLI bare, would fail on every push.
-          # 1 or 3 still means something is wrong.
+          # 夹具中的隐藏疑似结果可导致退出 2；退出 1 或 3 均失败。
           if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
             echo "self-scan exited $status"
             cat self.json
             exit 1
           fi
-          # The property the job actually exists to defend: the default view,
-          # which is certain findings only, stays empty.
+          # 默认结果须为空，同时断言扫描完整且实际读取了文件。
           node --input-type=commonjs -e "
             const r = JSON.parse(require('fs').readFileSync('self.json', 'utf8'))
-            if (r.findings.length > 0) {
+            if (r.findings.length > 0 || r.partial || r.errors.length > 0 ||
+                r.skipped.length > 0 || r.filesScanned === 0) {
               console.error(JSON.stringify(r.findings, null, 2))
               process.exit(1)
             }

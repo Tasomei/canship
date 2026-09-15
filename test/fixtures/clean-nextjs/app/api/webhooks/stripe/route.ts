@@ -1,6 +1,4 @@
-// Test fixture: a webhook. It has no sign-in check and never could — Stripe is
-// not signed in. It authenticates the caller by verifying the signature
-// instead, which is a real authorisation check and must be recognised as one.
+// 通过签名认证 Webhook 调用者，无需用户登录。
 import Stripe from 'stripe'
 import { createClient } from '@supabase/supabase-js'
 

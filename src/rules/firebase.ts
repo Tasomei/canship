@@ -1,18 +1,4 @@
-/**
- * P1-6: Firebase security rules left wide open.
- *
- * Firestore and Storage rules are the Firebase equivalent of RLS: the client
- * SDK talks to the database directly, so these rules are the only access
- * control that exists. Two patterns account for almost every real incident:
- *
- *   allow read, write: if true;          <- everything public, forever
- *   allow read, write: if request.time   <- "test mode", public until a date
- *          < timestamp.date(2026, 1, 1);
- *
- * Test mode is the sneakier of the two. Firebase offers it during setup, it
- * works, and nothing complains — until the date passes and the app breaks, or
- * it does not pass and the data stays public for weeks.
- */
+/** 检查 Firebase 无条件访问规则和带固定截止日期的测试规则。 */
 
 import type { Finding, Rule, ScanContext, ScanFile } from '../types.js'
 import { basename } from 'node:path'
@@ -20,15 +6,15 @@ import { noiseMaskedOf } from '../mask.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { MAX_FINDINGS_PER_FILE } from './limits.js'
 
-/** Whether this file is a Firebase rules file */
+/** 判断是否为 Firebase 规则文件。 */
 function isRulesFile(file: ScanFile): boolean {
   const name = basename(file.path).toLowerCase()
   if (name.endsWith('.rules')) return true
-  // firebase.json points at custom filenames, but these two cover the defaults
+  // 识别默认规则文件名及规则扩展名。
   return name === 'firestore.rules' || name === 'storage.rules'
 }
 
-/** Which product this rules file governs, for clearer wording */
+/** 根据文件路径确定规则产品名称。 */
 function productOf(path: string): string {
   const name = basename(path).toLowerCase()
   if (name.includes('storage')) return 'Storage'
@@ -36,21 +22,13 @@ function productOf(path: string): string {
   return 'Firebase'
 }
 
-/** allow ...: if true  — unconditionally open */
+/** 匹配无条件开放的操作声明。 */
 const ALLOW_IF_TRUE = /\ballow\s+([a-z,\s]+?)\s*:\s*if\s+true\s*;/gi
 
-/**
- * Operations that let someone change your data.
- *
- * The read/write distinction matters more than it first appears. Firestore
- * rules default to deny, so `allow read: if true` opens reads and leaves writes
- * denied — that is "public read-only data", which is a perfectly normal design
- * for announcements, blog posts or a public catalogue. Treating it the same as
- * `allow write: if true` would flood legitimate projects with noise.
- */
+/** 区分写入与公开只读访问。 */
 const WRITE_OPS = new Set(['write', 'create', 'update', 'delete'])
 
-/** Parse an "allow read, write" operation list */
+/** 拆分允许操作列表。 */
 function parseOps(raw: string): string[] {
   return raw
     .split(',')
@@ -58,26 +36,12 @@ function parseOps(raw: string): string[] {
     .filter(Boolean)
 }
 
-/**
- * Firestore match paths contain their own braces — `match /posts/{postId} {`
- * and `match /{document=**} {`. Those wildcards break naive brace matching:
- * scanning for the block's opening brace lands on `{postId}` instead, and the
- * "block" ends up being the wildcard itself.
- *
- * Replace each wildcard with underscores of the same length. Offsets stay
- * valid, and only the braces that actually delimit blocks remain.
- */
+/** 屏蔽路径通配符中的花括号，避免破坏代码块配对。 */
 function neutralizePathWildcards(content: string): string {
   return content.replace(/\{[a-zA-Z_]\w*(?:\s*=\s*\*\*)?\}/g, (m) => '_'.repeat(m.length))
 }
 
-/**
- * Extract the innermost `match` block containing the given offset, using brace
- * matching. Used to see whether an open read rule sits next to an explicit
- * write denial in the same block.
- *
- * @param neutralized content with path wildcards already neutralised
- */
+/** 定位包含目标位置的最内层匹配块。 */
 function enclosingMatchBlock(neutralized: string, index: number): string {
   const matchStart = neutralized.slice(0, index).lastIndexOf('match ')
   if (matchStart < 0) return neutralized
@@ -95,17 +59,7 @@ function enclosingMatchBlock(neutralized: string, index: number): string {
   return neutralized.slice(braceStart)
 }
 
-/**
- * Remove nested match blocks, leaving only the statements of this scope.
- *
- * A deny inside a child match applies to the child, not to the parent. Without
- * this, an `allow write: if false` on `/private/{id}` cancelled the public
- * `allow read: if true` on `/{document=**}` above it — a rule that restricts
- * one path was read as retracting permission on every path.
- *
- * The input has already had its path wildcards neutralised, so every remaining
- * brace really does delimit a block.
- */
+/** 移除子匹配块，避免子级拒绝覆盖父级规则判断。 */
 function ownStatements(block: string): string {
   let out = ''
   let i = 0
@@ -113,7 +67,7 @@ function ownStatements(block: string): string {
     const rest = block.slice(i)
     const nested = /^\s*match\s+[^{]*\{/.exec(rest)
     if (nested && i > 0) {
-      // Skip the whole child block, braces included.
+      // 跳过完整子级代码块。
       let depth = 0
       let j = i + nested[0].length - 1
       for (; j < block.length; j++) {
@@ -135,11 +89,7 @@ function ownStatements(block: string): string {
   return out
 }
 
-/**
- * Whether this scope explicitly denies writes.
- * `allow read: if true` together with `allow write: if false` is a deliberate
- * public read-only design, not a mistake — do not report it.
- */
+/** 公开读取且显式拒绝写入时视为只读设计。 */
 function blockDeniesWrites(block: string): boolean {
   const denial = /\ballow\s+([a-z,\s]+?)\s*:\s*if\s+false\s*;/gi
   let m: RegExpExecArray | null
@@ -149,14 +99,11 @@ function blockDeniesWrites(block: string): boolean {
   return false
 }
 
-/**
- * Test-mode rules, which stay open until a hardcoded date.
- * Captures the date parts so the report can say whether it has already passed.
- */
+/** 提取测试模式的固定到期日期。 */
 const TEST_MODE =
   /\ballow\s+([a-z,\s]+?)\s*:\s*if\s+request\.time\s*<\s*timestamp\.date\(\s*(\d{4})\s*,\s*(\d{1,2})\s*,\s*(\d{1,2})\s*\)\s*;/gi
 
-/** Normalise "read, write" into readable prose */
+/** 将操作列表转换为展示文本。 */
 function describeOps(raw: string): string {
   const ops = parseOps(raw)
   if (ops.includes('write') && ops.includes('read')) return 'read and write'
@@ -170,16 +117,14 @@ export const firebaseRulesRule: Rule = {
   severity: 'P1',
 
   appliesTo(file: ScanFile): boolean {
-    // Held at lower confidence by the engine rather than skipped here.
+    // 示例上下文由引擎降低置信度。
     return isRulesFile(file)
   },
 
   check(file: ScanFile, ctx: ScanContext): Finding[] {
     const findings: Finding[] = []
     const product = productOf(file.path)
-    // Stopping is fine; stopping quietly is the silence this whole rule set
-    // exists to remove. Called from both loops below — the engine deduplicates
-    // the receipt, so reaching the ceiling twice still says so once.
+    // 达到结果上限时记录扫描缺口。
     const capReached = (): boolean => {
       if (findings.length < MAX_FINDINGS_PER_FILE) return false
       ctx.reportIncomplete(
@@ -188,17 +133,14 @@ export const firebaseRulesRule: Rule = {
       )
       return true
     }
-    // Comments first. Firebase rules use JavaScript comment syntax, and a
-    // single commented-out line — `// allow read, write: if true;`, the sort
-    // of thing left behind after tightening a rule — was reported as a
-    // certain-confidence wide-open database.
+    // 屏蔽注释及字符串，避免示例文本触发规则。
     const content = noiseMaskedOf(file)
-    // Then path wildcards, so brace matching has a chance.
+    // 再屏蔽路径通配符。
     const neutralized = neutralizePathWildcards(content)
-    // Built once per file rather than counted per match. See offsets.ts.
+    // 每个文件只构建一次行号索引。
     const contentLines = lineStartsOf(content)
 
-    // ── Unconditionally open ──
+    // 检查无条件访问。
     ALLOW_IF_TRUE.lastIndex = 0
     let m: RegExpExecArray | null
     while ((m = ALLOW_IF_TRUE.exec(content)) !== null) {
@@ -206,16 +148,14 @@ export const firebaseRulesRule: Rule = {
       const rawOps = m[1] ?? ''
       const canWrite = parseOps(rawOps).some((op) => WRITE_OPS.has(op))
 
-      // A public read paired with an explicit write denial is a deliberate
-      // read-only design, not a mistake.
+      // 显式拒绝写入的公开读取不报告为开放写入。
       if (!canWrite && blockDeniesWrites(ownStatements(enclosingMatchBlock(neutralized, m.index)))) continue
 
       const ops = describeOps(rawOps)
       findings.push({
         ruleId: 'firebase/open-rules',
         severity: 'P1',
-        // Open writes are unambiguous. An open read might be intentional
-        // (a public catalogue, announcements), so it stays lower-confidence.
+        // 开放写入为确定结果，公开读取需人工确认。
         confidence: canWrite ? 'certain' : 'likely',
         title: canWrite
           ? `Your ${product} rules let anyone ${ops} this data`
@@ -252,7 +192,7 @@ export const firebaseRulesRule: Rule = {
       })
     }
 
-    // ── Test mode: open until a hardcoded date ──
+    // 检查带日期的测试模式。
     TEST_MODE.lastIndex = 0
     while ((m = TEST_MODE.exec(content)) !== null) {
       if (capReached()) break
@@ -261,7 +201,7 @@ export const firebaseRulesRule: Rule = {
       const year = Number(m[2])
       const month = Number(m[3])
       const day = Number(m[4])
-      // Compare against the date the scan runs, not a build-time constant
+      // 按扫描时间判断是否到期。
       const expiry = new Date(year, month - 1, day)
       const expired = expiry.getTime() < Date.now()
       const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
@@ -269,8 +209,7 @@ export const firebaseRulesRule: Rule = {
       findings.push({
         ruleId: 'firebase/test-mode-rules',
         severity: 'P1',
-        // A hardcoded expiry date is never a deliberate authorisation design,
-        // so this stays certain whether or not writes are involved.
+        // 固定日期测试模式均作为确定配置问题。
         confidence: 'certain',
         title: expired
           ? `Your ${product} rules are in test mode and expired on ${dateStr}`

@@ -1,69 +1,25 @@
-/**
- * Project configuration, so a team's settings live in the repository.
- *
- * Everything canship does was reachable only through flags, which means a
- * decision a team makes once — this baseline, that rule is noise for us — has
- * to be retyped correctly by every person and every CI job, and is nowhere to
- * be reviewed when it changes.
- *
- * **JSON, and only JSON.** The obvious convenience would be `canship.config.js`,
- * and it is not available: the README's first promise is that the scan does not
- * execute project code, and a JS config file is project code. A scanner that
- * runs a file from the repository it is auditing has given up the property that
- * makes it safe to point at something you do not trust.
- *
- * `package.json` is not read either. canship scans Python, Go, Ruby and PHP
- * trees that have no package.json at all, and reading configuration out of a
- * file the rules also inspect means two different parsers with two different
- * ideas of what a broken file means.
- */
+/** 仅解析 JSON 项目配置，不执行目标项目代码。 */
 
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { isKnownSelector } from './rules/index.js'
 
-/** The file canship looks for in the scanned directory */
+/** 扫描目录中的配置文件名。 */
 export const CONFIG_FILENAME = 'canship.config.json'
 
-/**
- * Settings a project can commit.
- *
- * Every field is optional, and a flag always wins over the file. The reverse
- * would mean a committed setting silently overriding what someone typed just
- * now, which is the wrong way round for a tool people reach for when something
- * looks wrong.
- */
+/** 所有设置均可省略，显式命令行参数优先。 */
 export interface Config {
-  /** Path to a baseline, as if --baseline had been passed */
+  /** 基线路径。 */
   baseline?: string
-  /** Run only these rules. Mutually exclusive with `skip`. */
+  /** 仅执行匹配规则；与 skip 互斥。 */
   only?: string[]
-  /** Run everything except these rules. Mutually exclusive with `only`. */
+  /** 排除匹配规则；与 only 互斥。 */
   skip?: string[]
-  /** Show likely findings, as if --all had been passed */
+  /** 显示疑似结果。 */
   all?: boolean
 }
 
-/**
- * Settings this file is deliberately not allowed to carry.
- *
- * `bestEffort` was here for one commit and is the reason this list exists. It
- * turns an incomplete scan from exit 3 into exit 0 — and exit 3 is the whole
- * point of canship's exit codes: "found nothing" and "checked nothing" must not
- * share one. A file inside the scanned repository could therefore switch off
- * the signal that says the scan could not finish, and arranging for a scan to
- * be incomplete is easy (an unreadable file, a nested repository, anything over
- * the size cap).
- *
- * The others below hide findings, which is what they are for, and a project's
- * own maintainers writing them is the intended use. Accepting an incomplete
- * scan is different in kind: it is a judgement the person running canship makes
- * about their own tolerance, not a property of the project being scanned. So it
- * stays a flag.
- *
- * Named rather than silently ignored, because a setting that stops working
- * without saying so is how someone keeps believing it is in force.
- */
+/** 接受不完整扫描必须由调用方通过命令行决定。 */
 const REFUSED_KEYS = new Map([
   [
     'bestEffort',
@@ -71,13 +27,13 @@ const REFUSED_KEYS = new Map([
   ],
 ])
 
-/** An unusable config file. Distinct so the CLI can name the file that is wrong. */
+/** 配置读取或校验错误。 */
 export class ConfigError extends Error {}
 
-/** The keys this version understands */
+/** 支持的配置键。 */
 const KNOWN_KEYS = new Set(['baseline', 'only', 'skip', 'all'])
 
-/** Read and check a list of rule selectors */
+/** 校验规则选择器列表。 */
 function selectors(value: unknown, field: string, path: string): string[] {
   if (!Array.isArray(value)) {
     throw new ConfigError(`${path}: "${field}" must be an array of rule ids`)
@@ -87,9 +43,7 @@ function selectors(value: unknown, field: string, path: string): string[] {
     if (typeof entry !== 'string' || entry === '') {
       throw new ConfigError(`${path}: "${field}" must contain only rule ids`)
     }
-    // A typo here is not harmless. In "only" it disables everything except a
-    // rule that does not exist, which is every rule — a scan that checks
-    // nothing and reports it as clean.
+    // 拒绝未知规则，防止拼写错误改变扫描范围。
     if (!isKnownSelector(entry)) {
       throw new ConfigError(`${path}: "${field}" names no known rule: ${entry}`)
     }
@@ -103,12 +57,7 @@ function boolean(value: unknown, field: string, path: string): boolean {
   return value
 }
 
-/**
- * Parse a config file's text.
- *
- * Exported separately from reading it so the parse can be tested without a
- * filesystem, and so the CLI can name the path in every message.
- */
+/** 独立解析配置文本，便于测试和定位错误。 */
 export function parseConfig(text: string, path: string): Config {
   let parsed: unknown
   try {
@@ -121,8 +70,7 @@ export function parseConfig(text: string, path: string): Config {
   }
   const raw = parsed as Record<string, unknown>
 
-  // An unknown key is an error rather than something to ignore. Ignoring it is
-  // how "skipp" spends a year looking like it works.
+  // 拒绝未知配置键。
   for (const key of Object.keys(raw)) {
     const refused = REFUSED_KEYS.get(key)
     if (refused !== undefined) {
@@ -144,37 +92,17 @@ export function parseConfig(text: string, path: string): Config {
   if (raw['skip'] !== undefined) config.skip = selectors(raw['skip'], 'skip', path)
   if (raw['all'] !== undefined) config.all = boolean(raw['all'], 'all', path)
 
-  // Refused rather than resolved in some order, because both orders are
-  // defensible and neither is guessable from the file.
+  // 两种规则选择模式不能同时设置。
   if (config.only !== undefined && config.skip !== undefined) {
     throw new ConfigError(`${path}: "only" and "skip" cannot both be set`)
   }
   return config
 }
 
-/**
- * How large this file may be.
- *
- * It is read out of the directory being scanned, with no flag asking for it,
- * which makes it the most reachable attacker-controlled input canship has —
- * more so than the baseline, which at least requires --baseline. Uncapped, a
- * 200 MB config was read and parsed in full before the first validation
- * rejected it: eleven seconds and two hundred megabytes to reach an error
- * message. It also fed the `baseline` path, which is walked one ancestor at a
- * time when it does not exist.
- *
- * A megabyte is far more than any real config needs — the whole schema is four
- * keys — and small enough that reading it is never the expensive part of a scan.
- */
+/** 限制配置文件大小，避免无界读取。 */
 const MAX_CONFIG_BYTES = 1024 * 1024
 
-/**
- * Load the config from a scanned directory, or an empty config if there is none.
- *
- * Absence is normal and silent. A file that exists and cannot be read is not:
- * continuing with defaults would run a scan under settings nobody chose, and
- * report it as if they had.
- */
+/** 配置不存在时使用默认值；读取或解析失败必须报告。 */
 export function loadConfig(root: string): { config: Config; path: string | null } {
   const path = join(root, CONFIG_FILENAME)
   if (!existsSync(path)) return { config: {}, path: null }
@@ -188,8 +116,7 @@ export function loadConfig(root: string): { config: Config; path: string | null 
     }
     text = readFileSync(path, 'utf8')
   } catch (err) {
-    // The size refusal already says the right thing; only a filesystem failure
-    // needs wrapping.
+    // 保留大小限制错误，仅包装文件系统异常。
     if (err instanceof ConfigError) throw err
     throw new ConfigError(
       `could not read ${path}: ${err instanceof Error ? err.message : String(err)}`,

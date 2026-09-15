@@ -1,6 +1,4 @@
-// Test fixture: identical in every visible way to the vulnerable fixture's
-// route — admin client, no check, whole table. It is safe only because of
-// middleware.ts, and it must not be reported.
+// 管理员查询由外部中间件保护，路由内无需重复检查。
 import { createClient } from '@supabase/supabase-js'
 
 const supabaseAdmin = createClient(

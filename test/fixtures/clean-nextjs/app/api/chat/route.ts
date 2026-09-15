@@ -1,5 +1,4 @@
-// Test fixture: correct usage. The admin client is only reached after the
-// caller has been identified, and the query is scoped to that caller's own row.
+// 先识别调用者，再访问其自身数据。
 import { createClient } from '@supabase/supabase-js'
 import { cookies } from 'next/headers'
 

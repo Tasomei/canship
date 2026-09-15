@@ -1,7 +1,6 @@
--- Test fixture: schema where RLS is forgotten on some tables.
+-- 部分表未启用行级安全的夹具。
 
--- Fatal: created and never secured. Anyone with the public anon key can read
--- every row, including the email addresses.
+-- 建表后未启用保护，数据可能通过公开接口暴露。
 create table public.profiles (
   id uuid primary key references auth.users on delete cascade,
   email text not null,
@@ -9,7 +8,7 @@ create table public.profiles (
   created_at timestamptz default now()
 );
 
--- Fatal: no schema qualifier, so it defaults to public. Also unsecured.
+-- 省略模式时属于公共模式，且未启用保护。
 create table if not exists "orders" (
   id bigserial primary key,
   user_id uuid not null,
@@ -17,7 +16,7 @@ create table if not exists "orders" (
   stripe_payment_id text
 );
 
--- Correct: this one is secured below and must not be reported.
+-- 后续启用保护的表不应报告。
 create table public.audit_log (
   id bigserial primary key,
   actor uuid,
@@ -30,5 +29,5 @@ create policy "audit_log is readable by its actor"
   on public.audit_log for select
   using (auth.uid() = actor);
 
--- Must not be reported: commented-out DDL is not a real table.
--- create table public.draft_table (id int);
+-- 注释中的建表语句不应参与重放。
+-- 示例：create table public.draft_table (id int);

@@ -1,20 +1,9 @@
-/**
- * Minimal ANSI colour helpers.
- *
- * Not pulling in picocolors or chalk is deliberate: canship is distributed via
- * `npx canship`, so every runtime dependency adds to the cold-start download.
- * This much code is not worth a dependency.
- */
+/** 无外部依赖的终端颜色工具。 */
 
-// Build ESC from a char code so the source file contains no invisible control
-// characters, which tend to confuse editors and patch tools.
+// 通过字符码构造转义符，避免源码包含不可见控制字符。
 const ESC = String.fromCharCode(27)
 
-/**
- * Whether to emit colour at all.
- * Honours the NO_COLOR convention (https://no-color.org/) and switches itself
- * off when the output is piped.
- */
+/** 遵循 NO_COLOR，非终端输出默认关闭颜色。 */
 const enabled = (() => {
   if (process.env['NO_COLOR']) return false
   if (process.env['FORCE_COLOR']) return true

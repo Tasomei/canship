@@ -1,11 +1,4 @@
-// Test fixture: the shape every Supabase tutorial teaches — one module holding
-// the service_role client, imported wherever it is needed.
-//
-// It exists here to prove two things. First, that the rule follows the import:
-// a check that only looked inside route files would miss nearly every real
-// project. Second, that the type argument does not hide the constructor —
-// createClient<Database>() is the form Supabase's own documentation recommends,
-// and a real repository was under-reported because of it.
+// 通过独立模块导出管理员客户端，验证跨文件追踪。
 import { createClient } from '@supabase/supabase-js'
 import type { Database } from './database.types'
 

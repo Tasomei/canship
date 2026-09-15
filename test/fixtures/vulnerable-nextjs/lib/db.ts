@@ -1,13 +1,6 @@
-// Test fixture: a connection string with a plaintext password. All values are fake.
-//
-// The realistic-looking host is a deliberate regression test:
-// earlier versions checked the whole connection string for placeholders, so any
-// "example" or "test" in the host caused a miss. Placeholder checking now looks
-// only at the password, so this one must be caught.
-// The inverse case (host is example.com, must NOT be reported) lives in the
-// clean fixture.
+// 模拟连接串保留真实格式主机名，避免占位检测误排除密码。
 
-// Fatal: connection string contains both username and password
+// 模拟含用户名和密码的连接串。
 export const DATABASE_URL = 'postgresql://admin:sup3rS3cretPw@db.myapp.io:5432/production'
 
 export function connect(): string {

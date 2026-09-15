@@ -1,8 +1,4 @@
-// Test fixture: a passwordless sign-in endpoint. It uses the admin client and
-// has no caller check — and it cannot have one, because this is how a caller
-// becomes known in the first place.
-//
-// The generated link is emailed to the address, never returned to the caller.
+// 登录入口使用管理员客户端完成身份建立，不能要求调用者预先登录。
 import { createClient } from '@supabase/supabase-js'
 
 const supabaseAdmin = createClient(
