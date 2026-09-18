@@ -1488,7 +1488,7 @@ describe('the CLI contract', () => {
       // 先断言提取结果非空，避免两个空集合造成假通过。
       assert.ok(help.length >= 7, `--help named only ${help.length} options`)
       assert.deepEqual(sorted(documented(readme('README.md'))), help)
-      assert.deepEqual(sorted(documented(readme('README.zh-CN.md'))), help)
+      assert.deepEqual(sorted(documented(readme('README-zh-CN.md'))), help)
     })
 
     test('--help and both READMEs describe the same exit codes', () => {
@@ -1499,7 +1499,7 @@ describe('the CLI contract', () => {
       const helpCodes = codes(help.slice(help.indexOf('Exit codes')))
 
       assert.deepEqual(helpCodes, ['0', '1', '2', '3'])
-      for (const name of ['README.md', 'README.zh-CN.md']) {
+      for (const name of ['README.md', 'README-zh-CN.md']) {
         const table = readme(name)
         const start = table.indexOf('| `0` |')
         assert.ok(start !== -1, `${name} has no exit-code table`)

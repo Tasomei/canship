@@ -1,142 +1,116 @@
 # canship
 
-A local static security scanner for JavaScript and TypeScript web projects. canship finds exposed credentials and common access-control mistakes without executing project code, uploading source files, or making network requests.
+A local static scanner for JavaScript and TypeScript projects. Detects exposed credentials and access-control misconfigurations without executing project code, uploading files, or making network requests during scans.
 
 ```powershell
 npx canship .
 ```
 
-Requires Node.js 18 or later. The package has no runtime dependencies. Git is optional and is used only to inspect local commit history. If canship is not cached, `npx` may download it from npm before the scan begins.
+Requires Node.js ≥18; no runtime dependencies. Git is used for local history checks. Unavailable Git in a repository makes the scan incomplete. On first use, `npx` may download the package from npm.
 
-[简体中文](./README.zh-CN.md)
+[简体中文](./README-zh-CN.md)
 
 ## Checks
 
-| Check | Typical impact | Severity |
-|---|---|---|
-| Hardcoded credentials | Exposes recognised OpenAI, Anthropic, AWS, Stripe, GitHub, npm, Slack, SendGrid, private-key, or database credentials | P0 |
-| Private values in public environment variables | Includes private values in browser-delivered code | P0 |
-| Client-accessible Supabase `service_role` keys | Bypasses Row Level Security policies | P0 |
-| Private or potentially private values in Git-tracked and historical `.env` files | Retains credentials or suspected secrets in repository history | P0 |
-| Supabase tables without RLS | Exposes rows through the Supabase Data API without row-level controls | P1 |
-| Firebase rules allowing unconditional access | Permits unauthorised reads or writes | P1 |
-| Unauthenticated Next.js API routes | Allows unverified callers to access data or administrative operations | P0 / P1 |
-| Credentialed CORS with reflected origins | Allows another site to read authenticated responses | P1 |
+| Check | Severity |
+|---|---|
+| Hardcoded credentials, private keys, and database URLs containing passwords | P0 |
+| Private values in public environment variables | P0 |
+| Client-accessible Supabase admin keys | P0 |
+| Credentials or suspected private values in Git-tracked and historical `.env` files | P0 |
+| Supabase tables without Row Level Security (RLS) | P1 |
+| Firebase unconditional access and date-based test rules | P1 |
+| Next.js API data operations without authentication | P0 / P1 |
+| Credentialed CORS with reflected or wildcard origins | P1 / P2 |
 
-API authentication checks cover `/api` handlers in Next.js App Router and Pages Router, including route groups such as `app/(group)/api/**` and workspace applications. Other checks recognise public environment prefixes used by Next.js, Vite, Nuxt, Create React App, Expo, Gatsby, Vue CLI, and SvelteKit.
+Recognises OpenAI, Anthropic, AWS, Stripe, GitHub, npm, Slack, SendGrid, and other credential formats, plus common frontend public environment prefixes. API authentication checks cover Next.js `/api` handlers, including App Router, Pages Router, route groups, and workspace applications.
 
-Severity describes potential impact. Confidence (`certain` or `likely`) describes the strength of the evidence. A `certain` P0/P1 finding blocks release with exit code `1`; other findings use exit code `2`.
+Confidence is `certain` or `likely`. Only certain findings are shown by default; hidden likely findings still affect the exit code.
 
-## Usage
+## Options
 
-```powershell
-npx canship [path] [options]
-```
-
-The current directory is scanned when `path` is omitted.
+Omitting the path scans the current directory.
 
 | Option | Description |
 |---|---|
-| `-a`, `--all` | Show `likely` findings |
-| `--json` | Write machine-readable JSON to stdout |
-| `--fix-prompt` | Write remediation instructions for a coding assistant |
-| `--report[=file]` | Write a self-contained HTML report; default: `canship-report.html` |
-| `--sarif[=file]` | Write a SARIF 2.1.0 log; default: `canship.sarif` |
+| `-a`, `--all` | Include likely findings |
+| `--json` | Output JSON |
+| `--fix-prompt` | Output assistant instructions and separate manual actions |
+| `--report[=file]` | Write HTML; default: `canship-report.html` |
+| `--sarif[=file]` | Write SARIF 2.1.0; default: `canship.sarif` |
 | `--best-effort` | Permit exit `0` for an incomplete scan with no findings |
-| `--baseline[=file]` | Hide findings recorded in a baseline; default: `canship-baseline.json` |
+| `--baseline[=file]` | Apply a baseline; default: `canship-baseline.json` |
 | `--baseline-write[=file]` | Record current findings as a baseline and exit |
 | `--only=ids` | Run matching rules; comma-separated and repeatable |
-| `--skip=ids` | Exclude matching rule IDs; comma-separated and repeatable |
-| `--no-config` | Ignore `canship.config.json` in the scanned directory |
+| `--skip=ids` | Exclude matching rules; comma-separated and repeatable |
+| `--no-config` | Ignore project configuration |
 | `-h`, `--help` | Show help |
-| `-v`, `--version` | Show the version |
+| `-v`, `--version` | Show version |
 
-`--json` and `--fix-prompt` are mutually exclusive. `--report` and `--sarif` write separate files and may be combined with either. Reports are in English; add `--all` to include `likely` findings in any format.
+`--json` and `--fix-prompt` are mutually exclusive. HTML and SARIF may be combined with either. Reports are in English; use `--all` to include likely findings in any format.
 
 ### Exit codes
 
 | Code | Meaning |
 |---|---|
-| `0` | Complete scan with no findings, or an incomplete finding-free scan accepted with `--best-effort` |
-| `1` | At least one `certain` P0/P1 finding |
-| `2` | Findings exist, but none is a `certain` P0/P1 blocker |
-| `3` | Invalid arguments, a tool error, or an incomplete scan without `--best-effort` |
+| `0` | No findings and a complete scan, or an incomplete scan accepted with `--best-effort` |
+| `1` | At least one certain P0/P1 finding |
+| `2` | Other findings, including hidden likely findings |
+| `3` | Invalid arguments, a tool error, or an unaccepted incomplete scan |
 
-Findings take precedence over incomplete-scan status. JSON preserves incompleteness in `partial`, `errors`, and `skipped`; SARIF includes execution status and diagnostic notifications. `--best-effort` does not change exit codes `1` or `2`.
+Findings take precedence over incompleteness; `--best-effort` does not change `1` or `2`. JSON retains `partial`, `errors`, and `skipped`; SARIF includes execution status and diagnostic notifications.
 
-By default, the terminal expands only `certain` findings. Hidden `likely` findings still produce exit code `2`; use `--all` to view them.
+## Configuration and suppressions
 
-## Configuration
-
-Commit project settings as `canship.config.json` in the scanned directory:
+Place `canship.config.json` in the scanned directory. Supported keys: `baseline`, `only`, `skip`, `all`.
 
 ```json
 {
-  "baseline": "canship-baseline.json",
   "skip": ["cors/wildcard-with-credentials"],
   "all": false
 }
 ```
 
-Supported keys are `baseline`, `only`, `skip`, and `all`. Command-line options override the file. `only` and `skip` cannot be combined, and selectors must match a complete rule ID or rule namespace. Rule IDs are available in JSON output.
+CLI options take precedence. `only` and `skip` are mutually exclusive and accept complete rule IDs or namespaces. Unrelated rules do not run; `ruleSelection.removed` counts only filtered findings from rules that ran. Use `--no-config` for untrusted projects. `bestEffort` is CLI-only.
 
-Rule selection omits unrelated rule execution. Reports disclose the selection; `ruleSelection.removed` counts only findings filtered from rules that ran, not potential findings from excluded rules.
-
-The configuration is JSON because canship does not execute project code. When scanning untrusted code, use `--no-config` so the target cannot alter rule selection. `bestEffort` is intentionally available only as a command-line decision.
-
-## Suppressions
-
-Exclude an entire file with a standalone comment containing `canship-ignore-file`. Suppress a finding on the next line with `canship-ignore-next-line`:
+A standalone comment containing `canship-ignore-file` excludes a file. `canship-ignore-next-line` suppresses the next line and accepts an optional rule ID:
 
 ```ts
-// canship-ignore-next-line
-const documentedExample = "sk-proj-not-a-real-key"
+// canship-ignore-next-line cors/wildcard-with-credentials
+const corsOptions = { origin: '*', credentials: true }
 ```
 
-Append a rule ID to narrow the suppression:
-
-```ts
-// canship-ignore-next-line secrets/hardcoded/openai
-const key = process.env.OPENAI_KEY
-```
-
-Markers must occupy the whole comment line. Suppressed findings and excluded files remain visible in reports; they do not make the scan incomplete.
+Reports disclose exclusions, rule selection, and baseline suppression. Deliberate exclusions do not make the scan incomplete.
 
 ## Baselines
 
-Use a baseline to adopt canship in a project with existing findings:
+Record existing findings:
 
 ```powershell
 npx canship --baseline-write
 ```
 
+Report only new findings:
+
 ```powershell
 npx canship --baseline
 ```
 
-The first command records current findings; the second reports only new ones. Baselines contain hashes rather than source excerpts, but they still disclose file paths, rule IDs, finding titles, and unresolved issue types. Review a baseline before committing it, especially in a public repository.
+Bare options use the scanned directory; explicit paths are relative to the working directory. A successful write exits `0`, with a warning for incomplete or selectively scanned input.
 
-Baseline format version 2 fingerprints the original source evidence before redaction and excludes line numbers, so moving a finding does not make it new while replacing a credential does. Version 1 baselines are rejected with exit code `3`; review the findings and regenerate the file with `--baseline-write`.
+Baseline format v2 contains no source excerpts but discloses paths, rules, titles, and issue types. Review it before committing. Fingerprints exclude line numbers: moving lines preserves identity, replacing credentials changes it. Missing, malformed, and v1 baselines exit `3`.
 
-Every output reports how many findings a baseline suppressed. Missing, malformed, or incompatible baselines fail closed with exit code `3`.
+## Limitations
 
-`--baseline-write` exits `0` after a successful write and warns if the scan was incomplete or used rule selection. Bare baseline options use the scanned directory; explicit paths are relative to the working directory.
+- Static heuristics may produce false positives or negatives. Runtime behaviour, rate limiting, injection, dependency vulnerabilities, and business authorisation are outside scope. No findings does not prove security.
+- Redaction covers recognised formats only; unknown secrets may appear in evidence. Treat reports as internal material. Google/Firebase/Maps `AIza...` values are treated as public identifiers.
+- Reads are limited to 2 MiB per file, 128 MiB and 10,000 files per scan, and 16 directory levels. Across rules, at most 100 findings per file are reported, prioritising severity and confidence.
+- Git history checks cover up to 100 relevant revisions per file. Each Git command has a 30-second timeout. Exceeded limits and timeouts are reported as incomplete coverage.
+- Symbolic links are not followed. Scan nested repositories and submodules separately. Skipped paths within scope make the scan incomplete; excluded build and dependency directories remain excluded.
 
-## Scope and limitations
+## Development
 
-- canship uses static heuristics and cannot verify runtime behaviour. Custom authentication, dynamic configuration, and unsupported syntax may produce false positives or false negatives.
-- Detection and redaction use the same credential patterns. Unrecognised secrets cannot be guaranteed to be masked; treat reports as internal material.
-- Reads are limited to 2 MiB per file, 128 MiB and 10,000 files per scan, and 16 directory levels. Output is limited to 100 findings per file across rules, with higher severity and confidence retained first. Exceeded limits are reported as incomplete coverage.
-- Git inspection reads up to 100 relevant revisions per file. Each Git command has a 30-second timeout; unavailable Git in a repository makes the scan incomplete.
-- Symbolic links and nested repositories within the scan scope are skipped and make the scan incomplete. Excluded build and dependency directories remain excluded. Scan nested repositories or submodules separately.
-- Google, Firebase, and Maps `AIza...` values are treated as public identifiers because their server-side restrictions cannot be verified from source alone.
-- Rate limiting, injection, dependency vulnerabilities, and business authorisation beyond caller authentication are outside the scan scope.
-
-A clean result means only that the implemented rules found no issue in the files that were read. It is not proof that the project is secure.
-
-## Contributing
-
-Changed detection rules should include a positive and a negative fixture under [`test/fixtures/`](./test/fixtures/).
+Detection rules require positive and negative cases; see [test fixtures](./test/fixtures/).
 
 ```powershell
 npm ci
