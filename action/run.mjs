@@ -10,6 +10,36 @@ const invalidReport = () => new Error('Invalid or incompatible scanner report.')
 const count = value => Number.isSafeInteger(value) && value >= 0
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 
+/** 仅公开固定诊断文本，不透传底层异常、输入或子进程日志。 */
+const STAGE_MESSAGES = Object.freeze({
+  input: 'Invalid inputs or inaccessible paths. Check path, baseline, version, selectors, and boolean inputs.',
+  install: 'Scanner installation failed. Check the exact npm version and runner access to registry.npmjs.org.',
+  scan: 'The scanner process failed or exceeded its limits. Run the same scan locally to inspect coverage.',
+  report: 'The scanner report is invalid or incompatible. Check the version, rule selectors, and project configuration.',
+  sarif: 'SARIF preparation failed. No report was marked ready for upload.',
+  output: 'Could not write GitHub outputs or the job summary. Check the runner environment.',
+  internal: 'An unexpected Action error occurred. No successful completion was confirmed.',
+})
+
+export class ActionError extends Error {
+  constructor(stage) {
+    const key = Object.hasOwn(STAGE_MESSAGES, stage) ? stage : 'internal'
+    super(STAGE_MESSAGES[key])
+    this.stage = key
+  }
+}
+
+/** 不信任异常的 message 属性，即使它来自已知错误类型。 */
+export function describeActionError(error) {
+  const stage = error instanceof ActionError && Object.hasOwn(STAGE_MESSAGES, error.stage) ? error.stage : 'internal'
+  return { stage, message: STAGE_MESSAGES[stage] }
+}
+
+/** 保留失败阶段，丢弃可能包含敏感内容的原始异常。 */
+function inStage(stage, operation) {
+  try { return operation() } catch { throw new ActionError(stage) }
+}
+
 /** 仅接受明确枚举值，拒绝模糊布尔值。 */
 function boolean(value, fallback = 'false') {
   if (!['true', 'false'].includes(value || fallback)) throw new Error('Invalid boolean input.')
@@ -167,9 +197,14 @@ function summary(report, assessment, options) {
 
 /** 以独立参数数组调用 CLI，随后输出可供组合 Action 使用的固定字段。 */
 export function runAction(env, dependencies = {}) {
-  const options = parseInputs(env)
-  const directory = mkdtempSync(join(options.temp, 'canship-action-'))
-  const entry = (dependencies.installScanner ?? installScanner)(options, directory)
+  const options = inStage('input', () => {
+    if (!env.GITHUB_OUTPUT || !env.GITHUB_STEP_SUMMARY) throw new Error('Missing runner output files.')
+    return parseInputs(env)
+  })
+  const { entry, directory } = inStage('install', () => {
+    const directory = mkdtempSync(join(options.temp, 'canship-action-'))
+    return { entry: (dependencies.installScanner ?? installScanner)(options, directory), directory }
+  })
   const args = [entry, options.root, '--json', '--all']
   if (!options.useConfig) args.push('--no-config')
   if (options.only) args.push(`--only=${options.only}`)
@@ -177,38 +212,53 @@ export function runAction(env, dependencies = {}) {
   if (options.baseline) args.push(`--baseline=${options.baseline}`)
   const sarif = join(directory, 'canship.sarif')
   if (options.uploadSarif) args.push(`--sarif=${sarif}`)
-  const execution = (dependencies.execute ?? spawnSync)(process.execPath, args, {
-    cwd: directory, encoding: 'utf8', timeout: 600_000, maxBuffer: 32 * 1024 * 1024, windowsHide: true,
+  const execution = inStage('scan', () => {
+    const result = (dependencies.execute ?? spawnSync)(process.execPath, args, {
+      cwd: directory, encoding: 'utf8', timeout: 600_000, maxBuffer: 32 * 1024 * 1024, windowsHide: true,
+    })
+    if (result.error || result.signal || result.status === null) throw new Error('Scanner execution failed.')
+    return result
   })
-  if (execution.error || execution.signal || execution.status === null) throw new Error('Scanner execution failed.')
-  let report
-  try { report = JSON.parse(execution.stdout) } catch { throw invalidReport() }
-  const assessment = assessReport(report, execution.status, options.failOn)
-  if (report.version !== options.version) throw new Error('Scanner version does not match the requested version.')
-  if (options.uploadSarif) {
+  const { report, assessment } = inStage('report', () => {
+    const report = JSON.parse(execution.stdout)
+    const assessment = assessReport(report, execution.status, options.failOn)
+    if (report.version !== options.version) throw new Error('Scanner version mismatch.')
+    return { report, assessment }
+  })
+  if (options.uploadSarif) inStage('sarif', () => {
     const log = rebaseSarif(JSON.parse(readFileSync(sarif, 'utf8')), relative(options.workspace, options.root))
     writeFileSync(sarif, `${JSON.stringify(log)}\n`)
-  }
+  })
   const outputs = {
     'exit-code': execution.status, findings: assessment.findings, blocking: assessment.blocking,
     partial: assessment.partial, failed: assessment.failed, 'report-ready': options.uploadSarif,
     ...(options.uploadSarif ? { 'sarif-file': sarif } : {}),
   }
-  if (!env.GITHUB_OUTPUT || !env.GITHUB_STEP_SUMMARY) throw new Error('Missing runner output files.')
-  for (const [name, value] of Object.entries(outputs)) {
-    if (/[\r\n]/.test(String(value))) throw new Error('Invalid output value.')
-    appendFileSync(env.GITHUB_OUTPUT, `${name}=${value}\n`)
-  }
-  appendFileSync(env.GITHUB_STEP_SUMMARY, summary(report, assessment, options))
+  inStage('output', () => {
+    for (const [name, value] of Object.entries(outputs)) {
+      if (/[\r\n]/.test(String(value))) throw new Error('Invalid output value.')
+      appendFileSync(env.GITHUB_OUTPUT, `${name}=${value}\n`)
+    }
+    appendFileSync(env.GITHUB_STEP_SUMMARY, summary(report, assessment, options))
+  })
   return assessment
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     runAction(process.env)
-  } catch {
+  } catch (error) {
     // 原始异常和子进程输出可能包含路径或凭据，不写入工作流日志。
-    process.stderr.write('::error::canship could not complete the scan. Check inputs, installation, and report compatibility.\n')
+    const diagnostic = describeActionError(error)
+    process.stderr.write(`::error::canship [${diagnostic.stage}]: ${diagnostic.message}\n`)
+    if (process.env.GITHUB_STEP_SUMMARY) {
+      try {
+        appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+          `## canship\n\nStatus: **failed**. Stage: \`${diagnostic.stage}\`.\n\n${diagnostic.message}\n`)
+      } catch {
+        // 摘要写入失败不覆盖已记录的错误，进程仍返回失败。
+      }
+    }
     process.exitCode = 1
   }
 }

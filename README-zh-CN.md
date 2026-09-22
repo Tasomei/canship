@@ -103,6 +103,8 @@ jobs:
 
 扫描不完整、工具错误或报告不兼容始终失败，`fail-on: none` 也不例外。输出为 `exit-code`、`findings`、`blocking`、`partial`，所有置信度均参与策略判定。基线、源码忽略标记和内置排除仍然生效，需一并审阅扫描范围。
 
+失败诊断标明阶段：`input`、`install`、`scan`、`report`、`sarif` 或 `output`；未预期错误标为 `internal`，不包含原始输入或子进程日志。基线抑制数量始终披露，子目录 SARIF 保留相对仓库的路径；每个目标应使用独立的 `category`。
+
 上传 SARIF 需要 `security-events: write`，且仓库须支持 [GitHub 代码扫描](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file)。Fork PR 可能没有上传权限。报告含路径及发现详情，启用上传前需评估披露风险。不可信贡献使用 `pull_request`，不要使用 `pull_request_target`。Action 会将后续步骤的 Node.js 设为 22；项目需要其他版本时，使用独立扫描任务。
 
 ## 配置与忽略

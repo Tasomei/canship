@@ -103,6 +103,8 @@ jobs:
 
 Incomplete scans, tool errors, and incompatible reports always fail, including with `fail-on: none`. Outputs: `exit-code`, `findings`, `blocking`, `partial`. All confidence levels participate in the selected policy. Baselines, source ignore markers, and built-in exclusions still apply; review them as part of the scan scope.
 
+Failures identify the stage: `input`, `install`, `scan`, `report`, `sarif`, or `output`; unexpected errors use `internal`. Diagnostics do not include raw inputs or subprocess logs. Baseline counts remain visible, and separate subdirectory scans retain repository-relative SARIF paths. Use a distinct `category` for each target.
+
 SARIF upload requires `security-events: write` and a repository eligible for [GitHub code scanning](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file). Fork pull requests may lack upload permission. Reports disclose paths and finding details; review disclosure risks before enabling upload. Use `pull_request`, not `pull_request_target`, for untrusted contributions. The Action sets Node.js 22 for subsequent steps; use a separate scan job if the project needs another runtime.
 
 ## Configuration and suppressions

@@ -7,9 +7,11 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { assessReport, parseInputs, rebaseSarif, runAction } from '../action/run.mjs'
+import { ActionError, assessReport, describeActionError, parseInputs, rebaseSarif, runAction } from '../action/run.mjs'
 import { createJsonReport } from '../src/report/json.js'
 import type { Finding, ScanResult } from '../src/types.js'
+import { scan } from '../src/engine.js'
+import { buildBaseline, serializeBaseline } from '../src/baseline.js'
 
 const sandbox = mkdtempSync(join(tmpdir(), 'canship-action-test-'))
 after(() => rmSync(sandbox, { recursive: true, force: true }))
@@ -37,6 +39,25 @@ function environment(over: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return { GITHUB_WORKSPACE: workspace, RUNNER_TEMP: runner,
     GITHUB_OUTPUT: join(outputs, 'output'), GITHUB_STEP_SUMMARY: join(outputs, 'summary'), ...over }
 }
+
+const repository = dirname(dirname(fileURLToPath(import.meta.url)))
+/** 集成测试使用本地扫描器，不联网安装；样本仅作为读取对象。 */
+const sourceDependencies = {
+  installScanner: () => join(repository, 'src', 'cli.ts'),
+  execute: (command: string, args: string[]) => spawnSync(command, ['--import', 'tsx', ...args], {
+    cwd: repository, encoding: 'utf8', timeout: 30_000,
+  }),
+}
+function project(name: string, files: Record<string, string>): string {
+  const root = join(workspace, name)
+  for (const [path, content] of Object.entries(files)) {
+    const target = join(root, path)
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, content)
+  }
+  return root
+}
+const openRules = 'service cloud.firestore { match /documents/{id} { allow write: if true; } }'
 
 test('JSON 结构版本独立于软件包版本，保留完整性和抑制统计', () => {
   const r = report({ partial: true, findings: [finding] })
@@ -165,19 +186,105 @@ test('真实 CLI 经 Action 适配器扫描，不执行项目脚本，配置默�
   writeFileSync(join(root, 'firestore.rules'), 'service cloud.firestore { match /documents/{id} { allow write: if true; } }')
   writeFileSync(join(root, 'canship.config.json'), JSON.stringify({ skip: ['firebase'] }))
   writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { preinstall: 'exit 77', test: 'exit 88' } }))
-  const repository = dirname(dirname(fileURLToPath(import.meta.url)))
-  const entry = join(repository, 'src', 'cli.ts')
-  const dependencies = {
-    installScanner: () => entry,
-    execute: (command: string, args: string[]) => spawnSync(command, ['--import', 'tsx', ...args], {
-      cwd: repository, encoding: 'utf8', timeout: 30_000,
-    }),
-  }
   const env = environment({ INPUT_PATH: 'source-app', INPUT_VERSION: '0.0.0-dev', INPUT_UPLOAD_SARIF: 'true' })
-  assert.equal(runAction(env, dependencies).failed, true)
+  assert.equal(runAction(env, sourceDependencies).failed, true)
   const output = readFileSync(env.GITHUB_OUTPUT!, 'utf8')
   const sarifFile = /^sarif-file=(.+)$/m.exec(output)![1]!
   const sarif = JSON.parse(readFileSync(sarifFile, 'utf8'))
   assert.equal(sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri, 'source-app/firestore.rules')
-  assert.equal(runAction(environment({ ...env, INPUT_USE_CONFIG: 'true' }), dependencies).findings, 0)
+  assert.equal(runAction(environment({ ...env, INPUT_USE_CONFIG: 'true' }), sourceDependencies).findings, 0)
+})
+
+test('基线仅抑制已有问题，新增问题仍阻断并保留统计', async () => {
+  const root = project('baseline-app', { 'firestore.rules': openRules })
+  writeFileSync(join(root, 'baseline.json'), serializeBaseline(buildBaseline((await scan(root)).findings)))
+  const settings = { INPUT_PATH: 'baseline-app', INPUT_VERSION: '0.0.0-dev', INPUT_BASELINE: 'baseline.json' }
+  const accepted = environment(settings)
+  assert.equal(runAction(accepted, sourceDependencies).failed, false)
+  assert.match(readFileSync(accepted.GITHUB_STEP_SUMMARY!, 'utf8'), /Baseline-suppressed findings \| 1/)
+  writeFileSync(join(root, 'storage.rules'), openRules)
+  const added = environment(settings)
+  const outcome = runAction(added, sourceDependencies)
+  assert.equal(outcome.failed, true)
+  assert.equal(outcome.findings, 1)
+  assert.equal(outcome.blocking, 1)
+  assert.match(readFileSync(added.GITHUB_STEP_SUMMARY!, 'utf8'), /Baseline-suppressed findings \| 1/)
+})
+
+test('损坏基线作为报告失败，不能被 none 策略放行', () => {
+  project('broken-baseline-app', { 'index.ts': 'export const ok = true;', 'baseline.json': '{' })
+  const env = environment({ INPUT_PATH: 'broken-baseline-app', INPUT_VERSION: '0.0.0-dev',
+    INPUT_BASELINE: 'baseline.json', INPUT_FAIL_ON: 'none' })
+  assert.throws(() => runAction(env, sourceDependencies), (error: unknown) => {
+    assert.equal(describeActionError(error).stage, 'report')
+    return true
+  })
+  assert.equal(existsSync(env.GITHUB_OUTPUT!), false)
+})
+
+test('真实扫描存在结果且覆盖不完整时，none 策略仍失败', () => {
+  project('partial-app', { 'firestore.rules': openRules, 'large.ts': ' '.repeat(2 * 1024 * 1024 + 1) })
+  const env = environment({ INPUT_PATH: 'partial-app', INPUT_VERSION: '0.0.0-dev', INPUT_FAIL_ON: 'none' })
+  const outcome = runAction(env, sourceDependencies)
+  assert.deepEqual(outcome, { findings: 1, blocking: 1, partial: true, failed: true })
+  assert.match(readFileSync(env.GITHUB_OUTPUT!, 'utf8'), /exit-code=1/)
+  assert.match(readFileSync(env.GITHUB_STEP_SUMMARY!, 'utf8'), /Coverage: \*\*incomplete\*\*/)
+})
+
+test('多个子应用各自产生独立 SARIF，并保留编码后的仓库路径和行号', () => {
+  const paths: string[] = []
+  for (const name of ['apps/first app', 'apps/second app']) {
+    project(name, { 'firestore.rules': openRules })
+    const env = environment({ INPUT_PATH: name, INPUT_VERSION: '0.0.0-dev', INPUT_UPLOAD_SARIF: 'true',
+      INPUT_CATEGORY: name.replaceAll(' ', '-') })
+    assert.equal(runAction(env, sourceDependencies).blocking, 1)
+    const sarifPath = /^sarif-file=(.+)$/m.exec(readFileSync(env.GITHUB_OUTPUT!, 'utf8'))![1]!
+    paths.push(sarifPath)
+    const log = JSON.parse(readFileSync(sarifPath, 'utf8'))
+    const location = log.runs[0].results[0].locations[0].physicalLocation
+    assert.equal(location.artifactLocation.uri, `${name.replaceAll(' ', '%20')}/firestore.rules`)
+    assert.equal(location.region.startLine, 1)
+  }
+  assert.notEqual(paths[0], paths[1])
+})
+
+test('诊断不接受伪造消息或未经允许的阶段文本', () => {
+  const error = new ActionError('install')
+  error.message = 'PRIVATE_RAW_ERROR'
+  for (const value of [error, new Error('PRIVATE_RAW_ERROR'), { stage: 'PRIVATE_STAGE', message: 'PRIVATE_RAW_ERROR' }, new ActionError('PRIVATE_STAGE')]) {
+    assert.doesNotMatch(JSON.stringify(describeActionError(value)), /PRIVATE_/)
+  }
+  assert.equal(describeActionError(error).stage, 'install')
+})
+
+test('安装、执行、报告、SARIF 和输出失败分别提供固定阶段诊断', () => {
+  const executed = { status: 0, stdout: JSON.stringify(report()) }
+  const cases = [
+    { stage: 'install', env: environment(), dependencies: { installScanner: () => { throw new Error('PRIVATE_INSTALL') } } },
+    { stage: 'scan', env: environment(), dependencies: { installScanner: () => 'cli.js', execute: () => ({ status: null, error: new Error('PRIVATE_SCAN') }) } },
+    { stage: 'report', env: environment(), dependencies: { installScanner: () => 'cli.js', execute: () => ({ status: 0, stdout: 'PRIVATE_REPORT' }) } },
+    { stage: 'sarif', env: environment({ INPUT_UPLOAD_SARIF: 'true' }), dependencies: { installScanner: () => 'cli.js', execute: () => executed } },
+    { stage: 'output', env: environment({ GITHUB_OUTPUT: workspace }), dependencies: { installScanner: () => 'cli.js', execute: () => executed } },
+  ]
+  for (const item of cases) {
+    assert.throws(() => runAction(item.env, item.dependencies), (error: unknown) => {
+      const diagnostic = describeActionError(error)
+      assert.equal(diagnostic.stage, item.stage)
+      assert.doesNotMatch(JSON.stringify(diagnostic), /PRIVATE_|workspace|canship-action-test/)
+      return true
+    })
+  }
+})
+
+test('真实 Action 入口的输入错误返回失败并写摘要，不暴露原输入', () => {
+  const env = environment({ INPUT_VERSION: 'PRIVATE_INVALID_VERSION' })
+  const execution = spawnSync(process.execPath, [join(repository, 'action', 'run.mjs')], {
+    cwd: repository, env: { ...process.env, ...env }, encoding: 'utf8', timeout: 10_000,
+  })
+  assert.equal(execution.status, 1)
+  assert.match(execution.stderr, /canship \[input\]/)
+  const summary = readFileSync(env.GITHUB_STEP_SUMMARY!, 'utf8')
+  assert.match(summary, /Status: \*\*failed\*\*/)
+  assert.doesNotMatch(execution.stdout + execution.stderr + summary, /PRIVATE_INVALID_VERSION/)
+  assert.equal(existsSync(env.GITHUB_OUTPUT!), false)
 })
