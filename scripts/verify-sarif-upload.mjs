@@ -26,7 +26,8 @@ for (let attempt = 0; attempt < 6; attempt++) {
     const matching = alerts.filter(item => item.most_recent_instance?.commit_sha === GITHUB_SHA &&
       item.most_recent_instance?.location?.path === fixturePath &&
       item.rule?.id === 'firebase/open-rules')
-    if (matching.length === 2 && matching.every(item => item.most_recent_instance.location.start_line > 0)) {
+    const lines = matching.map(item => item.most_recent_instance.location.start_line).sort((a, b) => a - b)
+    if (matching.length === 2 && lines[0] === 7 && lines[1] === 11) {
       console.log('Verified: two intentional public-read fixture findings have repository paths and line numbers.')
       verified = true
       break

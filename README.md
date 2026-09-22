@@ -2,6 +2,8 @@
 
 A local static scanner for JavaScript and TypeScript projects. Detects exposed credentials and access-control misconfigurations without executing project code, uploading files, or making network requests during scans.
 
+This documentation covers 0.3.x. Use a matching [published version](https://www.npmjs.com/package/canship) or a local build.
+
 ```powershell
 npx canship .
 ```
@@ -89,11 +91,11 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@f10ba0d2d08d79ee354907fff0c0f646995b8c1f
+      - uses: Tasomei/canship@37cf06e014168968a88679157564e5c489f99c50
         with:
           version: '0.2.1'
 ```

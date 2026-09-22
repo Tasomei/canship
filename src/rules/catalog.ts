@@ -29,7 +29,7 @@ export const RULE_CATALOG: readonly RuleDescription[] = [
   rule('exposure/secret-in-public-env', 'Recognized secret in a public env variable', 'P0', 'certain',
     'Environment files using recognized public prefixes.', 'Credential validity and actual deployment are not verified.'),
   rule('exposure/supabase-service-role-in-client', 'Supabase admin credential exposed in source or public env', 'P0', 'certain',
-    'Recognized service_role JWT values in source or public environment variables.', 'Source presence is observable; actual browser delivery and key validity are not verified.'),
+    'Recognized service_role JWTs in source; Supabase admin credentials in public environment variables.', 'Source presence is observable; actual browser delivery and key validity are not verified.'),
   rule('firebase/open-rules', 'Unconditional Firebase access', 'P1', 'varies',
     'Firebase .rules files: unconditional writes are certain; public reads require review.', 'Public reads may be intentional; runtime rules and business authorization are not verified.'),
   rule('firebase/test-mode-rules', 'Date-based Firebase test rules', 'P1', 'certain',

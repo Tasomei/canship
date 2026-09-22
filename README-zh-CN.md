@@ -2,6 +2,8 @@
 
 面向 JavaScript / TypeScript 项目的本地静态扫描器，检测凭据暴露和访问控制配置错误。不执行项目代码，不上传文件，扫描过程不联网。
 
+本文档对应 0.3.x。请使用匹配的 [已发布版本](https://www.npmjs.com/package/canship) 或本地构建。
+
 ```powershell
 npx canship .
 ```
@@ -89,11 +91,11 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@f10ba0d2d08d79ee354907fff0c0f646995b8c1f
+      - uses: Tasomei/canship@37cf06e014168968a88679157564e5c489f99c50
         with:
           version: '0.2.1'
 ```
