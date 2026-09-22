@@ -44,6 +44,7 @@ Omitting the path scans the current directory.
 | `--only=ids` | Run matching rules; comma-separated and repeatable |
 | `--skip=ids` | Exclude matching rules; comma-separated and repeatable |
 | `--no-config` | Ignore project configuration |
+| `--list-rules` | List rule IDs, scope, and limits without scanning; supports `--json` |
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show version |
 

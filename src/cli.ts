@@ -21,6 +21,7 @@ import {
 } from './baseline.js'
 import { ConfigError, CONFIG_FILENAME, loadConfig } from './config.js'
 import { isKnownSelector } from './rules/index.js'
+import { RULE_CATALOG, renderRuleCatalog } from './rules/catalog.js'
 
 /** 构建时从包信息注入版本；源码运行使用开发版本。 */
 declare const __CANSHIP_VERSION__: string | undefined
@@ -50,6 +51,7 @@ interface Args {
   noConfig: boolean
   help: boolean
   version: boolean
+  listRules: boolean
 }
 
 /** 清理参数错误信息并以工具错误退出。 */
@@ -133,6 +135,7 @@ function parseArgs(argv: string[]): Args {
     noConfig: false,
     help: false,
     version: false,
+    listRules: false,
   }
   const positional: string[] = []
 
@@ -206,6 +209,9 @@ function parseArgs(argv: string[]): Args {
       case '--no-config':
         args.noConfig = true
         break
+      case '--list-rules':
+        args.listRules = true
+        break
       case '--help':
       case '-h':
         args.help = true
@@ -250,6 +256,7 @@ const HELP = `
         --sarif[=F]   Write a SARIF 2.1.0 log for CI code scanning
                       (default canship.sarif)
         --no-config   Ignore canship.config.json in the scanned directory
+        --list-rules  List rule IDs, scope, and limits; add --json for structured output
     -h, --help        Show this help
     -v, --version     Show version
 
@@ -278,6 +285,16 @@ async function main(): Promise<void> {
   if (args.version) {
     process.stdout.write(`${VERSION}\n`)
     return process.exit(0)
+  }
+
+  if (args.listRules) {
+    if (process.argv.slice(2).some(arg => arg !== '--list-rules' && arg !== '--json')) {
+      argumentError('--list-rules only supports --json; scan options and paths cannot be combined with it')
+    }
+    process.stdout.write(args.json
+      ? `${JSON.stringify({ schemaVersion: 1, kind: 'rule-catalog', version: VERSION, rules: RULE_CATALOG }, null, 2)}\n`
+      : renderRuleCatalog())
+    return
   }
 
   if (args.json && args.fixPrompt) {
