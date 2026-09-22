@@ -171,8 +171,8 @@ npm run prepublishOnly
 npm run evaluate
 ```
 
-17 个用例覆盖跨文件 API 鉴权、工作区路由、RLS 迁移重放、Firebase 规则、CORS 及扫描完整性。其中 10 个为人工构造，7 个基于固定版本的 Supabase、Firebase 和 Next.js 示例片段及人为变体；来源和许可证保存在 `test/fixtures/evaluation/`。评估比较规则、文件、严重度、置信度和完整性，列出漏报及额外结果；不验证整个上游应用，也不代表真实项目检出率。用例同时纳入 `npm test`。
+19 个用例覆盖跨文件 API 鉴权、工作区路由、RLS 迁移重放、Firebase 规则、CORS 及扫描完整性。其中 10 个为人工构造，9 个基于固定版本的 Supabase、Firebase、Next.js 和 Express `cors` 示例片段及人为变体；来源和许可证保存在 `test/fixtures/evaluation/`。评估比较规则、文件、严重度、置信度和完整性，列出漏报及额外结果；不验证整个上游应用，也不代表真实项目检出率。用例同时纳入 `npm test`。
 
 ## 许可
 
-[MIT](./LICENSE)。Supabase、Firebase 测试样本保留 Apache-2.0 许可，Next.js 样本保留 MIT 许可；各样本目录附许可证及来源记录。
+[MIT](./LICENSE)。Supabase、Firebase 测试样本保留 Apache-2.0 许可，Next.js、`cors` 样本保留 MIT 许可；各样本目录附许可证及来源记录。

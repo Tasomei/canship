@@ -22,6 +22,7 @@ const migration = readFileSync(new URL('../fixtures/evaluation/supabase-profiles
 const migrationPath = 'supabase/migrations/20221017024722_init.sql'
 const fixture = (path: string) => readFileSync(new URL(`../fixtures/evaluation/${path}`, import.meta.url), 'utf8')
 const firebaseQuickstart = fixture('firebase-quickstart/firestore.rules')
+const dynamicCors = fixture('express-cors/dynamic.js')
 const nextjsFiles = Object.fromEntries(['client.ts', 'server.ts', 'proxy.ts'].map(name => [
   `lib/supabase/${name}`, fixture(`nextjs-supabase/lib/supabase/${name}`),
 ]))
@@ -40,6 +41,15 @@ const finding = (ruleId: string, file: string, severity: Severity = 'P1', confid
   ({ ruleId, file, severity, confidence })
 
 export const evaluationCases: readonly EvaluationCase[] = [
+  {
+    id: 'express-upstream-separate-public-and-auth-options', origin: 'upstream-derived',
+    files: { 'server.js': dynamicCors }, expected: [],
+  },
+  {
+    id: 'express-upstream-reflected-auth-options', origin: 'mutated-upstream',
+    files: { 'server.js': replaceExpected(dynamicCors, "origin: 'http://mydomain.com'", 'origin: true', 1) },
+    expected: [finding('cors/reflected-origin-with-credentials', 'server.js')],
+  },
   {
     id: 'firebase-quickstart-public-read-authenticated-write', origin: 'upstream-derived',
     files: { 'firestore.rules': firebaseQuickstart },

@@ -50,3 +50,21 @@ test('长表达式中的重复响应头字样不会反复遍历剩余全文', ()
   assert.deepEqual(check(content), [])
   assert.ok(performance.now() - started < 5000)
 })
+
+for (const fixed of ["'https://app.example.com'", 'false', 'ALLOWED', '[\'https://app.example.com\']']) {
+  test(`其他对象的通配符不能与当前配置的凭据配对：${fixed}`, () => {
+    assert.deepEqual(check(`const privateOptions = { origin: ${fixed}, credentials: true }; const publicOptions = { origin: '*' }; app.use(cors(privateOptions));`), [])
+  })
+}
+test('同一行的独立配置不会互相隐藏真实回显', () => {
+  const findings = check("app.use(cors({origin: true, credentials: true})); app.use(cors({origin: 'https://app.example.com'}));")
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0]?.ruleId, 'cors/reflected-origin-with-credentials')
+})
+test('对象方法回调与同一对象的凭据仍可配对', () => {
+  const findings = check("app.use(cors({origin(value, cb) { cb(null, true) }, credentials: true}));")
+  assert.equal(findings[0]?.ruleId, 'cors/reflected-origin-with-credentials')
+})
+test('受控回调不借用其他对象中的通配符', () => {
+  assert.deepEqual(check("app.use(cors({origin(value, cb) { if (ALLOWED.includes(value)) cb(null, true) }, credentials: true})); const publicOptions = {origin:'*'};"), [])
+})

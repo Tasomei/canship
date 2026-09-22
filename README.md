@@ -171,8 +171,8 @@ Run the offline starter evaluation:
 npm run evaluate
 ```
 
-The 17 cases cover cross-file API authentication, workspace routing, RLS migration replay, Firebase rules, CORS, and incomplete scans. Ten are synthetic; seven use fixed subsets of Supabase, Firebase, and Next.js examples, including deliberate mutations. Sources and licences are recorded under `test/fixtures/evaluation/`. Results compare rule, file, severity, confidence, and coverage, reporting missing and unexpected findings. These subsets do not validate complete applications or estimate real-world accuracy. Cases also run in `npm test`.
+The 19 cases cover cross-file API authentication, workspace routing, RLS migration replay, Firebase rules, CORS, and incomplete scans. Ten are synthetic; nine use fixed subsets of Supabase, Firebase, Next.js, and Express `cors` examples, including deliberate mutations. Sources and licences are recorded under `test/fixtures/evaluation/`. Results compare rule, file, severity, confidence, and coverage, reporting missing and unexpected findings. These subsets do not validate complete applications or estimate real-world accuracy. Cases also run in `npm test`.
 
 ## License
 
-[MIT](./LICENSE). Supabase and Firebase test fixtures retain their Apache-2.0 licences; the Next.js fixtures retain MIT. Each fixture directory includes its licence and source record.
+[MIT](./LICENSE). Supabase and Firebase test fixtures retain Apache-2.0; Next.js and `cors` fixtures retain MIT. Each fixture directory includes its licence and source record.

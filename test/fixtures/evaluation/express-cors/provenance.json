@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/expressjs/cors",
+  "revision": "5317ebe670db2aaebc1d496eb5d33493deefb3ed",
+  "license": "MIT",
+  "scope": "One README JavaScript example: Customizing CORS Settings Dynamically per Request; not a running service.",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "b4970593501025a64b7d08e1cb97c0cca8ece57ba5ce04ba2f4b14362f829b02",
+      "section": "Customizing CORS Settings Dynamically per Request"
+    }
+  ],
+  "changes": [
+    "Extracted the JavaScript example and replaced explanatory comments with Chinese comments; executable statements unchanged."
+  ]
+}

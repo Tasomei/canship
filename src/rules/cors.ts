@@ -1,7 +1,7 @@
 /** 检测携带凭据的跨域来源回显及通配符配置。 */
 
 import type { Finding, Rule, ScanFile } from '../types.js'
-import { commentsMaskedOf } from '../mask.js'
+import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
 
 /** 仅处理设置相关响应头或跨域选项的文件。 */
@@ -35,8 +35,8 @@ function headerExpression(content: string, start: number): string {
   return content.slice(start, end)
 }
 
-/** 跨域选项可直接指定来源回显或通配符。 */
-const CORS_ORIGIN_OPTION = /\borigin\s*:\s*(true|['"`]\*['"`])/gi
+/** 保留固定来源及未知值，避免将其他配置的通配符与当前凭据配对。 */
+const CORS_ORIGIN_OPTION = /\borigin\s*:\s*/gi
 
 /** 识别通过回调无条件放行来源的配置。 */
 const CORS_ORIGIN_PROPERTY_START =
@@ -47,6 +47,8 @@ const CORS_ORIGIN_METHOD_START = /\borigin\s*\(/gi
 
 interface OriginCallback {
   index: number
+  parametersStart: number
+  parametersEnd: number
   params: string
   body: string
 }
@@ -100,6 +102,8 @@ function readOriginCallback(
 
   return {
     index: match.index,
+    parametersStart: open + 1,
+    parametersEnd: close,
     params: content.slice(open + 1, close),
     body: content.slice(bodyStart, bodyStart + 400),
   }
@@ -247,8 +251,35 @@ const PAIRING_DISTANCE = 25
 
 interface OriginMark {
   line: number
+  at: number
+  mode: 'header' | 'option'
   kind: OriginKind
   excerpt: string
+}
+
+interface CredentialMark {
+  line: number
+  at: number
+  mode: 'header' | 'option'
+}
+
+/** 对象选项仅在同一花括号作用域配对；单次遍历处理全部标记。 */
+function optionScopes(file: ScanFile, positions: number[]): Map<number, number> {
+  const scopes = new Map<number, number>()
+  const wanted = [...new Set(positions)].sort((a, b) => a - b)
+  if (wanted.length === 0) return scopes
+  const content = noiseMaskedOf(file)
+  const stack: number[] = [-1]
+  let next = 0
+  for (let at = 0; at < content.length && next < wanted.length; at++) {
+    if (at === wanted[next]) {
+      scopes.set(at, stack[stack.length - 1]!)
+      next++
+    }
+    if (content[at] === '{') stack.push(at)
+    else if (content[at] === '}' && stack.length > 1) stack.pop()
+  }
+  return scopes
 }
 
 function collectOrigins(file: ScanFile): OriginMark[] {
@@ -258,6 +289,10 @@ function collectOrigins(file: ScanFile): OriginMark[] {
   const content = commentsMaskedOf(file)
   // 每个文件只构建一次行号索引。
   const contentLines = lineStartsOf(content)
+  const callbacks = originCallbacks(content)
+  const callbackIndices = new Set(callbacks.map(callback => callback.index))
+  const parameterRanges = [...callbacks].sort((a, b) => a.parametersStart - b.parametersStart)
+  let parameterRange = 0
 
   ACAO.lastIndex = 0
   while ((m = ACAO.exec(content)) !== null) {
@@ -265,44 +300,52 @@ function collectOrigins(file: ScanFile): OriginMark[] {
     const expression = headerExpression(content, ACAO.lastIndex)
     // 不重复遍历表达式内部的响应头字样，保持单次线性读取。
     ACAO.lastIndex += expression.length
-    marks.push({ line, kind: classifyOrigin(expression), excerpt: (file.lines[line - 1] ?? '').trim() })
+    marks.push({ line, at: m.index, mode: 'header', kind: classifyOrigin(expression), excerpt: (file.lines[line - 1] ?? '').trim() })
   }
 
   CORS_ORIGIN_OPTION.lastIndex = 0
   while ((m = CORS_ORIGIN_OPTION.exec(content)) !== null) {
+    // 回调参数的类型注解不是配置属性，例如 origin: string。
+    while (parameterRange < parameterRanges.length && parameterRanges[parameterRange]!.parametersEnd < m.index) parameterRange++
+    if (parameterRanges[parameterRange] && parameterRanges[parameterRange]!.parametersStart <= m.index) continue
+    // 回调属性由下方的参数及函数体分析统一处理。
+    if (callbackIndices.has(m.index)) continue
     const line = lineNumberAt(contentLines, m.index)
-    // 真值表示回显来源，星号表示通配符。
+    const expression = headerExpression(content, CORS_ORIGIN_OPTION.lastIndex)
+    CORS_ORIGIN_OPTION.lastIndex += expression.length
     marks.push({
       line,
-      kind: (m[1] ?? '') === 'true' ? 'reflected' : 'wildcard',
+      at: m.index,
+      mode: 'option',
+      kind: expression.trim() === 'true' ? 'reflected' : classifyOrigin(expression),
       excerpt: (file.lines[line - 1] ?? '').trim(),
     })
   }
 
-  for (const callback of originCallbacks(content)) {
+  for (const callback of callbacks) {
     const answer = callbackAnswer(callback.params, callback.body)
-    if (answer === null) continue
-    // 回调前存在允许列表判断时不按无条件开放处理。
-    if (ORIGIN_IS_CHECKED.test(callback.body.slice(0, answer.index))) continue
+    // 受控或未知回调仍占据当前来源位置，不能由其他配置代替。
+    const kind = answer !== null && !ORIGIN_IS_CHECKED.test(callback.body.slice(0, answer.index))
+      ? answer.kind : 'unknown'
     const line = lineNumberAt(contentLines, callback.index)
-    marks.push({ line, kind: answer.kind, excerpt: (file.lines[line - 1] ?? '').trim() })
+    marks.push({ line, at: callback.index, mode: 'option', kind, excerpt: (file.lines[line - 1] ?? '').trim() })
   }
 
   return marks
 }
 
-function collectCredentialLines(file: ScanFile): number[] {
-  const lines: number[] = []
+function collectCredentialLines(file: ScanFile): CredentialMark[] {
+  const lines: CredentialMark[] = []
   let m: RegExpExecArray | null
   const content = commentsMaskedOf(file)
   // 每个文件只构建一次行号索引。
   const contentLines = lineStartsOf(content)
 
   ACAC_HEADER.lastIndex = 0
-  while ((m = ACAC_HEADER.exec(content)) !== null) lines.push(lineNumberAt(contentLines, m.index))
+  while ((m = ACAC_HEADER.exec(content)) !== null) lines.push({ line: lineNumberAt(contentLines, m.index), at: m.index, mode: 'header' })
 
   CORS_CREDENTIALS_OPTION.lastIndex = 0
-  while ((m = CORS_CREDENTIALS_OPTION.exec(content)) !== null) lines.push(lineNumberAt(contentLines, m.index))
+  while ((m = CORS_CREDENTIALS_OPTION.exec(content)) !== null) lines.push({ line: lineNumberAt(contentLines, m.index), at: m.index, mode: 'option' })
 
   return lines
 }
@@ -340,13 +383,17 @@ export const corsRule: Rule = {
 
     const origins = collectOrigins(file)
     if (origins.length === 0) return []
+    const scopes = optionScopes(file, [...origins, ...credentialLines]
+      .filter(mark => mark.mode === 'option').map(mark => mark.at))
 
     const findings: Finding[] = []
     // 每类配置问题在同一文件中只报告一次。
     const reported = new Set<OriginKind>()
 
-    for (const credLine of credentialLines) {
-      const origin = nearestOrigin(origins, credLine)
+    for (const credential of credentialLines) {
+      const candidates = origins.filter(origin => origin.mode === credential.mode &&
+        (credential.mode === 'header' || scopes.get(origin.at) === scopes.get(credential.at)))
+      const origin = nearestOrigin(candidates, credential.line)
       if (!origin) continue
       if (origin.kind !== 'reflected' && origin.kind !== 'wildcard') continue
       if (reported.has(origin.kind)) continue
