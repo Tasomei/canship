@@ -10,6 +10,46 @@ permissions:
   contents: read
 
 jobs:
+  # 验证组合 Action 的安装、摘要和失败策略；不上传报告。
+  action-smoke:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Create isolated scan targets
+        shell: bash
+        run: |
+          node --input-type=module -e "
+            import { mkdirSync, writeFileSync } from 'node:fs';
+            for (const name of ['clean', 'open']) mkdirSync('action-smoke/' + name, { recursive: true });
+            writeFileSync('action-smoke/clean/index.ts', 'export const ready = true;');
+            writeFileSync('action-smoke/open/firestore.rules', 'service cloud.firestore { match /documents/{id} { allow write: if true; } }');
+          "
+      - name: Clean target passes
+        uses: ./
+        with:
+          path: action-smoke/clean
+          fail-on: any
+      - name: Open rules fail
+        id: open
+        continue-on-error: true
+        uses: ./
+        with:
+          path: action-smoke/open
+      - name: Check blocking outcome
+        if: ${{ steps.open.outcome != 'failure' || steps.open.outputs.exit-code != '1' || steps.open.outputs.blocking != '1' }}
+        shell: bash
+        run: exit 1
+
   # 在支持测试加载方式的 Node 版本上执行完整检查。
   check:
     runs-on: ${{ matrix.os }}

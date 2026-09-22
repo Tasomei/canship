@@ -60,6 +60,53 @@ Omitting the path scans the current directory.
 
 Findings take precedence over incompleteness; `--best-effort` does not change `1` or `2`. JSON retains `partial`, `errors`, and `skipped`; SARIF includes execution status and diagnostic notifications.
 
+### JSON contract
+
+JSON includes `schemaVersion: 1`, independent of the package `version`. Consumers should accept additive fields and reject unsupported schema versions. Published 0.2.1 reports omit `schemaVersion`; the Action also accepts that legacy format.
+
+`findings` contains visible results after suppressions. `hiddenLikely`, `baselineSuppressed`, and `baselineStale` retain filtering counts. Check `partial`, `errors`, `skipped`, and `filesScanned` separately from findings and the exit code.
+
+## GitHub Action
+
+The Action installs a fixed npm release, scans the checkout without installing or running its dependencies, and writes a counts-only job summary. Package installation requires network access; scanning does not. SARIF upload is disabled by default.
+
+`version` selects the published scanner, not the source in the Action commit. Local fixes require a new npm release before the Action can use them.
+
+Replace `REVIEWED_ACTION_COMMIT` with a reviewed commit containing `action.yml`; this is a placeholder, not a release tag.
+
+```yaml
+name: canship
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Tasomei/canship@REVIEWED_ACTION_COMMIT
+        with:
+          version: '0.2.1'
+```
+
+| Input | Default | Meaning |
+|---|---|---|
+| `path` | `.` | Directory within the checkout |
+| `version` | `0.2.1` | Exact npm version; no ranges or tags |
+| `fail-on` | `blocking` | `blocking`: certain P0/P1; `any`: all findings; `none`: findings only reported |
+| `only` / `skip` | unset | Mutually exclusive, comma-separated rule selectors |
+| `baseline` | unset | Existing baseline relative to the scanned directory |
+| `use-config` | `false` | Enable project configuration |
+| `upload-sarif` | `false` | Upload SARIF to GitHub code scanning |
+| `category` | `canship` | Distinct SARIF category for each scan target |
+
+Incomplete scans, tool errors, and incompatible reports always fail, including with `fail-on: none`. Outputs: `exit-code`, `findings`, `blocking`, `partial`. All confidence levels participate in the selected policy. Baselines, source ignore markers, and built-in exclusions still apply; review them as part of the scan scope.
+
+SARIF upload requires `security-events: write` and a repository eligible for [GitHub code scanning](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file). Fork pull requests may lack upload permission. Reports disclose paths and finding details; review disclosure risks before enabling upload. Use `pull_request`, not `pull_request_target`, for untrusted contributions. The Action sets Node.js 22 for subsequent steps; use a separate scan job if the project needs another runtime.
+
 ## Configuration and suppressions
 
 Place `canship.config.json` in the scanned directory. Supported keys: `baseline`, `only`, `skip`, `all`.
@@ -120,6 +167,14 @@ npm ci
 npm run prepublishOnly
 ```
 
+Run the offline starter evaluation:
+
+```powershell
+npm run evaluate
+```
+
+The 12 cases cover cross-file API authentication, workspace routing, RLS migration replay, Firebase rules, CORS, and incomplete scans. Ten are synthetic; two use one adapted Supabase migration, with a pinned revision and licence under `test/fixtures/evaluation/`. Results compare rule, file, severity, confidence, and coverage, reporting missing and unexpected findings. This is a regression corpus, not a real-world accuracy estimate. Cases also run in `npm test`.
+
 ## License
 
-[MIT](./LICENSE)
+[MIT](./LICENSE). The upstream-derived evaluation fixture retains its Apache-2.0 licence.

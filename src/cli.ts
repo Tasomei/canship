@@ -8,6 +8,7 @@ import { renderReport } from './report/terminal.js'
 import { renderFixPrompt } from './report/prompt.js'
 import { renderHtml } from './report/html.js'
 import { renderSarif } from './report/sarif.js'
+import { createJsonReport } from './report/json.js'
 import { bold, cyan, dim, red, yellow } from './colors.js'
 import { verdictOf } from './report/shared.js'
 import {
@@ -424,26 +425,13 @@ async function main(): Promise<void> {
   } else if (args.json) {
     process.stdout.write(
       `${JSON.stringify(
-        {
+        createJsonReport({ ...result, findings: shown }, {
           version: VERSION,
           root: displayRoot,
-          filesScanned: result.filesScanned,
-          durationMs: result.durationMs,
-          // 空结果不能掩盖扫描未完成。
-          partial: result.partial,
-          errors: result.errors,
-          skipped: result.skipped,
-          ignored: result.ignored,
-          ignoredFindings: result.ignoredFindings,
-          ruleSelection: result.ruleSelection,
-          vendored: result.vendored,
-          // 隐藏详情时仍披露疑似结果数量。
           hiddenLikely,
-          // 明确披露基线抑制和过期条目数量。
           baselineSuppressed,
           baselineStale,
-          findings: shown,
-        },
+        }),
         null,
         2,
       )}\n`,

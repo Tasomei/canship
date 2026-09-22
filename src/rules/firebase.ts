@@ -8,10 +8,7 @@ import { MAX_FINDINGS_PER_FILE } from './limits.js'
 
 /** 判断是否为 Firebase 规则文件。 */
 function isRulesFile(file: ScanFile): boolean {
-  const name = basename(file.path).toLowerCase()
-  if (name.endsWith('.rules')) return true
-  // 识别默认规则文件名及规则扩展名。
-  return name === 'firestore.rules' || name === 'storage.rules'
+  return basename(file.path).toLowerCase().endsWith('.rules')
 }
 
 /** 根据文件路径确定规则产品名称。 */

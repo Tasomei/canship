@@ -8,8 +8,32 @@ import { lineNumberAt, lineStartsOf } from './offsets.js'
 const CORS_MARKER = /Access-Control-Allow-Origin|\bcors\s*\(/i
 
 /** 识别方法调用、对象属性和键值配置中的来源响应头。 */
-/** 保留整行表达式，以区分来源回显和条件选择。 */
-const ACAO = /['"]Access-Control-Allow-Origin['"]\s*(?:,|:)\s*(?:value\s*:\s*)?([^\n]+)/gi
+const ACAO = /['"]Access-Control-Allow-Origin['"]\s*(?:,|:)\s*(?:value\s*:\s*)?/gi
+
+/** 按括号和引号提取单个值，避免包含同行后续属性或调用。 */
+function headerExpression(content: string, start: number): string {
+  const closes: string[] = []
+  let quote: string | null = null
+  let end = start
+  for (; end < content.length; end++) {
+    const ch = content[end]!
+    if (ch === '\n' || ch === '\r') break
+    if (quote !== null) {
+      if (ch === '\\') end++
+      else if (ch === quote) quote = null
+      continue
+    }
+    if (ch === "'" || ch === '"' || ch === '`') quote = ch
+    else if (ch === '(') closes.push(')')
+    else if (ch === '[') closes.push(']')
+    else if (ch === '{') closes.push('}')
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      if (closes.at(-1) !== ch) break
+      closes.pop()
+    } else if (closes.length === 0 && (ch === ',' || ch === ';')) break
+  }
+  return content.slice(start, end)
+}
 
 /** 跨域选项可直接指定来源回显或通配符。 */
 const CORS_ORIGIN_OPTION = /\borigin\s*:\s*(true|['"`]\*['"`])/gi
@@ -238,7 +262,10 @@ function collectOrigins(file: ScanFile): OriginMark[] {
   ACAO.lastIndex = 0
   while ((m = ACAO.exec(content)) !== null) {
     const line = lineNumberAt(contentLines, m.index)
-    marks.push({ line, kind: classifyOrigin(m[1] ?? ''), excerpt: (file.lines[line - 1] ?? '').trim() })
+    const expression = headerExpression(content, ACAO.lastIndex)
+    // 不重复遍历表达式内部的响应头字样，保持单次线性读取。
+    ACAO.lastIndex += expression.length
+    marks.push({ line, kind: classifyOrigin(expression), excerpt: (file.lines[line - 1] ?? '').trim() })
   }
 
   CORS_ORIGIN_OPTION.lastIndex = 0

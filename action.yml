@@ -1,0 +1,77 @@
+name: canship
+description: Scan local JS/TS projects for exposed credentials and access-control misconfigurations.
+branding:
+  icon: shield
+  color: blue
+inputs:
+  path:
+    description: Project directory relative to the checkout.
+    default: '.'
+  version:
+    description: Exact canship npm version; ranges and tags are not accepted.
+    default: '0.2.1'
+  fail-on:
+    description: 'Finding policy: blocking, any, or none. Incomplete scans and tool errors always fail.'
+    default: blocking
+  only:
+    description: Comma-separated rule IDs or namespaces; mutually exclusive with skip.
+  skip:
+    description: Comma-separated rule IDs or namespaces to exclude.
+  baseline:
+    description: Existing baseline file relative to the scanned directory.
+  use-config:
+    description: Read canship.config.json from the scanned directory.
+    default: 'false'
+  upload-sarif:
+    description: Upload SARIF to GitHub code scanning; requires security-events write permission.
+    default: 'false'
+  category:
+    description: Unique SARIF category for this scan target.
+    default: canship
+outputs:
+  exit-code:
+    description: Scanner exit code.
+    value: ${{ steps.scan.outputs.exit-code }}
+  findings:
+    description: Findings after suppressions, including likely findings.
+    value: ${{ steps.scan.outputs.findings }}
+  blocking:
+    description: Certain P0/P1 findings.
+    value: ${{ steps.scan.outputs.blocking }}
+  partial:
+    description: Whether coverage was incomplete.
+    value: ${{ steps.scan.outputs.partial }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # 固定 v6 提交
+      with:
+        node-version: '22'
+        package-manager-cache: false
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        CANSHIP_ACTION_PATH: ${{ github.action_path }}
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_ONLY: ${{ inputs.only }}
+        INPUT_SKIP: ${{ inputs.skip }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_USE_CONFIG: ${{ inputs.use-config }}
+        INPUT_UPLOAD_SARIF: ${{ inputs.upload-sarif }}
+        INPUT_CATEGORY: ${{ inputs.category }}
+      run: node "$CANSHIP_ACTION_PATH/action/run.mjs"
+    - name: Upload SARIF
+      if: ${{ !cancelled() && inputs.upload-sarif == 'true' && steps.scan.outputs.report-ready == 'true' }}
+      uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # 固定 v4 提交
+      with:
+        sarif_file: ${{ steps.scan.outputs.sarif-file }}
+        category: ${{ inputs.category }}
+    - name: Enforce scan policy
+      if: ${{ !cancelled() && steps.scan.outputs.failed == 'true' }}
+      shell: bash
+      run: |
+        echo '::error::canship failed its scan policy. See the job summary.'
+        exit 1

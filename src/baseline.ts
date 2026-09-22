@@ -175,9 +175,10 @@ export function applyBaseline(findings: Finding[], baseline: BaselineFile): Base
   const kept: Finding[] = []
   let suppressed = 0
   for (const f of findings) {
-    const budget = remaining.get(fingerprintOf(f)) ?? 0
+    const fp = fingerprintOf(f)
+    const budget = remaining.get(fp) ?? 0
     if (budget > 0) {
-      remaining.set(fingerprintOf(f), budget - 1)
+      remaining.set(fp, budget - 1)
       suppressed++
       continue
     }

@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/supabase/supabase",
+  "revision": "a31ca2bad0a08a93fff0cf3744fd9ad03954808d",
+  "path": "examples/user-management/nextjs-user-management/supabase/migrations/20221017024722_init.sql",
+  "license": "Apache-2.0",
+  "scope": "single migration file; not a complete application",
+  "changes": [
+    "Replaced explanatory comments with Chinese comments; SQL unchanged."
+  ],
+  "mutation": "The disabled-RLS case appends a separate migration disabling profiles RLS."
+}

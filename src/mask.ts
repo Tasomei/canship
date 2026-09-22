@@ -60,76 +60,78 @@ function endOfString(src: string, start: number, quote: number): number {
   return length
 }
 
-/** 屏蔽模板文本并保留插值表达式。 */
-function maskTemplate(src: string, out: MaskBuffer, start: number): number {
-  const length = src.length
-  let i = start + 1
-  let literalFrom = i
+/** 模板与插值状态分开入栈，避免深层嵌套耗尽调用栈。 */
+type TemplateFrame =
+  | { kind: 'literal'; from: number }
+  | { kind: 'expression'; depth: number }
 
-  while (i < length) {
+/** 遍历模板；两种模式都屏蔽插值注释，仅完整掩码屏蔽字符串内容。 */
+function maskTemplate(src: string, out: MaskBuffer, start: number, maskStrings = true): number {
+  const length = src.length
+  const stack: TemplateFrame[] = [{ kind: 'literal', from: start + 1 }]
+  let i = start + 1
+
+  while (i < length && stack.length > 0) {
+    const frame = stack[stack.length - 1]!
     const ch = src.charCodeAt(i)
-    if (ch === BACKSLASH) {
-      i += 2
+    if (frame.kind === 'literal') {
+      if (ch === BACKSLASH) {
+        i = Math.min(i + 2, length)
+        continue
+      }
+      if (ch === BACKTICK) {
+        if (maskStrings) blank(out, frame.from, i)
+        stack.pop()
+        i++
+        continue
+      }
+      if (ch === DOLLAR && src.charCodeAt(i + 1) === OPEN_BRACE) {
+        if (maskStrings) blank(out, frame.from, i)
+        stack.push({ kind: 'expression', depth: 1 })
+        i += 2
+        continue
+      }
+      i++
+      continue
+    }
+
+    // 先跳过注释，注释中的引号和括号不参与边界判断。
+    if (ch === SLASH) {
+      const next = src.charCodeAt(i + 1)
+      if (next === SLASH || next === STAR) {
+        const close = next === SLASH ? src.indexOf('\n', i) : src.indexOf('*/', i + 2)
+        const stop = close === -1 ? length : close + (next === STAR ? 2 : 0)
+        blank(out, i, stop)
+        i = stop
+        continue
+      }
+    }
+    if (ch === DOUBLE_QUOTE || ch === SINGLE_QUOTE) {
+      const stop = endOfString(src, i, ch)
+      if (maskStrings) blank(out, i + 1, stop - 1)
+      i = stop
       continue
     }
     if (ch === BACKTICK) {
-      blank(out, literalFrom, i)
-      return i + 1
-    }
-    if (ch === DOLLAR && src.charCodeAt(i + 1) === OPEN_BRACE) {
-      blank(out, literalFrom, i)
-      // 递归处理插值中的字符串、注释和嵌套模板。
-      let depth = 0
-      let j = i + 1
-      while (j < length) {
-        const inner = src.charCodeAt(j)
-        if (inner === SLASH) {
-          const next = src.charCodeAt(j + 1)
-          if (next === SLASH) {
-            const end = src.indexOf('\n', j)
-            const stop = end === -1 ? length : end
-            blank(out, j, stop)
-            j = stop
-            continue
-          }
-          if (next === STAR) {
-            const close = src.indexOf('*/', j + 2)
-            const stop = close === -1 ? length : close + 2
-            blank(out, j, stop)
-            j = stop
-            continue
-          }
-        }
-        if (inner === DOUBLE_QUOTE || inner === SINGLE_QUOTE) {
-          const stop = endOfString(src, j, inner)
-          blank(out, j + 1, stop - 1)
-          j = stop
-          continue
-        }
-        if (inner === BACKTICK) {
-          // 嵌套模板仍需保留其中的表达式。
-          j = maskTemplate(src, out, j)
-          continue
-        }
-        if (inner === OPEN_BRACE) depth++
-        else if (inner === CLOSE_BRACE) {
-          depth--
-          if (depth === 0) {
-            j++
-            break
-          }
-        }
-        j++
-      }
-      i = j
-      literalFrom = i
+      stack.push({ kind: 'literal', from: i + 1 })
+      i++
       continue
+    }
+    if (ch === OPEN_BRACE) frame.depth++
+    else if (ch === CLOSE_BRACE) {
+      frame.depth--
+      if (frame.depth === 0) {
+        stack.pop()
+        const parent = stack[stack.length - 1]!
+        if (parent.kind === 'literal') parent.from = i + 1
+      }
     }
     i++
   }
 
-  blank(out, literalFrom, length)
-  return length
+  const last = stack[stack.length - 1]
+  if (maskStrings && last?.kind === 'literal') blank(out, last.from, length)
+  return i
 }
 
 /** 仅屏蔽注释，保留规则需要读取的字符串内容。 */
@@ -158,8 +160,12 @@ export function maskJsComments(src: string): string {
       }
     }
     // 跳过字符串，避免将 URL 中的斜杠误判为注释。
-    if (ch === DOUBLE_QUOTE || ch === SINGLE_QUOTE || ch === BACKTICK) {
+    if (ch === DOUBLE_QUOTE || ch === SINGLE_QUOTE) {
       i = endOfString(src, i, ch)
+      continue
+    }
+    if (ch === BACKTICK) {
+      i = maskTemplate(src, out, i, false)
       continue
     }
     i++

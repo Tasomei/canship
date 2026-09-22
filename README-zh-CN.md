@@ -60,6 +60,53 @@ npx canship .
 
 结果对应的退出码优先于不完整状态；`--best-effort` 不改变 `1` 或 `2`。JSON 用 `partial`、`errors`、`skipped` 保留完整性信息，SARIF 提供执行状态和诊断通知。
 
+### JSON 契约
+
+JSON 包含独立于软件包 `version` 的 `schemaVersion: 1`。调用方应兼容新增字段，拒绝不支持的结构版本。已发布的 0.2.1 不含此字段，Action 同时兼容该旧格式。
+
+`findings` 为抑制和可见性筛选后的结果；`hiddenLikely`、`baselineSuppressed`、`baselineStale` 保留筛选统计。应单独检查 `partial`、`errors`、`skipped` 和 `filesScanned`，不能仅凭结果或退出码判断完整性。
+
+## GitHub Action
+
+Action 安装指定 npm 版本，扫描检出目录并生成仅含统计的任务摘要，不安装或执行被扫描项目的依赖。安装需要联网，扫描不联网；默认不上传 SARIF。
+
+`version` 选择已发布的扫描器，不使用 Action 提交中的源码。本地修复需发布新的 npm 版本后才能用于 Action。
+
+将 `REVIEWED_ACTION_COMMIT` 替换为包含 `action.yml` 的已审阅提交；它是占位符，不是发布标签。
+
+```yaml
+name: canship
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Tasomei/canship@REVIEWED_ACTION_COMMIT
+        with:
+          version: '0.2.1'
+```
+
+| 输入 | 默认值 | 说明 |
+|---|---|---|
+| `path` | `.` | 检出目录内的扫描路径 |
+| `version` | `0.2.1` | 精确 npm 版本，不接受范围或标签 |
+| `fail-on` | `blocking` | `blocking`：确定的 P0/P1；`any`：全部结果；`none`：仅报告结果 |
+| `only` / `skip` | 未设置 | 互斥，逗号分隔的规则选择器 |
+| `baseline` | 未设置 | 相对扫描目录的已有基线 |
+| `use-config` | `false` | 启用项目配置 |
+| `upload-sarif` | `false` | 上传 SARIF 至 GitHub 代码扫描 |
+| `category` | `canship` | 每个扫描目标使用独立分类 |
+
+扫描不完整、工具错误或报告不兼容始终失败，`fail-on: none` 也不例外。输出为 `exit-code`、`findings`、`blocking`、`partial`，所有置信度均参与策略判定。基线、源码忽略标记和内置排除仍然生效，需一并审阅扫描范围。
+
+上传 SARIF 需要 `security-events: write`，且仓库须支持 [GitHub 代码扫描](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file)。Fork PR 可能没有上传权限。报告含路径及发现详情，启用上传前需评估披露风险。不可信贡献使用 `pull_request`，不要使用 `pull_request_target`。Action 会将后续步骤的 Node.js 设为 22；项目需要其他版本时，使用独立扫描任务。
+
 ## 配置与忽略
 
 扫描目录中的 `canship.config.json` 支持 `baseline`、`only`、`skip`、`all`：
@@ -120,6 +167,14 @@ npm ci
 npm run prepublishOnly
 ```
 
+运行离线初始评估集：
+
+```powershell
+npm run evaluate
+```
+
+12 个用例覆盖跨文件 API 鉴权、工作区路由、RLS 迁移重放、Firebase 规则、CORS 及扫描完整性。其中 10 个为人工构造，2 个基于同一份 Supabase 迁移文件改编，固定提交及许可证保存在 `test/fixtures/evaluation/`。评估比较规则、文件、严重度、置信度和完整性，列出漏报及额外结果；不代表真实项目检出率。用例同时纳入 `npm test`。
+
 ## 许可
 
-[MIT](./LICENSE)
+[MIT](./LICENSE)。上游改编评估夹具保留 Apache-2.0 许可证。
