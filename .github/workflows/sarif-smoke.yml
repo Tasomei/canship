@@ -1,0 +1,35 @@
+name: SARIF fixture validation
+
+# 仅工作流自身变更或手动操作触发，不上传日常扫描报告。
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/sarif-smoke.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upload-fixture:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Upload public fixture findings
+        uses: ./
+        with:
+          path: test/fixtures/evaluation/firebase-quickstart
+          only: firebase
+          fail-on: none
+          upload-sarif: 'true'
+          category: canship-fixture-validation
+      - name: Verify GitHub locations
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/verify-sarif-upload.mjs
