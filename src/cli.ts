@@ -55,10 +55,17 @@ interface Args {
   noExcerpts: boolean
 }
 
-/** 清理参数错误信息并以工具错误退出。 */
+/** 保留退出码，等待标准输出和错误输出写完后自然结束。 */
+function finish(code: number): void {
+  process.exitCode = code
+}
+
+/** 参数错误由入口统一输出，避免提前终止异步写入。 */
+class ArgumentError extends Error {}
+
+/** 清理参数错误并中止当前处理流程。 */
 function argumentError(message: string): never {
-  process.stderr.write(`canship: ${cleanForOutput(message)}\n`)
-  process.exit(3)
+  throw new ArgumentError(cleanForOutput(message))
 }
 
 /** 解析可选参数值，拒绝空路径。 */
@@ -286,11 +293,11 @@ async function main(): Promise<void> {
 
   if (args.help) {
     process.stdout.write(`${HELP}\n`)
-    return process.exit(0)
+    return finish(0)
   }
   if (args.version) {
     process.stdout.write(`${VERSION}\n`)
-    return process.exit(0)
+    return finish(0)
   }
 
   if (args.listRules) {
@@ -316,7 +323,7 @@ async function main(): Promise<void> {
 
   if (!existsSync(args.root) || !statSync(args.root).isDirectory()) {
     process.stderr.write(`${red('canship:')} not a directory: ${cleanForOutput(args.root)}\n`)
-    return process.exit(3)
+    return finish(3)
   }
 
   // 从扫描目录加载配置。
@@ -326,7 +333,7 @@ async function main(): Promise<void> {
   } catch (err) {
     if (err instanceof ConfigError) {
       process.stderr.write(`${red('canship:')} ${cleanForOutput(err.message)}\n`)
-      return process.exit(3)
+      return finish(3)
     }
     throw err
   }
@@ -378,7 +385,7 @@ async function main(): Promise<void> {
       process.stderr.write(
         `${red('canship:')} could not write baseline to ${cleanForOutput(target)}\n${cleanForOutput(String(err))}\n`,
       )
-      return process.exit(3)
+      return finish(3)
     }
     const accepted = scanned.findings.length
     // 基线仍披露未修复问题的位置和类型，写入时提示审阅。
@@ -403,7 +410,7 @@ async function main(): Promise<void> {
         `${yellow('canship:')} rule selection was in force, so this baseline covers only the rules that ran.\n`,
       )
     }
-    return process.exit(0)
+    return finish(0)
   }
 
   // 应用基线并统计抑制数量。
@@ -420,7 +427,7 @@ async function main(): Promise<void> {
     } catch (err) {
       if (err instanceof BaselineError) {
         process.stderr.write(`${red('canship:')} ${cleanForOutput(err.message)}\n`)
-        return process.exit(3)
+        return finish(3)
       }
       throw err
     }
@@ -503,7 +510,7 @@ async function main(): Promise<void> {
       process.stderr.write(
         `${red('canship:')} could not write SARIF to ${cleanForOutput(target)}\n${cleanForOutput(String(err))}\n`,
       )
-      return process.exit(3)
+      return finish(3)
     }
   }
 
@@ -533,19 +540,20 @@ async function main(): Promise<void> {
       process.stderr.write(
         `${red('canship:')} could not write report to ${cleanForOutput(target)}\n${cleanForOutput(String(err))}\n`,
       )
-      return process.exit(3)
+      return finish(3)
     }
   }
 
   // 严重确定结果优先，其次为其他结果，最后判断完整性。
-  if (verdictOf(result.findings).blocking > 0) return process.exit(1)
-  if (result.findings.length > 0) return process.exit(2)
+  if (verdictOf(result.findings).blocking > 0) return finish(1)
+  if (result.findings.length > 0) return finish(2)
   // 仅在无发现时按完整性决定退出状态。
-  if (result.partial && !bestEffort) return process.exit(3)
-  return process.exit(0)
+  if (result.partial && !bestEffort) return finish(3)
+  return finish(0)
 }
 
 main().catch((err: unknown) => {
-  process.stderr.write(`${red('canship: unexpected error')}\n${cleanForOutput(String(err))}\n`)
-  process.exit(3)
+  if (err instanceof ArgumentError) process.stderr.write(`canship: ${err.message}\n`)
+  else process.stderr.write(`${red('canship: unexpected error')}\n${cleanForOutput(String(err))}\n`)
+  finish(3)
 })
