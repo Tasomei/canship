@@ -846,12 +846,11 @@ export const apiAuthRule: ProjectRule = {
           line,
           excerpt,
           why: [
-            `This route uses the service_role key, which bypasses every Row Level Security policy you have. ` +
-              `Whatever your database would normally refuse, this route performs.`,
-            `Nothing in this file checks who is calling — no session lookup, no token check, no 401 anywhere — ` +
-              `and no middleware covers it. The URL is not a secret either: it is spelled out by the file path, ` +
-              `and it appears in your frontend bundle as soon as anything calls it.`,
-            `So a single curl to ${url} gets the same access your admin key has.`,
+            `This route references a recognized admin client. Such clients can bypass normal per-user access checks; ` +
+              `verify the effective credentials and granted permissions.`,
+            `The scan did not recognize an authentication guard protecting this operation or applicable middleware. ` +
+              `Indirect wrappers and deployment-level controls may not be recognized; verify them before exposing this route.`,
+            `If ${url} is reachable without authentication, callers can trigger the admin-backed operations implemented by this handler.`,
             `If this endpoint is meant to be public — handing out a guest session, taking a waitlist signup — ` +
               `then the problem is not that it is open, it is that it is open *and* holds the admin key. Give it ` +
               `a client that can only do the one thing it needs.`,
@@ -881,10 +880,9 @@ export const apiAuthRule: ProjectRule = {
           line,
           excerpt,
           why: [
-            `This route changes data, and nothing in the file checks who is calling — no session lookup, no ` +
-              `token check, no 401 anywhere.`,
-            `Route URLs are not secret; this one is spelled out by its file path. Anyone who sends a request ` +
-              `can trigger the same write.`,
+            `This route changes data, and the scan did not recognize an authentication guard before the operation. ` +
+              `Indirect guards and runtime controls require manual verification.`,
+            `If this route is publicly reachable and no other control rejects the caller, unauthenticated requests can trigger this write.`,
             `If this is a public form — a waitlist, a contact box — that may be intentional. It is still worth ` +
               `rate limiting, because an open write endpoint is what gets a database filled with spam overnight.`,
           ],

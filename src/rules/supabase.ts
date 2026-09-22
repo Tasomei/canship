@@ -436,12 +436,11 @@ export const supabaseRlsRule: ProjectRule = {
         line: entry.line,
         excerpt: null,
         why: [
-          `Supabase exposes your database to the browser directly, and the anon key that reaches it is ` +
-            `public by design — it ships inside your frontend. Row Level Security is the only thing that ` +
-            `decides who can read or write a row.`,
-          `No "ALTER TABLE ${renderIdent(entry.table)} ENABLE ROW LEVEL SECURITY" appears anywhere in your SQL, and new ` +
-            `tables do not get it by default. If that is the real state, anyone who visits your site can list ` +
-            `this entire table with a single request — and depending on your policies, write to it too.`,
+          `Supabase's browser clients use public identifiers. For exposed tables, database grants and ` +
+            `Row Level Security determine which operations and rows a caller can access.`,
+          `After replaying the scanned migrations, the final recorded state of ${renderIdent(entry.table)} does not ` +
+            `have RLS enabled. It may never have been enabled or may have been disabled by a later migration. ` +
+            `Without RLS, any access granted to the caller is not restricted by row policies.`,
           `If you enabled RLS from the Supabase dashboard instead, this file simply cannot show it. ` +
             `Check the Authentication -> Policies page to confirm.`,
         ],

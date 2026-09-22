@@ -27,6 +27,8 @@ Recognises OpenAI, Anthropic, AWS, Stripe, GitHub, npm, Slack, SendGrid, and oth
 
 Confidence is `certain` or `likely`. Only certain findings are shown by default; hidden likely findings still affect the exit code.
 
+Confidence describes static evidence, not credential validity, deployed configuration, or proven exploitability.
+
 ## Options
 
 Omitting the path scans the current directory.

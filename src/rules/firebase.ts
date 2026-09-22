@@ -165,8 +165,8 @@ export const firebaseRulesRule: Rule = {
               `"if true" grants access unconditionally — no sign-in, no ownership check, nothing. The Firebase ` +
                 `client SDK talks to your database straight from the browser, so these rules are the only access ` +
                 `control that exists.`,
-              `Anyone who finds your project id can read every document here, overwrite it, or delete all of it. ` +
-                `Project ids are not secret; they ship inside your frontend bundle.`,
+              `Anyone can perform the allowed ${ops} operations on this matched path without authentication. ` +
+                `Other operations depend on their own rules. Project ids are public identifiers, not access controls.`,
             ]
           : [
               `"if true" grants read access unconditionally, so anyone who finds your project id can list every ` +
