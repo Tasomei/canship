@@ -10,6 +10,22 @@ permissions:
   contents: read
 
 jobs:
+  # 验证实际发布包，不将源码运行通过视为安装成功。
+  package-smoke:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:package
+
   # 准备阶段联网获取固定快照；扫描不安装或执行样本依赖。
   public-projects:
     runs-on: ubuntu-latest
