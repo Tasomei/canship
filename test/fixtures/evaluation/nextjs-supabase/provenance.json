@@ -1,0 +1,23 @@
+{
+  "repository": "https://github.com/vercel/next.js",
+  "revision": "17e0dab0b52576ee080366668e4fe972d931b2c0",
+  "license": "MIT",
+  "scope": "Three Supabase SSR helper files only; no application routes or deployment validation.",
+  "changes": [
+    "Replaced explanatory comments with Chinese comments; executable statements unchanged."
+  ],
+  "files": [
+    {
+      "path": "examples/with-supabase/lib/supabase/client.ts",
+      "sha256": "8317fec273b554a10f9d6b18f701a3a5e73c21a955ffedb8096197879ef118a3"
+    },
+    {
+      "path": "examples/with-supabase/lib/supabase/server.ts",
+      "sha256": "3539095db595dd6899f198686981c2f1192e55414e08072a91e7d875f540d20b"
+    },
+    {
+      "path": "examples/with-supabase/lib/supabase/proxy.ts",
+      "sha256": "fe0fcebdd992bf462d05161a1a1e0c969a0a20edeeaba4064ab92679f0079a77"
+    }
+  ]
+}

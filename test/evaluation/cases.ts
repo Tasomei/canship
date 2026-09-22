@@ -20,6 +20,16 @@ export interface EvaluationCase {
 
 const migration = readFileSync(new URL('../fixtures/evaluation/supabase-profiles/migration.sql', import.meta.url), 'utf8')
 const migrationPath = 'supabase/migrations/20221017024722_init.sql'
+const fixture = (path: string) => readFileSync(new URL(`../fixtures/evaluation/${path}`, import.meta.url), 'utf8')
+const firebaseQuickstart = fixture('firebase-quickstart/firestore.rules')
+const nextjsFiles = Object.fromEntries(['client.ts', 'server.ts', 'proxy.ts'].map(name => [
+  `lib/supabase/${name}`, fixture(`nextjs-supabase/lib/supabase/${name}`),
+]))
+/** 变体必须实际改变目标语句，避免源文件变化后变成空操作。 */
+function replaceExpected(source: string, before: string, after: string, count: number): string {
+  if (source.split(before).length - 1 !== count) throw new Error('Evaluation mutation no longer matches its source')
+  return source.split(before).join(after)
+}
 const admin = "import { createClient } from '@supabase/supabase-js';\n" +
   'export const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);\n'
 const route = (guard: string) => "import { db } from '@/lib/admin';\n" +
@@ -30,6 +40,37 @@ const finding = (ruleId: string, file: string, severity: Severity = 'P1', confid
   ({ ruleId, file, severity, confidence })
 
 export const evaluationCases: readonly EvaluationCase[] = [
+  {
+    id: 'firebase-quickstart-public-read-authenticated-write', origin: 'upstream-derived',
+    files: { 'firestore.rules': firebaseQuickstart },
+    expected: [1, 2].map(() => finding('firebase/open-rules', 'firestore.rules', 'P1', 'likely')),
+  },
+  {
+    id: 'firebase-quickstart-unconditional-write', origin: 'mutated-upstream',
+    files: { 'firestore.rules': replaceExpected(firebaseQuickstart, 'request.auth != null', 'true', 2) },
+    expected: [
+      ...[1, 2].map(() => finding('firebase/open-rules', 'firestore.rules', 'P1', 'likely')),
+      ...[1, 2].map(() => finding('firebase/open-rules', 'firestore.rules')),
+    ],
+  },
+  {
+    id: 'nextjs-upstream-publishable-clients', origin: 'upstream-derived',
+    files: nextjsFiles, expected: [],
+  },
+  {
+    id: 'nextjs-upstream-private-public-env', origin: 'mutated-upstream',
+    files: { ...nextjsFiles, 'lib/supabase/client.ts': replaceExpected(nextjsFiles['lib/supabase/client.ts']!,
+      'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY', 'NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY', 1) },
+    expected: [finding('exposure/private-name-in-public-env', 'lib/supabase/client.ts', 'P0', 'likely')],
+  },
+  {
+    id: 'nextjs-upstream-workspace-isolation', origin: 'mutated-upstream',
+    files: {
+      ...Object.fromEntries(Object.entries(nextjsFiles).map(([path, source]) => [`apps/web/${path}`, source])),
+      'apps/worker/schema.sql': 'create table jobs (id bigint primary key);',
+      'apps/worker/server.ts': "import { Pool } from 'pg'; export const db = new Pool();",
+    }, expected: [],
+  },
   {
     id: 'supabase-upstream-rls-enabled', origin: 'upstream-derived',
     files: { [migrationPath]: migration }, expected: [],

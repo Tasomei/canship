@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/firebase/quickstart-js",
+  "revision": "eaaff9e35dd528c312941be37a26e45ae68b4a3f",
+  "license": "Apache-2.0",
+  "scope": "Firestore restaurant and rating rules only; not the complete application.",
+  "changes": [
+    "Replaced explanatory comments with Chinese comments; executable statements unchanged."
+  ],
+  "files": [
+    {
+      "path": "firestore/firestore.rules",
+      "sha256": "b708feb7ac1c765662bf121df87d73b5e5fbeeeb2a89127e74ccda32028fef31"
+    }
+  ]
+}

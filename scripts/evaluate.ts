@@ -6,12 +6,12 @@ const results = []
 for (const sample of evaluationCases) results.push(await evaluateCase(sample))
 const summary = {
   schemaVersion: 1,
-  corpus: 'canship-starter-v1',
+  corpus: 'canship-starter-v2',
   cases: results.length,
   passed: results.filter(result => result.passed).length,
   missing: results.reduce((sum, result) => sum + result.missing.length, 0),
   unexpected: results.reduce((sum, result) => sum + result.unexpected.length, 0),
-  scope: 'Fixed synthetic cases and one adapted upstream migration; not a population accuracy estimate.',
+  scope: 'Fixed synthetic cases and subsets from Supabase, Firebase, and Next.js; not a population accuracy estimate.',
   results,
 }
 process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`)
