@@ -68,3 +68,17 @@ test('对象方法回调与同一对象的凭据仍可配对', () => {
 test('受控回调不借用其他对象中的通配符', () => {
   assert.deepEqual(check("app.use(cors({origin(value, cb) { if (ALLOWED.includes(value)) cb(null, true) }, credentials: true})); const publicOptions = {origin:'*'};"), [])
 })
+
+test('源码生成器中的字符串不是生效的 CORS 配置', () => {
+  assert.deepEqual(check(`const source = "app.use(cors({origin:true,credentials:true}));";`), [])
+  assert.deepEqual(check(`const source = "app.use(cors({origin(value, cb){cb(null,true)},credentials:true}));";`), [])
+  assert.deepEqual(check(`const source = "{'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true'}";`), [])
+})
+test('示例字符串不能为真实代码提供凭据设置', () => {
+  assert.deepEqual(check(`app.use(cors({origin:true})); const documentation = 'credentials:true';`), [])
+})
+test('同文件包含字符串示例时，真实回显仍会检出', () => {
+  const findings = check(`const source = "app.use(cors({origin:'https://app.example.com',credentials:true}));";\napp.use(cors({origin:true,credentials:true}));`)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0]?.line, 2)
+})

@@ -289,13 +289,16 @@ function collectOrigins(file: ScanFile): OriginMark[] {
   const content = commentsMaskedOf(file)
   // 每个文件只构建一次行号索引。
   const contentLines = lineStartsOf(content)
-  const callbacks = originCallbacks(content)
+  const code = noiseMaskedOf(file)
+  const callbacks = originCallbacks(content).filter(callback => code[callback.index] === content[callback.index])
   const callbackIndices = new Set(callbacks.map(callback => callback.index))
   const parameterRanges = [...callbacks].sort((a, b) => a.parametersStart - b.parametersStart)
   let parameterRange = 0
 
   ACAO.lastIndex = 0
   while ((m = ACAO.exec(content)) !== null) {
+    // 真实属性引号会保留；示例字符串内部的响应头字样已被屏蔽。
+    if (code[m.index] !== content[m.index]) continue
     const line = lineNumberAt(contentLines, m.index)
     const expression = headerExpression(content, ACAO.lastIndex)
     // 不重复遍历表达式内部的响应头字样，保持单次线性读取。
@@ -305,6 +308,7 @@ function collectOrigins(file: ScanFile): OriginMark[] {
 
   CORS_ORIGIN_OPTION.lastIndex = 0
   while ((m = CORS_ORIGIN_OPTION.exec(content)) !== null) {
+    if (code[m.index] !== content[m.index]) continue
     // 回调参数的类型注解不是配置属性，例如 origin: string。
     while (parameterRange < parameterRanges.length && parameterRanges[parameterRange]!.parametersEnd < m.index) parameterRange++
     if (parameterRanges[parameterRange] && parameterRanges[parameterRange]!.parametersStart <= m.index) continue
@@ -338,14 +342,19 @@ function collectCredentialLines(file: ScanFile): CredentialMark[] {
   const lines: CredentialMark[] = []
   let m: RegExpExecArray | null
   const content = commentsMaskedOf(file)
+  const code = noiseMaskedOf(file)
   // 每个文件只构建一次行号索引。
   const contentLines = lineStartsOf(content)
 
   ACAC_HEADER.lastIndex = 0
-  while ((m = ACAC_HEADER.exec(content)) !== null) lines.push({ line: lineNumberAt(contentLines, m.index), at: m.index, mode: 'header' })
+  while ((m = ACAC_HEADER.exec(content)) !== null) {
+    if (code[m.index] === content[m.index]) lines.push({ line: lineNumberAt(contentLines, m.index), at: m.index, mode: 'header' })
+  }
 
   CORS_CREDENTIALS_OPTION.lastIndex = 0
-  while ((m = CORS_CREDENTIALS_OPTION.exec(content)) !== null) lines.push({ line: lineNumberAt(contentLines, m.index), at: m.index, mode: 'option' })
+  while ((m = CORS_CREDENTIALS_OPTION.exec(content)) !== null) {
+    if (code[m.index] === content[m.index]) lines.push({ line: lineNumberAt(contentLines, m.index), at: m.index, mode: 'option' })
+  }
 
   return lines
 }
