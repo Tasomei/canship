@@ -52,6 +52,7 @@ interface Args {
   help: boolean
   version: boolean
   listRules: boolean
+  noExcerpts: boolean
 }
 
 /** 清理参数错误信息并以工具错误退出。 */
@@ -136,6 +137,7 @@ function parseArgs(argv: string[]): Args {
     help: false,
     version: false,
     listRules: false,
+    noExcerpts: false,
   }
   const positional: string[] = []
 
@@ -212,6 +214,9 @@ function parseArgs(argv: string[]): Args {
       case '--list-rules':
         args.listRules = true
         break
+      case '--no-excerpts':
+        args.noExcerpts = true
+        break
       case '--help':
       case '-h':
         args.help = true
@@ -257,6 +262,7 @@ const HELP = `
                       (default canship.sarif)
         --no-config   Ignore canship.config.json in the scanned directory
         --list-rules  List rule IDs, scope, and limits; add --json for structured output
+        --no-excerpts Omit source excerpts from every report; paths and descriptions remain
     -h, --help        Show this help
     -v, --version     Show version
 
@@ -423,6 +429,9 @@ async function main(): Promise<void> {
   // 仅清理展示路径，扫描仍使用原始路径。
   const displayRoot = cleanForOutput(args.root)
 
+  // 基线计算完成后统一移除摘录，不改变结果身份、置信度或退出码。
+  if (args.noExcerpts) result = { ...result, findings: result.findings.map(finding => ({ ...finding, excerpt: null })) }
+
   const shown = showAll ? result.findings : result.findings.filter((f) => f.confidence === 'certain')
   const hiddenLikely = showAll ? 0 : result.findings.filter((f) => f.confidence === 'likely').length
 
@@ -448,6 +457,7 @@ async function main(): Promise<void> {
           hiddenLikely,
           baselineSuppressed,
           baselineStale,
+          excerptsOmitted: args.noExcerpts,
         }),
         null,
         2,

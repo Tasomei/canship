@@ -45,10 +45,13 @@ Omitting the path scans the current directory.
 | `--skip=ids` | Exclude matching rules; comma-separated and repeatable |
 | `--no-config` | Ignore project configuration |
 | `--list-rules` | List rule IDs, scope, and limits without scanning; supports `--json` |
+| `--no-excerpts` | Omit source excerpts from every report; preserve findings and exit status |
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show version |
 
 `--json` and `--fix-prompt` are mutually exclusive. HTML and SARIF may be combined with either. Reports are in English; use `--all` to include likely findings in any format.
+
+`--no-excerpts` reduces source disclosure, but does not anonymize paths, names, explanations, or baselines. Review reports before sharing. JSON records this option as `excerptsOmitted`.
 
 ### Exit codes
 
@@ -64,6 +67,8 @@ Findings take precedence over incompleteness; `--best-effort` does not change `1
 ### JSON contract
 
 JSON includes `schemaVersion: 1`, independent of the package `version`. Consumers should accept additive fields and reject unsupported schema versions. Published 0.2.1 reports omit `schemaVersion`; the Action also accepts that legacy format.
+
+The [scan report schema](./schemas/scan-report-v1.schema.json) is included in the npm package. `--list-rules --json` instead returns a separate `kind: "rule-catalog"` document.
 
 `findings` contains visible results after suppressions. `hiddenLikely`, `baselineSuppressed`, and `baselineStale` retain filtering counts. Check `partial`, `errors`, `skipped`, and `filesScanned` separately from findings and the exit code.
 

@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "canship scan report v1",
+  "type": "object",
+  "required": ["schemaVersion", "version", "root", "filesScanned", "durationMs", "partial", "errors", "skipped", "ignored", "ignoredFindings", "ruleSelection", "vendored", "hiddenLikely", "baselineSuppressed", "baselineStale", "findings"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "root": { "type": "string" },
+    "filesScanned": { "$ref": "#/definitions/count" },
+    "durationMs": { "type": "number", "minimum": 0 },
+    "partial": { "type": "boolean" },
+    "vendored": { "$ref": "#/definitions/count" },
+    "hiddenLikely": { "$ref": "#/definitions/count" },
+    "baselineSuppressed": { "$ref": "#/definitions/count" },
+    "baselineStale": { "$ref": "#/definitions/count" },
+    "excerptsOmitted": { "type": "boolean" },
+    "ignored": { "$ref": "#/definitions/strings" },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ruleId", "file", "message", "kind"],
+        "properties": {
+          "ruleId": { "type": "string" },
+          "file": { "type": ["string", "null"] },
+          "message": { "type": "string" },
+          "kind": { "enum": ["crashed", "incomplete"] }
+        }
+      }
+    },
+    "skipped": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "reason"],
+        "properties": {
+          "path": { "type": "string" },
+          "reason": { "enum": ["too-large", "unreadable", "directory-unreadable", "binary", "symlink", "nested-repository"] },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "ignoredFindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "line", "ruleId"],
+        "properties": {
+          "file": { "type": "string" },
+          "line": { "type": "integer", "minimum": 1 },
+          "ruleId": { "type": "string" }
+        }
+      }
+    },
+    "ruleSelection": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["only", "skip", "removed"],
+          "properties": {
+            "only": { "$ref": "#/definitions/strings" },
+            "skip": { "$ref": "#/definitions/strings" },
+            "removed": { "$ref": "#/definitions/count" }
+          }
+        }
+      ]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ruleId", "severity", "confidence", "title", "file", "line", "excerpt", "why", "fix"],
+        "properties": {
+          "ruleId": { "type": "string", "minLength": 1 },
+          "severity": { "enum": ["P0", "P1", "P2"] },
+          "confidence": { "enum": ["certain", "likely"] },
+          "title": { "type": "string" },
+          "file": { "type": ["string", "null"] },
+          "line": { "anyOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+          "excerpt": { "type": ["string", "null"] },
+          "sourceFingerprint": { "type": "string" },
+          "why": { "$ref": "#/definitions/strings" },
+          "fix": { "$ref": "#/definitions/strings" },
+          "humanOnly": { "$ref": "#/definitions/strings" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "count": { "type": "integer", "minimum": 0 },
+    "strings": { "type": "array", "items": { "type": "string" } }
+  }
+}

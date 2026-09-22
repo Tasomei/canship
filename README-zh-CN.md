@@ -45,10 +45,13 @@ npx canship .
 | `--skip=规则` | 排除匹配规则，支持逗号分隔及重复参数 |
 | `--no-config` | 忽略项目配置 |
 | `--list-rules` | 不扫描项目，列出规则 ID、范围和限制；支持 `--json` |
+| `--no-excerpts` | 所有报告均省略源码摘录，不改变发现和退出码 |
 | `-h`, `--help` | 显示帮助 |
 | `-v`, `--version` | 显示版本 |
 
 `--json` 与 `--fix-prompt` 互斥；HTML 和 SARIF 可与任一输出模式组合。报告正文为英文，各格式均用 `--all` 包含疑似结果。
+
+`--no-excerpts` 减少源码披露，但不匿名化路径、名称、说明或基线；分享前仍需审阅。JSON 通过 `excerptsOmitted` 标明是否启用。
 
 ### 退出码
 
@@ -64,6 +67,8 @@ npx canship .
 ### JSON 契约
 
 JSON 包含独立于软件包 `version` 的 `schemaVersion: 1`。调用方应兼容新增字段，拒绝不支持的结构版本。已发布的 0.2.1 不含此字段，Action 同时兼容该旧格式。
+
+npm 包附带 [扫描报告结构定义](./schemas/scan-report-v1.schema.json)。`--list-rules --json` 返回独立的 `kind: "rule-catalog"` 文档。
 
 `findings` 为抑制和可见性筛选后的结果；`hiddenLikely`、`baselineSuppressed`、`baselineStale` 保留筛选统计。应单独检查 `partial`、`errors`、`skipped` 和 `filesScanned`，不能仅凭结果或退出码判断完整性。
 

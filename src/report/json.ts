@@ -8,6 +8,7 @@ export interface JsonReport extends ScanResult {
   hiddenLikely: number
   baselineSuppressed: number
   baselineStale: number
+  excerptsOmitted: boolean
 }
 
 export interface JsonOptions {
@@ -17,6 +18,7 @@ export interface JsonOptions {
   hiddenLikely: number
   baselineSuppressed: number
   baselineStale: number
+  excerptsOmitted?: boolean
 }
 
 /** 输入须经引擎脱敏及基线、可见性筛选。 */
@@ -38,6 +40,7 @@ export function createJsonReport(result: ScanResult, options: JsonOptions): Json
     hiddenLikely: options.hiddenLikely,
     baselineSuppressed: options.baselineSuppressed,
     baselineStale: options.baselineStale,
+    excerptsOmitted: options.excerptsOmitted ?? false,
     findings: result.findings,
   }
 }

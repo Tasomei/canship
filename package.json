@@ -30,6 +30,7 @@
   },
   "files": [
     "dist",
+    "schemas",
     "README.md",
     "README-zh-CN.md",
     "LICENSE"
@@ -50,6 +51,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "ajv": "^8.20.0",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
