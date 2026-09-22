@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "scope": "Complete application-directory source snapshots. Repository history, installed dependencies, running services, and deployed settings are not checked.",
+  "projects": [
+    {
+      "id": "nextjs-with-supabase",
+      "repository": "vercel/next.js",
+      "revision": "17e0dab0b52576ee080366668e4fe972d931b2c0",
+      "path": "examples/with-supabase",
+      "tree": "b8c008d1ce18e38a6dce3d8049a17d5d00b35cb0",
+      "license": "MIT",
+      "sourceFiles": 54,
+      "expectedFindings": [],
+      "note": "No findings expected within the scanner's supported static checks."
+    },
+    {
+      "id": "supabase-nextjs-user-management",
+      "repository": "supabase/supabase",
+      "revision": "a31ca2bad0a08a93fff0cf3744fd9ad03954808d",
+      "path": "examples/user-management/nextjs-user-management",
+      "tree": "d5e1805d0bdc82bad6c01d4c200d2b1e97a7972c",
+      "license": "Apache-2.0",
+      "sourceFiles": 32,
+      "expectedFindings": [],
+      "note": "No findings expected within the scanner's supported static checks."
+    },
+    {
+      "id": "supabase-react-user-management",
+      "repository": "supabase/supabase",
+      "revision": "a31ca2bad0a08a93fff0cf3744fd9ad03954808d",
+      "path": "examples/user-management/react-user-management",
+      "tree": "5dd5ebba48d1c1a44c9622904c6b52ac78707c3b",
+      "license": "Apache-2.0",
+      "sourceFiles": 17,
+      "expectedFindings": [],
+      "note": "No findings expected within the scanner's supported static checks."
+    },
+    {
+      "id": "firebase-auth",
+      "repository": "firebase/quickstart-js",
+      "revision": "eaaff9e35dd528c312941be37a26e45ae68b4a3f",
+      "path": "auth",
+      "tree": "cfde85418d43d5e7d87ec2e8963964bc85bc252f",
+      "license": "Apache-2.0",
+      "sourceFiles": 68,
+      "expectedFindings": [],
+      "note": "No findings expected within the scanner's supported static checks."
+    },
+    {
+      "id": "firebase-firestore",
+      "repository": "firebase/quickstart-js",
+      "revision": "eaaff9e35dd528c312941be37a26e45ae68b4a3f",
+      "path": "firestore",
+      "tree": "cc2231c05bfb705e0bf2acaa1fd92fd75bc86ac7",
+      "license": "Apache-2.0",
+      "sourceFiles": 140,
+      "expectedFindings": [
+        {
+          "rule": "firebase/open-rules",
+          "severity": "P1",
+          "confidence": "likely",
+          "file": "firestore.rules",
+          "line": 6
+        },
+        {
+          "rule": "firebase/open-rules",
+          "severity": "P1",
+          "confidence": "likely",
+          "file": "firestore.rules",
+          "line": 10
+        }
+      ],
+      "note": "Two intentional public-read rules require review; no unconditional writes."
+    }
+  ]
+}

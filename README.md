@@ -183,6 +183,20 @@ npm run evaluate
 
 The 19 cases cover cross-file API authentication, workspace routing, RLS migration replay, Firebase rules, CORS, and incomplete scans. Ten are synthetic; nine use fixed subsets of Supabase, Firebase, Next.js, and Express `cors` examples, including deliberate mutations. Sources and licences are recorded under `test/fixtures/evaluation/`. Results compare rule, file, severity, confidence, and coverage, reporting missing and unexpected findings. These subsets do not validate complete applications or estimate real-world accuracy. Cases also run in `npm test`.
 
+Five complete application-directory snapshots are listed in [the project corpus](./test/evaluation/projects.json). Preparation uses the network and verifies Git object hashes; choose a new directory outside Git:
+
+```powershell
+node scripts/fetch-evaluation-projects.mjs "$env:TEMP/canship-evaluation"
+```
+
+Evaluate offline:
+
+```powershell
+npm run evaluate:projects -- "$env:TEMP/canship-evaluation"
+```
+
+No sample dependencies or services are executed. Git history and deployed behavior are outside this evaluation; the Firestore example intentionally produces two public-read review findings. CI runs the same corpus.
+
 ## License
 
 [MIT](./LICENSE). Supabase and Firebase test fixtures retain Apache-2.0; Next.js and `cors` fixtures retain MIT. Each fixture directory includes its licence and source record.

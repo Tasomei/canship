@@ -183,6 +183,20 @@ npm run evaluate
 
 19 个用例覆盖跨文件 API 鉴权、工作区路由、RLS 迁移重放、Firebase 规则、CORS 及扫描完整性。其中 10 个为人工构造，9 个基于固定版本的 Supabase、Firebase、Next.js 和 Express `cors` 示例片段及人为变体；来源和许可证保存在 `test/fixtures/evaluation/`。评估比较规则、文件、严重度、置信度和完整性，列出漏报及额外结果；不验证整个上游应用，也不代表真实项目检出率。用例同时纳入 `npm test`。
 
+[项目评估集](./test/evaluation/projects.json) 另含 5 个完整应用目录快照。准备阶段联网并校验 Git 对象摘要，目标须为 Git 仓库外的新目录：
+
+```powershell
+node scripts/fetch-evaluation-projects.mjs "$env:TEMP/canship-evaluation"
+```
+
+离线评估：
+
+```powershell
+npm run evaluate:projects -- "$env:TEMP/canship-evaluation"
+```
+
+不安装或执行样本依赖及服务，不检查 Git 历史或线上行为；Firestore 示例预期产生两条公开读取的疑似结果。CI 使用同一评估集。
+
 ## 许可
 
 [MIT](./LICENSE)。Supabase、Firebase 测试样本保留 Apache-2.0 许可，Next.js、`cors` 样本保留 MIT 许可；各样本目录附许可证及来源记录。

@@ -10,6 +10,21 @@ permissions:
   contents: read
 
 jobs:
+  # 准备阶段联网获取固定快照；扫描不安装或执行样本依赖。
+  public-projects:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Prepare pinned source snapshots
+        run: node scripts/fetch-evaluation-projects.mjs "$RUNNER_TEMP/canship-projects"
+      - name: Evaluate source snapshots offline
+        run: npm run evaluate:projects -- "$RUNNER_TEMP/canship-projects"
+
   # 验证组合 Action 的安装、摘要和失败策略；不上传报告。
   action-smoke:
     runs-on: ${{ matrix.os }}
