@@ -68,11 +68,9 @@ JSON includes `schemaVersion: 1`, independent of the package `version`. Consumer
 
 ## GitHub Action
 
-The Action installs a fixed npm release, scans the checkout without installing or running its dependencies, and writes a counts-only job summary. Package installation requires network access; scanning does not. SARIF upload is disabled by default.
+Run canship on pushes and pull requests by saving this workflow as `.github/workflows/canship.yml`. It scans the checkout without installing or executing project dependencies and writes a counts-only summary. Installation requires network access; scanning does not. SARIF upload is disabled by default.
 
-`version` selects the published scanner, not the source in the Action commit. Local fixes require a new npm release before the Action can use them.
-
-Replace `REVIEWED_ACTION_COMMIT` with a reviewed commit containing `action.yml`; this is a placeholder, not a release tag.
+The example pins the Action to a tested commit and installs the published scanner `0.2.1`. `version` selects the npm package; unreleased source changes are not included.
 
 ```yaml
 name: canship
@@ -87,7 +85,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@REVIEWED_ACTION_COMMIT
+      - uses: Tasomei/canship@f10ba0d2d08d79ee354907fff0c0f646995b8c1f
         with:
           version: '0.2.1'
 ```
@@ -177,4 +175,4 @@ The 12 cases cover cross-file API authentication, workspace routing, RLS migrati
 
 ## License
 
-[MIT](./LICENSE). The upstream-derived evaluation fixture retains its Apache-2.0 licence.
+[MIT](./LICENSE). The Supabase test fixture retains its [Apache-2.0 licence](./test/fixtures/evaluation/supabase-profiles/LICENSE).

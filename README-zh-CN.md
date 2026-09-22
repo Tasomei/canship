@@ -68,11 +68,9 @@ JSON 包含独立于软件包 `version` 的 `schemaVersion: 1`。调用方应兼
 
 ## GitHub Action
 
-Action 安装指定 npm 版本，扫描检出目录并生成仅含统计的任务摘要，不安装或执行被扫描项目的依赖。安装需要联网，扫描不联网；默认不上传 SARIF。
+将以下配置保存为 `.github/workflows/canship.yml`，在推送和 PR 时自动扫描仓库，生成仅含统计的摘要。不安装或执行项目依赖；安装扫描器需要联网，扫描不联网，默认不上传 SARIF。
 
-`version` 选择已发布的扫描器，不使用 Action 提交中的源码。本地修复需发布新的 npm 版本后才能用于 Action。
-
-将 `REVIEWED_ACTION_COMMIT` 替换为包含 `action.yml` 的已审阅提交；它是占位符，不是发布标签。
+示例将 Action 固定到已通过测试的提交，并安装已发布的扫描器 `0.2.1`。`version` 指定 npm 包版本，不包含尚未发布的源码改动。
 
 ```yaml
 name: canship
@@ -87,7 +85,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@REVIEWED_ACTION_COMMIT
+      - uses: Tasomei/canship@f10ba0d2d08d79ee354907fff0c0f646995b8c1f
         with:
           version: '0.2.1'
 ```
@@ -177,4 +175,4 @@ npm run evaluate
 
 ## 许可
 
-[MIT](./LICENSE)。上游改编评估夹具保留 Apache-2.0 许可证。
+[MIT](./LICENSE)。Supabase 测试样本保留 [Apache-2.0 许可](./test/fixtures/evaluation/supabase-profiles/LICENSE)。
