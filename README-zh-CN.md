@@ -1,14 +1,14 @@
 # canship
 
-面向 JavaScript / TypeScript 项目的本地静态扫描器，检测凭据暴露和访问控制配置错误。不执行项目代码，不上传文件，扫描过程不联网。
+面向 JavaScript / TypeScript 项目的本地静态扫描器，检测凭据暴露与访问控制配置错误。扫描不执行项目代码、不上传文件、不联网。
 
-本文档对应 0.3.x。请使用匹配的 [已发布版本](https://www.npmjs.com/package/canship) 或本地构建。
+本文档对应 0.3.x，适用于匹配的 [npm 版本](https://www.npmjs.com/package/canship) 或本地构建。
 
 ```powershell
 npx canship .
 ```
 
-要求 Node.js ≥18，无运行时依赖。Git 用于读取本地历史；仓库中无法使用 Git 时，扫描标记为未完成。首次使用 `npx` 可能需要从 npm 下载软件包。
+要求 Node.js ≥18，无运行时依赖。`npx` 可能联网下载软件包；扫描仅使用本地文件与 Git 历史。Git 仓库中无法调用 Git 时，扫描标记为未完成。
 
 [English](./README.md)
 
@@ -18,20 +18,18 @@ npx canship .
 |---|---|
 | 硬编码凭据、私钥及含密码的数据库连接串 | P0 |
 | 公开环境变量中的私密值 | P0 |
-| 客户端可访问的 Supabase 管理员密钥 | P0 |
+| Supabase 管理员密钥暴露至客户端 | P0 |
 | Git 跟踪及历史 `.env` 文件中的凭据或疑似私密值 | P0 |
-| Supabase 表未启用行级安全（RLS） | P1 |
+| Supabase 迁移记录中未启用行级安全（RLS）的表 | P1 |
 | Firebase 无条件访问及固定日期测试规则 | P1 |
-| Next.js API 数据操作缺少鉴权 | P0 / P1 |
+| Next.js API 数据操作未识别到鉴权 | P0 / P1 |
 | 携带凭据的 CORS 来源回显或通配符配置 | P1 / P2 |
 
-识别 OpenAI、Anthropic、AWS、Stripe、GitHub、npm、Slack、SendGrid 等凭据格式及常见前端框架的公开环境变量前缀。API 鉴权检查限于 Next.js 的 `/api` 处理函数，支持 App Router、Pages Router、路由组和工作区应用。
+支持 OpenAI、Anthropic、AWS、Stripe、GitHub、npm、Slack、SendGrid 等凭据格式及常见前端公开环境变量前缀。API 鉴权检查仅覆盖 Next.js `/api`，支持 App Router、Pages Router、路由组和工作区应用。
 
-置信度分为确定（`certain`）和疑似（`likely`）。默认只展示确定结果；隐藏的疑似结果仍影响退出码。
+置信度分为确定（`certain`）和疑似（`likely`），仅描述静态证据，不验证凭据有效性或线上状态。默认只展示确定结果；隐藏的疑似结果仍影响退出码。
 
-置信度描述静态证据，不证明凭据有效、线上配置状态或漏洞可利用性。
-
-## 参数
+## 用法
 
 省略路径时扫描当前目录。
 
@@ -39,48 +37,44 @@ npx canship .
 |---|---|
 | `-a`, `--all` | 展示疑似结果 |
 | `--json` | 输出 JSON |
-| `--fix-prompt` | 输出编程助手修复指令及独立的人工操作清单 |
-| `--report[=文件]` | 写入 HTML 报告，默认 `canship-report.html` |
-| `--sarif[=文件]` | 写入 SARIF 2.1.0 报告，默认 `canship.sarif` |
+| `--fix-prompt` | 输出修复指令及独立的人工操作清单 |
+| `--report[=file]` | 写入 HTML，默认 `canship-report.html` |
+| `--sarif[=file]` | 写入 SARIF 2.1.0，默认 `canship.sarif` |
 | `--best-effort` | 无结果时，允许不完整扫描退出 `0` |
-| `--baseline[=文件]` | 应用基线，默认 `canship-baseline.json` |
-| `--baseline-write[=文件]` | 记录当前结果为基线后退出 |
-| `--only=规则` | 仅执行匹配规则，支持逗号分隔及重复参数 |
-| `--skip=规则` | 排除匹配规则，支持逗号分隔及重复参数 |
+| `--baseline[=file]` | 应用基线，默认 `canship-baseline.json` |
+| `--baseline-write[=file]` | 写入当前结果为基线后退出，同上默认路径 |
+| `--only=ids` | 仅执行匹配规则，支持逗号分隔及重复参数 |
+| `--skip=ids` | 排除匹配规则，支持逗号分隔及重复参数 |
 | `--no-config` | 忽略项目配置 |
-| `--list-rules` | 不扫描项目，列出规则 ID、范围和限制；支持 `--json` |
-| `--no-excerpts` | 所有报告均省略源码摘录，不改变发现和退出码 |
+| `--list-rules` | 列出规则及限制，不扫描；支持 `--json` |
+| `--no-excerpts` | 所有报告省略源码摘录，不改变结果和退出码 |
 | `-h`, `--help` | 显示帮助 |
 | `-v`, `--version` | 显示版本 |
 
-`--json` 与 `--fix-prompt` 互斥；HTML 和 SARIF 可与任一输出模式组合。报告正文为英文，各格式均用 `--all` 包含疑似结果。
-
-`--no-excerpts` 减少源码披露，但不匿名化路径、名称、说明或基线；分享前仍需审阅。JSON 通过 `excerptsOmitted` 标明是否启用。
+`--json` 与 `--fix-prompt` 互斥；HTML、SARIF 可与任一模式组合。报告正文为英文，`--all` 对所有格式生效。
 
 ### 退出码
 
 | 退出码 | 含义 |
 |---|---|
-| `0` | 无结果且扫描完整，或由 `--best-effort` 接受不完整扫描 |
+| `0` | 无结果，且扫描完整或由 `--best-effort` 接受不完整扫描 |
 | `1` | 存在 `certain` 的 P0/P1 结果 |
 | `2` | 存在其他结果，包括被隐藏的 `likely` |
 | `3` | 参数或工具错误，或未被接受的不完整扫描 |
 
-结果对应的退出码优先于不完整状态；`--best-effort` 不改变 `1` 或 `2`。JSON 用 `partial`、`errors`、`skipped` 保留完整性信息，SARIF 提供执行状态和诊断通知。
+结果退出码优先于不完整状态；`--best-effort` 不改变 `1` 或 `2`。
 
-### JSON 契约
+### 机器可读输出
 
-JSON 包含独立于软件包 `version` 的 `schemaVersion: 1`。调用方应兼容新增字段，拒绝不支持的结构版本。已发布的 0.2.1 不含此字段，Action 同时兼容该旧格式。
+JSON 使用独立于包版本的 `schemaVersion: 1`，npm 包附带 [结构定义](./schemas/scan-report-v1.schema.json)。调用方应兼容新增字段、拒绝不支持的结构版本；`--list-rules --json` 为独立的 `kind: "rule-catalog"` 文档。
 
-npm 包附带 [扫描报告结构定义](./schemas/scan-report-v1.schema.json)。`--list-rules --json` 返回独立的 `kind: "rule-catalog"` 文档。
-
-`findings` 为抑制和可见性筛选后的结果；`hiddenLikely`、`baselineSuppressed`、`baselineStale` 保留筛选统计。应单独检查 `partial`、`errors`、`skipped` 和 `filesScanned`，不能仅凭结果或退出码判断完整性。
+`findings` 为抑制和筛选后的结果；`hiddenLikely`、`baselineSuppressed`、`baselineStale` 提供相关统计。完整性需另查 `partial`、`errors`、`skipped`、`filesScanned`；SARIF 提供执行状态与诊断通知。
 
 ## GitHub Action
 
-将以下配置保存为 `.github/workflows/canship.yml`，在推送和 PR 时自动扫描仓库，生成仅含统计的摘要。不安装或执行项目依赖；安装扫描器需要联网，扫描不联网，默认不上传 SARIF。
+保存为 `.github/workflows/canship.yml`，在推送和 PR 时扫描并生成统计摘要。安装扫描器需要联网，扫描不联网；不安装或执行项目依赖，默认不上传 SARIF。
 
-示例将 Action 固定到已通过测试的提交，并安装已发布的扫描器 `0.2.1`。`version` 指定 npm 包版本，不包含尚未发布的源码改动。
+示例固定 Action 提交，安装 npm 版 `0.2.1`；`version` 不使用仓库中的未发布源码。Action 兼容 0.2.1 无 `schemaVersion` 的报告。
 
 ```yaml
 name: canship
@@ -111,13 +105,11 @@ jobs:
 | `upload-sarif` | `false` | 上传 SARIF 至 GitHub 代码扫描 |
 | `category` | `canship` | 每个扫描目标使用独立分类 |
 
-扫描不完整、工具错误或报告不兼容始终失败，`fail-on: none` 也不例外。输出为 `exit-code`、`findings`、`blocking`、`partial`，所有置信度均参与策略判定。基线、源码忽略标记和内置排除仍然生效，需一并审阅扫描范围。
+输出：`exit-code`、`findings`、`blocking`、`partial`。策略统计包含疑似结果，基线与忽略仍生效；扫描不完整、工具错误或报告不兼容始终失败，包括 `fail-on: none`。
 
-失败诊断标明阶段：`input`、`install`、`scan`、`report`、`sarif` 或 `output`；未预期错误标为 `internal`，不包含原始输入或子进程日志。基线抑制数量始终披露，子目录 SARIF 保留相对仓库的路径；每个目标应使用独立的 `category`。
+上传 SARIF 需 `security-events: write` 及 [GitHub 代码扫描支持](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file)，Fork PR 可能无权限。上传前审阅报告中的路径与详情；不可信 PR 使用 `pull_request`，不要使用 `pull_request_target`。Action 为后续步骤设置 Node.js 22，需要其他版本时应使用独立扫描任务。
 
-上传 SARIF 需要 `security-events: write`，且仓库须支持 [GitHub 代码扫描](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file)。Fork PR 可能没有上传权限。报告含路径及发现详情，启用上传前需评估披露风险。不可信贡献使用 `pull_request`，不要使用 `pull_request_target`。Action 会将后续步骤的 Node.js 设为 22；项目需要其他版本时，使用独立扫描任务。
-
-## 配置与忽略
+## 配置与基线
 
 扫描目录中的 `canship.config.json` 支持 `baseline`、`only`、`skip`、`all`：
 
@@ -128,18 +120,20 @@ jobs:
 }
 ```
 
-命令行参数优先；`only` 与 `skip` 互斥，接受完整规则 ID 或命名空间。无关规则不执行；`ruleSelection.removed` 仅统计已执行规则中被过滤的结果。扫描不可信项目时使用 `--no-config`；`bestEffort` 仅支持命令行设置。
+命令行参数优先；`only`、`skip` 互斥，接受规则 ID 或命名空间。未选规则不执行，`ruleSelection.removed` 仅统计已执行规则中被过滤的结果。扫描不可信项目时使用 `--no-config`；`bestEffort` 仅限命令行设置。
 
-以独占注释行的 `canship-ignore-file` 排除整个文件，或用 `canship-ignore-next-line` 忽略下一行。后者可附加规则 ID：
+### 忽略标记
+
+独占注释行的 `canship-ignore-file` 排除整个文件；`canship-ignore-next-line` 忽略下一行，可附规则 ID：
 
 ```ts
 // canship-ignore-next-line cors/wildcard-with-credentials
 const corsOptions = { origin: '*', credentials: true }
 ```
 
-报告披露忽略、筛选和基线抑制信息。主动忽略不使扫描标记为未完成。
+报告披露忽略、规则筛选和基线抑制信息；主动排除不标记为未完成。
 
-## 基线
+### 基线
 
 记录已有结果：
 
@@ -153,21 +147,22 @@ npx canship --baseline-write
 npx canship --baseline
 ```
 
-裸参数使用扫描目录，显式路径相对工作目录。写入成功退出 `0`；扫描不完整或启用规则筛选时会提示。
+默认基线位于扫描目录，显式路径相对工作目录。写入成功退出 `0`，不代表无问题；扫描不完整或启用规则筛选时会提示。
 
-基线格式为第 2 版，不含源码摘录，但披露路径、规则、标题和问题类型，提交前需审阅。指纹不含行号，移动行号不会产生新结果，替换凭据会。缺失、损坏及第 1 版基线均退出 `3`。
+基线格式为 v2，移动行号不改变指纹，替换凭据会改变。缺失、损坏及 v1 基线均退出 `3`。基线不含源码，但包含路径、规则和问题描述，提交前需审阅。
 
-## 限制
+## 隐私与限制
 
-- 静态启发式分析可能误报或漏报，不验证运行时行为、限流、注入、依赖漏洞及业务授权。无发现不代表项目安全。
-- 脱敏仅覆盖已识别格式；未知秘密可能出现在证据行中，报告应作为内部材料。Google/Firebase/Maps 的 `AIza...` 值按公开标识符处理。
-- 单文件最多读取 2 MiB；单次累计读取最多 128 MiB、10,000 个文件；目录最多 16 层。跨规则每文件最多输出 100 条结果，优先保留高严重度、高置信度结果。
-- Git 历史每文件最多检查 100 个相关版本，单条 Git 命令超时为 30 秒。超限或超时均披露检查缺口。
-- 不跟随符号链接；嵌套仓库及子模块需分别扫描。扫描范围内的跳过项使扫描未完成，已排除的构建和依赖目录除外。
+- 静态分析可能误报或漏报，不验证线上行为，不覆盖限流、注入、依赖漏洞或业务授权。无结果不等于安全。
+- 脱敏仅覆盖已识别格式，未知秘密可能出现在源码摘录中。`--no-excerpts` 省略摘录，JSON 以 `excerptsOmitted` 标明；路径、名称、说明及基线不匿名化，分享前仍需审阅。
+- Google/Firebase/Maps 的 `AIza...` 值按公开标识符处理，不单凭其值判定泄露。
+- 读取上限：单文件 2 MiB，单次 128 MiB、10,000 个文件，目录 16 层。每文件跨规则最多 100 条结果，优先保留高严重度、高置信度结果。
+- Git 历史每文件最多 100 个相关版本，单条 Git 命令超时 30 秒。超限、超时均报告检查缺口。
+- 不跟随符号链接；嵌套仓库、子模块需单独扫描。范围内跳过项使扫描未完成，内置排除的构建和依赖目录除外。
 
 ## 开发
 
-检测规则需同时包含应检出和不应检出的用例，参见 [测试夹具](./test/fixtures/)。
+新增规则需包含应检出与不应检出的 [测试用例](./test/fixtures/)。
 
 ```powershell
 npm ci
@@ -177,28 +172,28 @@ npm ci
 npm run prepublishOnly
 ```
 
-运行离线初始评估集：
+离线评估：
 
 ```powershell
 npm run evaluate
 ```
 
-19 个用例覆盖跨文件 API 鉴权、工作区路由、RLS 迁移重放、Firebase 规则、CORS 及扫描完整性。其中 10 个为人工构造，9 个基于固定版本的 Supabase、Firebase、Next.js 和 Express `cors` 示例片段及人为变体；来源和许可证保存在 `test/fixtures/evaluation/`。评估比较规则、文件、严重度、置信度和完整性，列出漏报及额外结果；不验证整个上游应用，也不代表真实项目检出率。用例同时纳入 `npm test`。
+评估集含 10 个构造用例、9 个固定版本上游示例及变体，同时纳入 `npm test`；[来源与许可](./test/fixtures/evaluation/) 随样本保存。断言覆盖规则、文件、严重度、置信度与扫描完整性，不代表真实项目检出率。
 
-[项目评估集](./test/evaluation/projects.json) 另含 5 个完整应用目录快照。准备阶段联网并校验 Git 对象摘要，目标须为 Git 仓库外的新目录：
+另有 5 个 [应用目录快照](./test/evaluation/projects.json)。准备阶段联网并校验 Git 对象摘要，目标须为 Git 仓库外的新目录：
 
 ```powershell
 node scripts/fetch-evaluation-projects.mjs "$env:TEMP/canship-evaluation"
 ```
 
-离线评估：
+随后离线评估，不安装或运行样本依赖：
 
 ```powershell
 npm run evaluate:projects -- "$env:TEMP/canship-evaluation"
 ```
 
-不安装或执行样本依赖及服务，不检查 Git 历史或线上行为；Firestore 示例预期产生两条公开读取的疑似结果。CI 使用同一评估集。
+CI 使用同一评估集，不验证 Git 历史或线上行为。
 
 ## 许可
 
-[MIT](./LICENSE)。Supabase、Firebase 测试样本保留 Apache-2.0 许可，Next.js、`cors` 样本保留 MIT 许可；各样本目录附许可证及来源记录。
+[MIT](./LICENSE)。Supabase、Firebase 样本保留 Apache-2.0，Next.js、`cors` 样本保留 MIT；各样本附来源及许可证。
