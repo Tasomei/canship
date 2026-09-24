@@ -174,7 +174,9 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
 
   const gitExecutable = resolveGitExecutable(root)
   const git = detectGitRepo(root, gitExecutable)
-  const { files, skipped, ignored, vendored } = collectFiles(root, git === 'repo', gitExecutable)
+  const honorIgnoreMarkers = options.honorIgnoreMarkers !== false
+  const { files, skipped, ignored, vendored } =
+    collectFiles(root, git === 'repo', gitExecutable, {}, honorIgnoreMarkers)
 
   const findings: Finding[] = []
   const errors: ScanError[] = []
@@ -219,11 +221,11 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
     }
   }
 
-  // 去重后应用忽略标记，再清理输出文本。
-  const { kept, ignored: ignoredFindings } = suppressIgnoredLines(
-    dedupe(downgradeExampleContext(findings, files)),
-    files,
-  )
+  // 去重后应用忽略标记，再清理输出文本；关闭标记时保留全部结果。
+  const deduped = dedupe(downgradeExampleContext(findings, files))
+  const { kept, ignored: ignoredFindings } = honorIgnoreMarkers
+    ? suppressIgnoredLines(deduped, files)
+    : { kept: deduped, ignored: [] }
   // 统计已执行规则中被选择器过滤的结果。
   const selected = applyRuleSelection(kept, options)
 

@@ -257,6 +257,23 @@ describe('the scanned project cannot lower the exit code', () => {
     assert.equal(run(root).status, 0, 'the config should hide it by default')
     assert.equal(run(root, ['--no-config']).status, 1, '--no-config should restore it')
   })
+
+  test('--no-ignore-markers restores findings that source markers hide', () => {
+    // --no-config 管不到源码中的标记，二者须同时用于不可信项目。
+    const line = tempDir()
+    mkdirSync(join(line, 'lib'))
+    writeFileSync(join(line, 'lib', 'keys.ts'), `// canship-ignore-next-line\nexport const a = "${OPENAI}"\n`, 'utf8')
+    const file = tempDir()
+    mkdirSync(join(file, 'lib'))
+    writeFileSync(join(file, 'lib', 'keys.ts'), `// canship-ignore-file\nexport const a = "${OPENAI}"\n`, 'utf8')
+    // 另放一个普通文件，避免零文件扫描被判为未完成。
+    writeFileSync(join(file, 'lib', 'ok.ts'), 'export const ok = 1\n', 'utf8')
+
+    for (const root of [line, file]) {
+      assert.equal(run(root, ['--no-config']).status, 0, 'a marker should hide it even with --no-config')
+      assert.equal(run(root, ['--no-config', '--no-ignore-markers']).status, 1, '--no-ignore-markers should restore it')
+    }
+  })
 })
 
 describe('the config file is bounded', () => {

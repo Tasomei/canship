@@ -201,3 +201,30 @@ describe('the markers cannot be made slow', () => {
     assert.ok(matched >= wrappers.length * spaces.length, `only ${matched} combinations matched`)
   })
 })
+
+describe('the caller can disregard the markers', () => {
+  // 标记由被扫描项目书写，扫描不可信项目时调用方必须能让它们失效。
+  function project(): string {
+    const root = mkdtempSync(join(tmpdir(), 'canship-ignoreline-'))
+    tempDirs.push(root)
+    mkdirSync(join(root, 'lib'))
+    writeFileSync(join(root, 'lib', 'line.ts'), `// canship-ignore-next-line\nconst a = "${OPENAI}"\n`, 'utf8')
+    writeFileSync(join(root, 'lib', 'file.ts'), `// canship-ignore-file\nconst b = "${OPENAI_TWO}"\n`, 'utf8')
+    return root
+  }
+
+  test('both markers apply by default', async () => {
+    const result = await scan(project())
+    assert.equal(result.findings.length, 0)
+    assert.deepEqual(result.ignored, ['lib/file.ts'])
+    assert.equal(result.ignoredFindings.length, 1)
+  })
+
+  test('with markers disregarded, both findings are reported and nothing is listed as ignored', async () => {
+    const result = await scan(project(), { honorIgnoreMarkers: false })
+    assert.deepEqual(result.findings.map((f) => f.file).sort(), ['lib/file.ts', 'lib/line.ts'])
+    assert.deepEqual(result.ignored, [])
+    assert.deepEqual(result.ignoredFindings, [])
+    assert.equal(result.partial, false)
+  })
+})

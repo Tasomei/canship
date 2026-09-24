@@ -46,6 +46,7 @@ npx canship .
 | `--only=ids` | 仅执行匹配规则，支持逗号分隔及重复参数 |
 | `--skip=ids` | 排除匹配规则，支持逗号分隔及重复参数 |
 | `--no-config` | 忽略项目配置 |
+| `--no-ignore-markers` | 不遵从被扫描源码中的忽略标记 |
 | `--list-rules` | 列出规则及限制，不扫描；支持 `--json` |
 | `--no-excerpts` | 所有报告省略源码摘录，不改变结果和退出码 |
 | `-h`, `--help` | 显示帮助 |
@@ -89,7 +90,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@37cf06e014168968a88679157564e5c489f99c50
+      - uses: Tasomei/canship@8b1a3aa88c77e92e2806b343af6003372855bc70
         with:
           version: '0.3.0'
 ```
@@ -120,7 +121,7 @@ jobs:
 }
 ```
 
-命令行参数优先；`only`、`skip` 互斥，接受规则 ID 或命名空间。未选规则不执行，`ruleSelection.removed` 仅统计已执行规则中被过滤的结果。扫描不可信项目时使用 `--no-config`；`bestEffort` 仅限命令行设置。
+命令行参数优先；`only`、`skip` 互斥，接受规则 ID 或命名空间。未选规则不执行，`ruleSelection.removed` 仅统计已执行规则中被过滤的结果。扫描不可信项目时同时使用 `--no-config --no-ignore-markers`，二者均由被扫描项目控制；`bestEffort` 仅限命令行设置。
 
 ### 忽略标记
 
@@ -131,7 +132,7 @@ jobs:
 const corsOptions = { origin: '*', credentials: true }
 ```
 
-报告披露忽略、规则筛选和基线抑制信息；主动排除不标记为未完成。
+报告披露忽略、规则筛选和基线抑制信息；主动排除不标记为未完成。标记可使退出码降为 `0`；`--no-config` 不影响标记，`--no-ignore-markers` 使两种标记均失效。
 
 ### 基线
 

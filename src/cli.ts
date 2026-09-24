@@ -49,6 +49,8 @@ interface Args {
   sarif: string | null
   /** 忽略目标项目的配置文件，防止其改变扫描范围。 */
   noConfig: boolean
+  /** 不遵从目标项目中的忽略标记，防止其隐藏结果；仅限命令行设置。 */
+  noIgnoreMarkers: boolean
   help: boolean
   version: boolean
   listRules: boolean
@@ -141,6 +143,7 @@ function parseArgs(argv: string[]): Args {
     skip: [],
     sarif: null,
     noConfig: false,
+    noIgnoreMarkers: false,
     help: false,
     version: false,
     listRules: false,
@@ -218,6 +221,9 @@ function parseArgs(argv: string[]): Args {
       case '--no-config':
         args.noConfig = true
         break
+      case '--no-ignore-markers':
+        args.noIgnoreMarkers = true
+        break
       case '--list-rules':
         args.listRules = true
         break
@@ -268,6 +274,9 @@ const HELP = `
         --sarif[=F]   Write a SARIF 2.1.0 log for CI code scanning
                       (default canship.sarif)
         --no-config   Ignore canship.config.json in the scanned directory
+        --no-ignore-markers
+                      Disregard canship-ignore-file and canship-ignore-next-line
+                      markers; use with --no-config for untrusted projects
         --list-rules  List rule IDs, scope, and limits; add --json for structured output
         --no-excerpts Omit source excerpts from every report; paths and descriptions remain
     -h, --help        Show this help
@@ -369,7 +378,7 @@ async function main(): Promise<void> {
           ? insideProject(args.root, config.baseline)
           : null
 
-  const scanned = await scan(args.root, { only, skip })
+  const scanned = await scan(args.root, { only, skip, honorIgnoreMarkers: !args.noIgnoreMarkers })
 
   // 写入基线后结束；成功表示记录完成，不表示问题已修复。
   if (args.baselineWrite !== null || args.baselineWriteDefault) {

@@ -99,6 +99,8 @@ export interface ScanOptions {
   only?: string[]
   /** 排除匹配规则。 */
   skip?: string[]
+  /** 是否遵从被扫描项目中的忽略标记；默认遵从，扫描不可信项目时应关闭。 */
+  honorIgnoreMarkers?: boolean
 }
 
 /** 规则筛选条件及过滤统计。 */

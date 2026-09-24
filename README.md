@@ -46,6 +46,7 @@ Omitting the path scans the current directory.
 | `--only=ids` | Run matching rules; comma-separated and repeatable |
 | `--skip=ids` | Exclude matching rules; comma-separated and repeatable |
 | `--no-config` | Ignore project configuration |
+| `--no-ignore-markers` | Disregard ignore markers in scanned source |
 | `--list-rules` | List rules and limits without scanning; supports `--json` |
 | `--no-excerpts` | Omit source excerpts from every report; preserve findings and exit status |
 | `-h`, `--help` | Show help |
@@ -89,7 +90,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@37cf06e014168968a88679157564e5c489f99c50
+      - uses: Tasomei/canship@8b1a3aa88c77e92e2806b343af6003372855bc70
         with:
           version: '0.3.0'
 ```
@@ -120,7 +121,7 @@ Place `canship.config.json` in the scanned directory. Supported keys: `baseline`
 }
 ```
 
-CLI options take precedence. `only` and `skip` are mutually exclusive and accept rule IDs or namespaces. Unselected rules do not run; `ruleSelection.removed` counts filtered findings only from executed rules. Use `--no-config` for untrusted projects. `bestEffort` is CLI-only.
+CLI options take precedence. `only` and `skip` are mutually exclusive and accept rule IDs or namespaces. Unselected rules do not run; `ruleSelection.removed` counts filtered findings only from executed rules. For untrusted projects use `--no-config --no-ignore-markers`; the scanned project controls both. `bestEffort` is CLI-only.
 
 ### Ignore markers
 
@@ -131,7 +132,7 @@ A standalone `canship-ignore-file` comment excludes a file; `canship-ignore-next
 const corsOptions = { origin: '*', credentials: true }
 ```
 
-Reports disclose exclusions, rule selection, and baseline suppression. Deliberate exclusions do not mark the scan incomplete.
+Reports disclose exclusions, rule selection, and baseline suppression. Deliberate exclusions do not mark the scan incomplete. Markers can lower the exit code to `0`; `--no-config` does not affect them, `--no-ignore-markers` disables both kinds.
 
 ### Baselines
 

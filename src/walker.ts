@@ -406,6 +406,7 @@ export function collectFiles(
   isGitRepo: boolean,
   gitExecutable: string | null = resolveGitExecutable(root),
   limits: { maxBytes?: number; maxFiles?: number } = {},
+  honorIgnoreMarkers = true,
 ): CollectResult {
   const skipped: SkippedFile[] = []
   const ignored: string[] = []
@@ -496,8 +497,8 @@ export function collectFiles(
       continue
     }
     const lines = content.split(/\r?\n/)
-    // 主动排除独立记录，不作为扫描失败。
-    if (hasIgnoreMarker(lines)) {
+    // 主动排除独立记录，不作为扫描失败；标记由被扫描项目控制，可由调用方关闭。
+    if (honorIgnoreMarkers && hasIgnoreMarker(lines)) {
       ignored.push(relPath)
       continue
     }
