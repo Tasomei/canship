@@ -60,7 +60,7 @@ function inside(root, input, directory) {
 }
 
 export function parseInputs(env) {
-  const version = env.INPUT_VERSION || '0.2.1'
+  const version = env.INPUT_VERSION || '0.3.0'
   if (!EXACT_VERSION.test(version)) throw new Error('version must be an exact npm version.')
   const failOn = env.INPUT_FAIL_ON || 'blocking'
   if (!POLICIES.includes(failOn)) throw new Error('fail-on must be blocking, any, or none.')

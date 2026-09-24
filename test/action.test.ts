@@ -29,9 +29,9 @@ function result(over: Partial<ScanResult> = {}): ScanResult {
   return { findings: [], filesScanned: 1, durationMs: 0, partial: false, errors: [], skipped: [],
     ignored: [], ignoredFindings: [], ruleSelection: null, vendored: 0, ...over }
 }
-function report(over: Partial<ScanResult> = {}) {
+function report(over: Partial<ScanResult> = {}, version = '0.3.0') {
   return createJsonReport(result(over), {
-    version: '0.2.1', root: workspace, hiddenLikely: 0, baselineSuppressed: 0, baselineStale: 0,
+    version, root: workspace, hiddenLikely: 0, baselineSuppressed: 0, baselineStale: 0,
   })
 }
 function environment(over: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
@@ -60,7 +60,7 @@ function project(name: string, files: Record<string, string>): string {
 const openRules = 'service cloud.firestore { match /documents/{id} { allow write: if true; } }'
 
 test('JSON 结构版本独立于软件包版本，保留完整性和抑制统计', () => {
-  const r = report({ partial: true, findings: [finding] })
+  const r = report({ partial: true, findings: [finding] }, '0.2.1')
   assert.equal(r.schemaVersion, 1)
   assert.equal(r.version, '0.2.1')
   assert.equal(r.partial, true)
@@ -95,7 +95,7 @@ test('结果策略准确区分确定阻断、疑似结果和仅报告', () => {
   assert.equal(assessReport({ ...report(), hiddenLikely: 1 }, 2, 'any').failed, true)
 })
 test('兼容已发布的无 schemaVersion 输出', () => {
-  const { schemaVersion: _, ...legacy } = report()
+  const { schemaVersion: _, ...legacy } = report({}, '0.2.1')
   assert.equal(assessReport(legacy, 0, 'blocking').failed, false)
 })
 for (const patch of [
@@ -118,6 +118,56 @@ test('拒绝退出码与结果矛盾；工具错误及空扫描始终失败', ()
 for (const version of ['latest', '^0.2.1', '0.2.1 & echo unsafe', 'file:../package', 'https://example.com/pkg.tgz']) {
   test(`拒绝非固定版本 ${version}`, () => assert.throws(() => parseInputs(environment({ INPUT_VERSION: version }))))
 }
+test('Action 默认版本与配置、双语示例及参数表一致', () => {
+  const version = parseInputs(environment()).version
+  assert.equal(version, '0.3.0')
+  assert.equal(parseInputs(environment({ INPUT_VERSION: '' })).version, version)
+  const metadata = readFileSync(join(repository, 'action.yml'), 'utf8')
+  const versionInput = /^  version:\r?\n(?:(?: {4}[^\r\n]*|)\r?\n)*/m.exec(metadata)?.[0]
+  assert.ok(versionInput, '缺少 version 输入')
+  assert.ok(versionInput.includes(`default: '${version}'`), 'Action 配置与运行时默认版本不一致')
+  for (const name of ['README.md', 'README-zh-CN.md']) {
+    const readme = readFileSync(join(repository, name), 'utf8')
+    const workflow = /^```yaml\r?\n([\s\S]*?)^```/m.exec(readme)?.[1]
+    assert.ok(workflow, `${name} 缺少工作流示例`)
+    assert.ok(workflow.includes(`version: '${version}'`), `${name} 示例版本不一致`)
+    assert.ok(readme.includes(`| \`version\` | \`${version}\` |`), `${name} 默认版本不一致`)
+  }
+})
+test('显式选择 0.2.1 仍可运行旧版报告', () => {
+  const env = environment({ INPUT_VERSION: '0.2.1' })
+  const { schemaVersion: _, ...legacy } = report({}, '0.2.1')
+  let installed = false
+  const outcome = runAction(env, {
+    installScanner: options => {
+      assert.equal(options.version, '0.2.1')
+      installed = true
+      return 'trusted-cli.js'
+    },
+    execute: () => ({ status: 0, stdout: JSON.stringify(legacy) }),
+  })
+  assert.equal(installed, true)
+  assert.deepEqual(outcome, { findings: 0, blocking: 0, partial: false, failed: false })
+})
+test('默认安装和报告必须均为 0.3.0，拒绝其他版本报告', () => {
+  let installs = 0
+  for (const version of ['0.3.0', '0.2.1']) {
+    const execute = () => runAction(environment(), {
+      installScanner: options => {
+        assert.equal(options.version, '0.3.0')
+        installs++
+        return 'trusted-cli.js'
+      },
+      execute: () => ({ status: 0, stdout: JSON.stringify(report({}, version)) }),
+    })
+    if (version === '0.3.0') assert.equal(execute().failed, false)
+    else assert.throws(execute, (error: unknown) => {
+      assert.equal(describeActionError(error).stage, 'report')
+      return true
+    })
+  }
+  assert.equal(installs, 2)
+})
 test('默认忽略配置和关闭上传，显式基线限定在项目内', () => {
   const options = parseInputs(environment({ INPUT_BASELINE: 'baseline.json' }))
   assert.equal(options.useConfig, false)
