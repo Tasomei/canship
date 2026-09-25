@@ -284,4 +284,18 @@ describe('the client detection cannot be made slow', () => {
     const took = Date.now() - started
     assert.ok(took < 10_000, `took ${took}ms`)
   })
+
+  test('deeply nested conditions in hooks.server are analysed in linear time', async () => {
+    // 修复前每个 if 重新扫描自己的代码块，200KB 的嵌套使整次扫描耗时约 86 秒。
+    const depth = 15_000
+    const started = Date.now()
+    await scan(project({
+      'src/hooks.server.ts': 'export const handle = async ({ event }) => {\n' +
+        'if (event.a) {\n'.repeat(depth) + '}\n'.repeat(depth) + '}\n',
+      'src/routes/api/x/+server.ts': SK_ADMIN +
+        `export async function GET() { return new Response(JSON.stringify(${QUERY})) }`,
+    }))
+    const took = Date.now() - started
+    assert.ok(took < 10_000, `took ${took}ms`)
+  })
 })

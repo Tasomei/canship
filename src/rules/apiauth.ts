@@ -176,11 +176,14 @@ function controlledStatement(source: string, afterCondition: number): string {
   return source.slice(start, end)
 }
 
-/**
- * 只有拒绝未认证请求的条件分支才能提供保护。
- * descend 为真时也检查嵌套在其他条件内的分支，用于判断文件中是否存在任何鉴权，而非某操作是否受保护。
- */
-function hasConditionalAuthGuard(code: string, descend = false): boolean {
+/** 条件中的单项是否在身份缺失时成立，如 !session?.user。 */
+function rejectsMissingIdentity(term: string, returnsDeniedStatus: boolean): boolean {
+  const rejects = NEGATED_IDENTITY.test(term) || IDENTITY_IS_EMPTY.test(term) || IDENTITY_MISMATCH.test(term)
+  return rejects && (AUTH_CONDITION.test(term) || returnsDeniedStatus)
+}
+
+/** 只有拒绝未认证请求的条件分支才能提供保护。 */
+function hasConditionalAuthGuard(code: string): boolean {
   const starts = /\bif\s*\(/g
   let match: RegExpExecArray | null
   while ((match = starts.exec(code)) !== null) {
@@ -206,26 +209,75 @@ function hasConditionalAuthGuard(code: string, descend = false): boolean {
     }
     let statementStart = close + 1
     while (/\s/.test(code[statementStart] ?? '')) statementStart++
-    starts.lastIndex = descend ? close + 1 : statementStart + statement.length
+    starts.lastIndex = statementStart + statement.length
     if (!stopsRequest) continue
 
     const returnsDeniedStatus = DENIED_STATUS.test(statement)
     // 正向身份判断、短路合取及三元条件不能证明未认证请求必然退出；可选链 ?. 不是三元条件。
-    // descend 只判断是否存在鉴权，路径条件与身份判断常以 && 组合，逐项检查。
-    const shapeOk = descend || !/&&|\?(?!\.)/.test(condition)
-    const negative = shapeOk && condition.split(descend ? /\|\||&&/ : '||').some(part => {
-      const term = part.trim()
-      const rejects = NEGATED_IDENTITY.test(term) || IDENTITY_IS_EMPTY.test(term) || IDENTITY_MISMATCH.test(term)
-      return rejects && (AUTH_CONDITION.test(term) || returnsDeniedStatus)
-    })
+    const negative = !/&&|\?(?!\.)/.test(condition) &&
+      condition.split('||').some(part => rejectsMissingIdentity(part.trim(), returnsDeniedStatus))
     if (negative) return true
   }
   return false
 }
 
+/**
+ * 文件中是否存在任何鉴权判断，包括嵌套在路径分支内的，如 if (path) { if (!user) error(401) }。
+ * 只用于决定是否降低置信度，不证明某个操作受保护，因此 && 组合的条件也逐项检查。
+ * 全文只配对一次括号，每个 if 只遍历自己这一层：若逐个 if 重新扫描各自的代码块，
+ * 深层嵌套时工作量是“长度 × 深度”，200KB 的 hooks 文件即可让一次扫描耗时约 86 秒。
+ */
+function containsConditionalAuthCheck(code: string): boolean {
+  const pairs = delimiterPairs(code)
+  for (const match of code.matchAll(/\bif\s*\(/g)) {
+    const open = match.index + match[0].length - 1
+    const close = pairs.get(open)
+    if (close === undefined) continue
+
+    let start = close + 1
+    while (/\s/.test(code[start] ?? '')) start++
+    // 代码块取配对的右括号；单条语句最多看 400 个字符。
+    let bodyStart = start
+    let bodyEnd: number
+    if (code[start] === '{') {
+      bodyStart = start + 1
+      bodyEnd = pairs.get(start) ?? Math.min(code.length, start + 600)
+    } else {
+      const semicolon = code.slice(start, start + 400).indexOf(';')
+      bodyEnd = semicolon === -1 ? Math.min(code.length, start + 400) : start + semicolon + 1
+    }
+
+    // 只看这一层：遇到嵌套的 if 即停，由它自己的迭代处理；括号内的内容整体跳过。
+    let stop = -1
+    for (let i = bodyStart; i < bodyEnd; i++) {
+      const window = code.slice(i, i + 16)
+      if (STOPS_REQUEST.test(window) && (i === 0 || !/[\w$]/.test(code[i - 1]!))) {
+        stop = i
+        break
+      }
+      if (/^if\s*\(/.test(window)) break
+      const end = pairs.get(i)
+      if (end !== undefined) i = end
+    }
+    if (stop === -1) continue
+
+    const returnsDeniedStatus = DENIED_STATUS.test(code.slice(stop, stop + 400))
+    const condition = code.slice(open + 1, close)
+    if (condition.split(/\|\||&&/).some(part => rejectsMissingIdentity(part.trim(), returnsDeniedStatus))) return true
+  }
+  return false
+}
+
+/** 每个文件只分析一次；中间件会被其覆盖的每条路由重复查询。 */
+const authSignalCache = new WeakMap<object, boolean>()
+
 function hasAuthSignal(file: { content: string }): boolean {
+  const cached = authSignalCache.get(file)
+  if (cached !== undefined) return cached
   const code = noiseMaskedOf(file)
-  return AUTH_ENFORCING_CALL.test(code) || hasConditionalAuthGuard(code)
+  const found = AUTH_ENFORCING_CALL.test(code) || hasConditionalAuthGuard(code)
+  authSignalCache.set(file, found)
+  return found
 }
 
 interface FunctionBody {
@@ -879,7 +931,7 @@ function middlewareCovers(ctx: ScanContext, routePath: string, url: string): boo
   if (!mw) return false
   if (!hasAuthSignal(mw)) return false
 
-  const config = extractMatcherConfig(mw)
+  const { config, readable } = compiledMatchersOf(mw)
   // 未指定匹配器时按全部请求处理。
   if (config.kind === 'absent') return true
   // 无法解析的匹配器保守视为可能覆盖，并记录扫描未完成。
@@ -892,11 +944,24 @@ function middlewareCovers(ctx: ScanContext, routePath: string, url: string): boo
     return true
   }
 
-  const parsed = config.patterns.map(matcherToRegex)
-  const readable = parsed.filter((re): re is RegExp => re !== null)
   // 仅使用可读模式；完全不可读时保持保守。
   if (readable.length === 0) return true
   return readable.some((re) => re.test(url))
+}
+
+/** 中间件的匹配器配置及编译结果，每个文件只解析一次。 */
+const matcherCache = new WeakMap<object, { config: MatcherConfig; readable: RegExp[] }>()
+
+function compiledMatchersOf(file: { content: string }): { config: MatcherConfig; readable: RegExp[] } {
+  const cached = matcherCache.get(file)
+  if (cached !== undefined) return cached
+  const config = extractMatcherConfig(file)
+  const readable = config.kind === 'patterns'
+    ? config.patterns.map(matcherToRegex).filter((re): re is RegExp => re !== null)
+    : []
+  const compiled = { config, readable }
+  matcherCache.set(file, compiled)
+  return compiled
 }
 
 /**
@@ -913,12 +978,20 @@ function globalGuardFor(ctx: ScanContext, route: Route): string | null {
     if (route.framework === 'nuxt') return /^server\/middleware\/.+\.[mc]?[jt]s$/.test(path)
     return false
   })
-  // 全局鉴权通常先按路径分支再判断身份，须检查嵌套条件。
-  const containsAuthCheck = (file: ScanFile): boolean => {
-    const code = noiseMaskedOf(file)
-    return AUTH_ENFORCING_CALL.test(code) || hasConditionalAuthGuard(code, true)
-  }
   return candidates.find(containsAuthCheck)?.path ?? null
+}
+
+/** 每个文件只分析一次；否则每条路由都会重新分析同一个全局鉴权文件。 */
+const authCheckCache = new WeakMap<ScanFile, boolean>()
+
+/** 全局鉴权通常先按路径分支再判断身份，须检查嵌套条件。 */
+function containsAuthCheck(file: ScanFile): boolean {
+  const cached = authCheckCache.get(file)
+  if (cached !== undefined) return cached
+  const code = noiseMaskedOf(file)
+  const found = AUTH_ENFORCING_CALL.test(code) || containsConditionalAuthCheck(code)
+  authCheckCache.set(file, found)
+  return found
 }
 
 // 生成检测结果。
