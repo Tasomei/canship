@@ -90,7 +90,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@2d33cce0ad8439e34f01f5218fdaaf4657215e3d
+      - uses: Tasomei/canship@5272bf3ca44663582d72935003a2782ad44579a7
         with:
           version: '0.3.2'
 ```
