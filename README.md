@@ -75,7 +75,7 @@ JSON uses `schemaVersion: 1`, independent of the package version; the npm packag
 
 Save as `.github/workflows/canship.yml` to scan on pushes and pull requests, with a counts-only summary. Scanner installation requires network access; scanning does not. Project dependencies are not installed or executed, and SARIF upload is disabled by default.
 
-The example pins the Action commit and explicitly installs npm version `0.3.1`; `version` does not use unreleased repository source. The Action accepts 0.2.1 reports without `schemaVersion`.
+The example pins the Action commit and explicitly installs npm version `0.3.2`; `version` does not use unreleased repository source. The Action accepts 0.2.1 reports without `schemaVersion`.
 
 ```yaml
 name: canship
@@ -92,13 +92,13 @@ jobs:
           persist-credentials: false
       - uses: Tasomei/canship@2d33cce0ad8439e34f01f5218fdaaf4657215e3d
         with:
-          version: '0.3.1'
+          version: '0.3.2'
 ```
 
 | Input | Default | Meaning |
 |---|---|---|
 | `path` | `.` | Directory within the checkout |
-| `version` | `0.3.1` | Exact npm version; no ranges or tags |
+| `version` | `0.3.2` | Exact npm version; no ranges or tags |
 | `fail-on` | `blocking` | `blocking`: certain P0/P1; `any`: all findings; `none`: findings only reported |
 | `only` / `skip` | unset | Mutually exclusive, comma-separated rule selectors |
 | `baseline` | unset | Existing baseline relative to the scanned directory |

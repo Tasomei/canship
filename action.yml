@@ -9,7 +9,7 @@ inputs:
     default: '.'
   version:
     description: Exact canship npm version; ranges and tags are not accepted.
-    default: '0.3.1'
+    default: '0.3.2'
   fail-on:
     description: 'Finding policy: blocking, any, or none. Incomplete scans and tool errors always fail.'
     default: blocking

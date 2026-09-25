@@ -75,7 +75,7 @@ JSON 使用独立于包版本的 `schemaVersion: 1`，npm 包附带 [结构定�
 
 保存为 `.github/workflows/canship.yml`，在推送和 PR 时扫描并生成统计摘要。安装扫描器需要联网，扫描不联网；不安装或执行项目依赖，默认不上传 SARIF。
 
-示例固定 Action 提交，显式安装 npm 版 `0.3.1`；`version` 不使用仓库中的未发布源码。Action 兼容 0.2.1 无 `schemaVersion` 的报告。
+示例固定 Action 提交，显式安装 npm 版 `0.3.2`；`version` 不使用仓库中的未发布源码。Action 兼容 0.2.1 无 `schemaVersion` 的报告。
 
 ```yaml
 name: canship
@@ -92,13 +92,13 @@ jobs:
           persist-credentials: false
       - uses: Tasomei/canship@2d33cce0ad8439e34f01f5218fdaaf4657215e3d
         with:
-          version: '0.3.1'
+          version: '0.3.2'
 ```
 
 | 输入 | 默认值 | 说明 |
 |---|---|---|
 | `path` | `.` | 检出目录内的扫描路径 |
-| `version` | `0.3.1` | 精确 npm 版本，不接受范围或标签 |
+| `version` | `0.3.2` | 精确 npm 版本，不接受范围或标签 |
 | `fail-on` | `blocking` | `blocking`：确定的 P0/P1；`any`：全部结果；`none`：仅报告结果 |
 | `only` / `skip` | 未设置 | 互斥，逗号分隔的规则选择器 |
 | `baseline` | 未设置 | 相对扫描目录的已有基线 |
