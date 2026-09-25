@@ -17,9 +17,9 @@ const rule = (id: string, name: string, severity: Severity, confidence: RuleDesc
 
 export const RULE_CATALOG: readonly RuleDescription[] = [
   rule('api/admin-db-access-without-auth', 'Admin database access without a recognized auth guard', 'P0', 'certain',
-    'Next.js App/Pages API handlers, including workspace applications.', 'Syntactic guards only; runtime authentication and business authorization are not verified.'),
+    'Server routes in Next.js, SvelteKit, Nuxt, Remix/React Router, and Astro, including workspace applications.', 'Syntactic guards only; runtime authentication and business authorization are not verified. Guards in SvelteKit hooks or Nuxt server middleware lower confidence.'),
   rule('api/db-write-without-auth', 'Database write without a recognized auth guard', 'P1', 'likely',
-    'Next.js App/Pages API handlers.', 'Session-scoped clients and indirect guards may need manual review.'),
+    'Server routes in Next.js, SvelteKit, Nuxt, Remix/React Router, and Astro.', 'Session-scoped clients and indirect guards may need manual review.'),
   rule('cors/reflected-origin-with-credentials', 'Reflected origin with credentials', 'P1', 'certain',
     'Response headers and cors middleware options.', 'Static pairing does not prove the deployed policy or cookie behavior.'),
   rule('cors/wildcard-with-credentials', 'Wildcard origin with credentials', 'P2', 'certain',

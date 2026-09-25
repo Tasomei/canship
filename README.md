@@ -22,10 +22,10 @@ Requires Node.js ≥18; no runtime dependencies. `npx` may download the package;
 | Credentials or suspected private values in Git-tracked and historical `.env` files | P0 |
 | Supabase tables without Row Level Security (RLS) in migrations | P1 |
 | Firebase unconditional access and date-based test rules | P1 |
-| Next.js API data operations without recognised authentication | P0 / P1 |
+| Server route data operations without recognised authentication | P0 / P1 |
 | Credentialed CORS with reflected or wildcard origins | P1 / P2 |
 
-Supports OpenAI, Anthropic, AWS, Stripe, GitHub, npm, Slack, SendGrid, and other credential formats, plus common frontend public environment prefixes. API authentication checks cover only Next.js `/api`: App Router, Pages Router, route groups, and workspace applications.
+Supports OpenAI, Anthropic, AWS, Stripe, GitHub, npm, Slack, SendGrid, and other credential formats, plus common frontend public environment prefixes. API authentication checks cover server routes in Next.js (`/api` in the App and Pages Router), SvelteKit (`+server` endpoints), Nuxt (`server/api` and `server/routes`), Remix and React Router (modules in `app/routes` exporting `loader` or `action`), and Astro (endpoints in `src/pages`), including route groups and workspace applications. SvelteKit page loads and form actions are not checked. An authentication check in SvelteKit `hooks.server` or Nuxt `server/middleware` lowers confidence instead of suppressing findings, because the routes it covers are decided in code.
 
 Confidence is `certain` or `likely`, describing static evidence rather than credential validity or deployed state. Only certain findings are shown by default; hidden likely findings still affect the exit code.
 

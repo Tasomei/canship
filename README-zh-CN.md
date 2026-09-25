@@ -22,10 +22,10 @@ npx canship .
 | Git 跟踪及历史 `.env` 文件中的凭据或疑似私密值 | P0 |
 | Supabase 迁移记录中未启用行级安全（RLS）的表 | P1 |
 | Firebase 无条件访问及固定日期测试规则 | P1 |
-| Next.js API 数据操作未识别到鉴权 | P0 / P1 |
+| 服务端路由数据操作未识别到鉴权 | P0 / P1 |
 | 携带凭据的 CORS 来源回显或通配符配置 | P1 / P2 |
 
-支持 OpenAI、Anthropic、AWS、Stripe、GitHub、npm、Slack、SendGrid 等凭据格式及常见前端公开环境变量前缀。API 鉴权检查仅覆盖 Next.js `/api`，支持 App Router、Pages Router、路由组和工作区应用。
+支持 OpenAI、Anthropic、AWS、Stripe、GitHub、npm、Slack、SendGrid 等凭据格式及常见前端公开环境变量前缀。API 鉴权检查覆盖以下框架的服务端路由：Next.js（App Router 与 Pages Router 的 `/api`）、SvelteKit（`+server` 端点）、Nuxt（`server/api` 与 `server/routes`）、Remix 与 React Router（`app/routes` 中导出 `loader` 或 `action` 的模块）、Astro（`src/pages` 中的端点），支持路由组和工作区应用。不检查 SvelteKit 的页面 load 与表单 action。SvelteKit `hooks.server` 或 Nuxt `server/middleware` 中的鉴权会降低结果置信度而不是直接隐藏结果，因为它覆盖哪些路由由代码决定。
 
 置信度分为确定（`certain`）和疑似（`likely`），仅描述静态证据，不验证凭据有效性或线上状态。默认只展示确定结果；隐藏的疑似结果仍影响退出码。
 

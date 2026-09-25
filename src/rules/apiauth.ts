@@ -8,14 +8,38 @@ import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { JWT_SOURCE, SB_SECRET_SOURCE } from './patterns.js'
 
-// 识别 API 路由。
+// 识别各框架可被直接请求的服务端路由。
 
-/** App Router 处理函数及 Pages Router API 文件。 */
+/** Next.js App Router 处理函数及 Pages Router API 文件；Astro 的 src/pages/api 同样落在此处。 */
 const APP_ROUTER = /(?:^|\/)app\/api\/(?:.+\/)?route\.[mc]?[jt]sx?$/
 const PAGES_ROUTER = /(?:^|\/)pages\/api\/.+\.[mc]?[jt]sx?$/
 
-function isApiRoute(path: string): boolean {
-  return APP_ROUTER.test(routePathOf(path)) || PAGES_ROUTER.test(path)
+/** SvelteKit 端点只能是 +server 文件，文件名本身即可确认框架。 */
+const SVELTEKIT_ENDPOINT = /^(.*?\/)?src\/routes\/(?:(.*)\/)?\+server\.[mc]?[jt]s$/
+
+/** Nuxt/Nitro 服务端路由。目录名在其他项目中也常见（如 tRPC 的 server/api/routers），须同时出现 h3 处理函数。 */
+const NUXT_ROUTE = /^(.*?\/)?server\/(api|routes)\/(.+)\.[mc]?[jt]s$/
+const H3_HANDLER = /\b(?:defineEventHandler|eventHandler|defineCachedEventHandler|defineLazyEventHandler)\s*\(/
+const NUXT_METHOD_SUFFIX = /\.(?:get|post|put|patch|delete|head|options|connect|trace)$/i
+
+/** Remix 与 React Router 路由模块；只有导出 loader 或 action 的模块可被直接请求。 */
+const REMIX_ROUTE = /^(.*?\/)?app\/routes\/(.+)\.[mc]?[jt]sx?$/
+const REMIX_EXPORT = /\bexport\s+(?:async\s+)?function\s+(?:loader|action)\b|\bexport\s+const\s+(?:loader|action)\b/
+
+/** Astro 页面目录中导出 HTTP 方法的脚本文件即端点。 */
+const ASTRO_ENDPOINT = /^(.*?\/)?src\/pages\/(.+)\.[mc]?[jt]s$/
+const ASTRO_EXPORT =
+  /\bexport\s+(?:async\s+)?function\s+(?:GET|POST|PUT|PATCH|DELETE|ALL)\b|\bexport\s+const\s+(?:GET|POST|PUT|PATCH|DELETE|ALL)\b/
+
+type Framework = 'next' | 'astro' | 'sveltekit' | 'nuxt' | 'remix'
+
+/** 一个可被直接请求的服务端路由。 */
+interface Route {
+  file: ScanFile
+  framework: Framework
+  url: string
+  /** 所属应用根目录（含末尾斜杠），用于别名解析及查找全局鉴权文件。 */
+  scope: string
 }
 
 /** 路由组仅用于组织目录，不构成 URL 路径。 */
@@ -23,21 +47,40 @@ function routePathOf(path: string): string {
   return path.replace(/(^|\/)\([^/]+\)(?=\/)/g, '$1').replace(/\/{2,}/g, '/')
 }
 
-/** 仅豁免明确的登录及身份管理入口，不豁免整个命名空间。 */
-const AUTH_ENDPOINT_NAMES =
-  /^\/api\/auth\/(?:sign[-_]?in|sign[-_]?up|sign[-_]?out|log[-_]?in|log[-_]?out|register|session|verify|confirm|reset(?:[-_]password)?|forgot(?:[-_]password)?|magic[-_]?link|otp)$/
+/** 按框架约定识别路由；不属于任何框架时返回空值。 */
+function routeOf(file: ScanFile): Route | null {
+  const path = routePathOf(file.path)
+  if (APP_ROUTER.test(path) || PAGES_ROUTER.test(file.path)) {
+    const scope = /^(.*?)(?:src\/)?(?:app|pages)\/api\//.exec(path)?.[1] ?? ''
+    return { file, framework: 'next', url: nextRouteUrl(path), scope }
+  }
 
-/** OAuth 回调允许一层提供方路径。 */
-const AUTH_CALLBACK = /^\/api\/auth\/callback(?:\/[^/]+)?$/
+  const svelte = SVELTEKIT_ENDPOINT.exec(path)
+  if (svelte) return { file, framework: 'sveltekit', url: `/${svelte[2] ?? ''}`, scope: svelte[1] ?? '' }
 
-function isAuthEndpoint(url: string): boolean {
-  // 不按任意捕获路径豁免，仅识别明确的认证处理方式。
-  return AUTH_ENDPOINT_NAMES.test(url) || AUTH_CALLBACK.test(url)
+  const nuxt = NUXT_ROUTE.exec(path)
+  if (nuxt && H3_HANDLER.test(noiseMaskedOf(file))) {
+    const rest = nuxt[3]!.replace(NUXT_METHOD_SUFFIX, '').replace(/(?:^|\/)index$/, '')
+    const url = nuxt[2] === 'api' ? `/api/${rest}` : `/${rest}`
+    return { file, framework: 'nuxt', url: url.replace(/\/$/, '') || '/', scope: nuxt[1] ?? '' }
+  }
+
+  const remix = REMIX_ROUTE.exec(path)
+  if (remix && REMIX_EXPORT.test(noiseMaskedOf(file))) {
+    return { file, framework: 'remix', url: remixRouteUrl(remix[2]!), scope: remix[1] ?? '' }
+  }
+
+  const astro = ASTRO_ENDPOINT.exec(path)
+  if (astro && ASTRO_EXPORT.test(noiseMaskedOf(file))) {
+    const rest = astro[2]!.replace(/(?:^|\/)index$/, '')
+    return { file, framework: 'astro', url: `/${rest}`, scope: astro[1] ?? '' }
+  }
+  return null
 }
 
-/** 将文件路径转换为请求 URL。 */
-function routeUrl(path: string): string {
-  const m = /(?:^|\/)(?:app|pages)\/(api\/.*)$/.exec(routePathOf(path))
+/** Next.js 文件路径转换为请求 URL。 */
+function nextRouteUrl(path: string): string {
+  const m = /(?:^|\/)(?:app|pages)\/(api\/.*)$/.exec(path)
   if (!m) return `/${path}`
   const url = m[1]!
     .replace(/\/route\.[mc]?[jt]sx?$/, '')
@@ -46,15 +89,65 @@ function routeUrl(path: string): string {
   return `/${url}`
 }
 
+/**
+ * Remix 扁平路由文件名转换为 URL：点号分隔层级，下划线开头的段不进入 URL（_index、_auth），
+ * 段尾下划线仅用于脱离父布局，[.] 表示字面量点号。同时兼容文件夹路由（route.tsx）及 v1 目录写法。
+ */
+function remixRouteUrl(name: string): string {
+  const LITERAL_DOT = '\u0000'
+  const segments = name
+    .replace(/\/route$/, '')
+    .replace(/\[\.\]/g, LITERAL_DOT)
+    .split(/[./]/)
+    .filter(segment => segment !== '' && !segment.startsWith('_'))
+    .map(segment => segment.replace(/_$/, '').replace(/[[\]]/g, '').split(LITERAL_DOT).join('.'))
+  if (segments[segments.length - 1] === 'index') segments.pop()
+  return `/${segments.join('/')}`
+}
+
+/** 仅豁免明确的登录及身份管理入口，不豁免整个命名空间；非 Next.js 框架的认证路由常不在 /api 下。 */
+const AUTH_ENDPOINT_NAMES =
+  /^(?:\/api)?\/auth\/(?:sign[-_]?in|sign[-_]?up|sign[-_]?out|log[-_]?in|log[-_]?out|register|session|verify|confirm|reset(?:[-_]password)?|forgot(?:[-_]password)?|magic[-_]?link|otp)$/
+
+/** OAuth 回调允许一层提供方路径。 */
+const AUTH_CALLBACK = /^(?:\/api)?\/auth\/callback(?:\/[^/]+)?$/
+
+/** 提供方在前的回调，如 /login/github/callback。 */
+const PROVIDER_CALLBACK = /^(?:\/api)?\/(?:auth|oauth|login|sign-?in)\/[^/]+\/callback$/
+
+/** nuxt-auth-utils 的 OAuth 处理函数本身就是登录入口。 */
+const OAUTH_HANDLER = /\bdefineOAuth\w*EventHandler\s*\(/
+
+function isAuthEndpoint(route: Route): boolean {
+  // 不按任意捕获路径豁免，仅识别明确的认证处理方式。
+  return AUTH_ENDPOINT_NAMES.test(route.url) || AUTH_CALLBACK.test(route.url) ||
+    PROVIDER_CALLBACK.test(route.url) || OAUTH_HANDLER.test(noiseMaskedOf(route.file))
+}
+
 // 识别鉴权证据。
 
-/** 已知会拒绝无效调用者的验证函数及包装器。 */
+/** 已知会拒绝无效调用者的验证函数及包装器；require 系列含 requireUserId、requireUserSession 等变体。 */
 const AUTH_ENFORCING_CALL =
-  /\b(?:NextAuth|require(?:Auth|User|Session|Admin)|withAuth|verifyAuth|ensureAuth|assertAuth(?:enticated)?|verifyIdToken|constructEvent)\s*\(/i
+  /\b(?:NextAuth|require(?:Auth|User|Session|Admin)\w*|withAuth|verifyAuth|ensureAuth|assertAuth(?:enticated)?|verifyIdToken|constructEvent)\s*\(/i
 
 /** 鉴权条件必须涉及身份、凭据或验证调用。 */
 const AUTH_CONDITION =
-  /\b(?:session|token|user|authorization|bearer|jwt|auth|signature|CRON_SECRET|WEBHOOK_SECRET|REVALIDATE_SECRET|ADMIN_SECRET)\b|\blocals\s*\.\s*user\b|\b(?:getUser|getSession|getServerSession|currentUser|getAuth|isAuthenticated|checkAuth|verifyAuth|ensureAuth|verifyIdToken|timingSafeEqual)\s*\(/i
+  /\b(?:session|token|user|userid|user_id|authorization|bearer|jwt|auth|signature|CRON_SECRET|WEBHOOK_SECRET|REVALIDATE_SECRET|ADMIN_SECRET)\b|\blocals\s*\.\s*user\b|\b(?:getUser|getSession|getServerSession|currentUser|getAuth|isAuthenticated|checkAuth|verifyAuth|ensureAuth|verifyIdToken|timingSafeEqual)\s*\(/i
+
+/** 属性访问链，允许可选链，如 session?.user。 */
+const ACCESS_CHAIN = String.raw`[\w$]+(?:\??\.[\w$]+)*`
+/** 否定身份判断：!session?.user、user === null、token !== expected。 */
+const NEGATED_IDENTITY = new RegExp(`^!\\s*${ACCESS_CHAIN}(?:\\s*\\([^=]*\\))?$`)
+const IDENTITY_IS_EMPTY = new RegExp(`^${ACCESS_CHAIN}\\s*={2,3}\\s*(?:null|undefined|false)$`)
+const IDENTITY_MISMATCH =
+  new RegExp(`^${ACCESS_CHAIN}\\s*!={1,2}\\s*(?!(?:null|undefined|false)\\b)${ACCESS_CHAIN}$`)
+
+/** 终止请求的语句；SvelteKit 2 的 error(401) 无需 throw 即会中止。 */
+const STOPS_REQUEST = /^(?:(?:return|throw|redirect|notFound)\b|error\s*\(\s*40[13]\b)/
+
+/** 明确返回 401/403：Response 状态、SvelteKit error() 及 Nuxt createError 的 statusCode。 */
+const DENIED_STATUS =
+  /\b(?:return|throw)\b[\s\S]{0,300}\bstatus(?:Code)?\s*[:(=]\s*(?:401|403)\b|\berror\s*\(\s*40[13]\b/i
 
 /** 在已屏蔽文本中匹配分隔符。 */
 function closingDelimiter(source: string, start: number, open: string, close: string): number | null {
@@ -83,8 +176,11 @@ function controlledStatement(source: string, afterCondition: number): string {
   return source.slice(start, end)
 }
 
-/** 只有拒绝未认证请求的条件分支才能提供保护。 */
-function hasConditionalAuthGuard(code: string): boolean {
+/**
+ * 只有拒绝未认证请求的条件分支才能提供保护。
+ * descend 为真时也检查嵌套在其他条件内的分支，用于判断文件中是否存在任何鉴权，而非某操作是否受保护。
+ */
+function hasConditionalAuthGuard(code: string, descend = false): boolean {
   const starts = /\bif\s*\(/g
   let match: RegExpExecArray | null
   while ((match = starts.exec(code)) !== null) {
@@ -99,7 +195,7 @@ function hasConditionalAuthGuard(code: string): boolean {
     const pairs = delimiterPairs(body)
     let stopsRequest = false
     for (let i = 0; i < body.length; i++) {
-      if (/^(?:return|throw|redirect|notFound)\b/.test(body.slice(i, i + 16)) &&
+      if (STOPS_REQUEST.test(body.slice(i, i + 16)) &&
           (i === 0 || !/[\w$]/.test(body[i - 1]!))) {
         stopsRequest = true
         break
@@ -110,17 +206,16 @@ function hasConditionalAuthGuard(code: string): boolean {
     }
     let statementStart = close + 1
     while (/\s/.test(code[statementStart] ?? '')) statementStart++
-    starts.lastIndex = statementStart + statement.length
+    starts.lastIndex = descend ? close + 1 : statementStart + statement.length
     if (!stopsRequest) continue
 
-    const returnsDeniedStatus =
-      /\b(?:return|throw)\b[\s\S]{0,300}\bstatus\s*[:(=]\s*(?:401|403)\b/i.test(statement)
-    // 正向身份判断、短路合取及三元条件不能证明未认证请求必然退出。
-    const negative = !/&&|\?/.test(condition) && condition.split('||').some(part => {
+    const returnsDeniedStatus = DENIED_STATUS.test(statement)
+    // 正向身份判断、短路合取及三元条件不能证明未认证请求必然退出；可选链 ?. 不是三元条件。
+    // descend 只判断是否存在鉴权，路径条件与身份判断常以 && 组合，逐项检查。
+    const shapeOk = descend || !/&&|\?(?!\.)/.test(condition)
+    const negative = shapeOk && condition.split(descend ? /\|\||&&/ : '||').some(part => {
       const term = part.trim()
-      const rejects = /^!\s*[\w$.]+(?:\s*\([^=]*\))?$/.test(term) ||
-        /^[\w$.]+\s*={2,3}\s*(?:null|undefined|false)$/.test(term) ||
-        /^[\w$.]+\s*!={1,2}\s*(?!(?:null|undefined|false)\b)[\w$.]+$/.test(term)
+      const rejects = NEGATED_IDENTITY.test(term) || IDENTITY_IS_EMPTY.test(term) || IDENTITY_MISMATCH.test(term)
       return rejects && (AUTH_CONDITION.test(term) || returnsDeniedStatus)
     })
     if (negative) return true
@@ -283,8 +378,11 @@ function unguardedOperations(file: ScanFile, ops: DataHit[]): DataHit[] {
 
 // 识别管理员客户端。
 
-/** 匹配 Supabase 客户端构造，支持简单泛型参数。 */
-const CLIENT_CONSTRUCTOR = /\b(?:createClient|createServerClient)\s*(?:<[^()]{0,200}>)?\s*\(/
+/**
+ * 匹配 Supabase 客户端构造，支持简单泛型参数。泛型之后的空白放在可选组内：
+ * 两段 \s* 在无泛型时会对同一段空白二次回溯，屏蔽后的长注释即可让单个文件拖慢整次扫描。
+ */
+const CLIENT_CONSTRUCTOR = /\b(?:createClient|createServerClient)\s*(?:<[^()]{0,200}>\s*)?\(/
 
 const SERVICE_ROLE_ENV = /\bSUPABASE_SERVICE_ROLE(?:_KEY)?\b|\bSERVICE_ROLE_KEY\b|\bSUPABASE_SECRET_KEY\b/
 const SERVICE_ROLE_LITERAL = new RegExp(String.raw`['"\`](${JWT_SOURCE}|${SB_SECRET_SOURCE})['"\`]`, 'g')
@@ -301,9 +399,15 @@ function referencesServiceRole(code: string, source: string): boolean {
   return false
 }
 
+/** @nuxtjs/supabase 的服务端辅助函数：前者绕过行级策略，后者绑定调用者会话；常带数据库类型泛型。 */
+// 泛型之后的空白放在可选组内，避免两段 \s* 在无泛型时产生二次回溯。
+const NUXT_SUPABASE_ADMIN = /\bserverSupabaseServiceRole\s*(?:<[^()]{0,200}>\s*)?\(/
+const NUXT_SUPABASE_SESSION = /\bserverSupabaseClient\s*(?:<[^()]{0,200}>\s*)?\(/
+
 /** 同时存在客户端构造和管理员密钥引用时视为管理员客户端。 */
 function buildsAdminClient(file: ScanFile): boolean {
   const code = noiseMaskedOf(file)
+  if (NUXT_SUPABASE_ADMIN.test(code)) return true
   if (!CLIENT_CONSTRUCTOR.test(code)) return false
 
   const source = commentsMaskedOf(file)
@@ -319,6 +423,8 @@ function buildsAdminClient(file: ScanFile): boolean {
 /** 识别绑定调用者会话的客户端，由数据库策略实施授权。 */
 function buildsSessionClient(file: ScanFile): boolean {
   const code = noiseMaskedOf(file)
+  if (NUXT_SUPABASE_ADMIN.test(code)) return false
+  if (NUXT_SUPABASE_SESSION.test(code)) return true
   if (!CLIENT_CONSTRUCTOR.test(code)) return false
   // 含管理员凭据的客户端不能按会话客户端处理。
   if (referencesServiceRole(code, commentsMaskedOf(file))) return false
@@ -363,23 +469,42 @@ function normalizeSpec(spec: string, fromPath: string): ModuleTarget | null {
       alias: false,
     }
   }
-  const alias = /^[@~#]\/(.+)$/.exec(spec)
+  // SvelteKit 的 $lib 固定指向 src/lib。
+  const lib = /^\$lib\/(.+)$/.exec(spec)
+  if (lib) return { key: moduleKey(`src/lib/${lib[1]!}`), alias: true }
+  // ~~/ 与 @@/ 是 Nuxt 的项目根目录别名。
+  const alias = /^(?:[@~#]|~~|@@)\/(.+)$/.exec(spec)
   return alias ? { key: moduleKey(alias[1]!), alias: true } : null
 }
 
-/** 通过本地代码或导入关系判断管理员客户端使用情况。 */
-function usesAdminClient(route: ScanFile, adminModules: ScanFile[], allFiles: ScanFile[]): boolean {
-  return buildsAdminClient(route) || importsAnyOf(route, adminModules, allFiles)
+/** 通过本地代码、导入关系或 Nuxt 自动导入判断管理员客户端使用情况。 */
+function usesAdminClient(route: Route, adminModules: ScanFile[], allFiles: ScanFile[]): boolean {
+  return buildsAdminClient(route.file) || importsAnyOf(route, adminModules, allFiles) ||
+    autoImportsAnyOf(route, adminModules)
 }
 
-/** 通过导入关系判断会话客户端使用情况。 */
-function usesSessionClient(route: ScanFile, sessionModules: ScanFile[], allFiles: ScanFile[]): boolean {
-  return buildsSessionClient(route) || importsAnyOf(route, sessionModules, allFiles)
+/** 通过本地代码、导入关系或 Nuxt 自动导入判断会话客户端使用情况。 */
+function usesSessionClient(route: Route, sessionModules: ScanFile[], allFiles: ScanFile[]): boolean {
+  // SvelteKit 通常在 hooks 中创建会话客户端并挂到 locals 上，路由不再导入它。
+  if (route.framework === 'sveltekit' && /\blocals\s*\.\s*supabase\b/.test(noiseMaskedOf(route.file))) return true
+  return buildsSessionClient(route.file) || importsAnyOf(route, sessionModules, allFiles) ||
+    autoImportsAnyOf(route, sessionModules)
 }
 
-/** 提取路由所属的应用根目录。 */
-function moduleScopeOf(routePath: string): string {
-  return /^(.*?)(?:src\/)?(?:app|pages)\/api\//.exec(routePathOf(routePath))?.[1] ?? ''
+/** Nuxt 自动导入 server/utils 的导出，路由不写 import 也能调用。 */
+function autoImportsAnyOf(route: Route, modules: ScanFile[]): boolean {
+  if (route.framework !== 'nuxt') return false
+  const utils = `${route.scope}server/utils/`
+  const code = noiseMaskedOf(route.file)
+  return modules.some(module => module.path.startsWith(utils) && exportedNames(module).some(name =>
+    new RegExp(`(?<![\\w$.])${name.replace(/\$/g, '\\$')}\\s*\\(`).test(code)))
+}
+
+/** 模块顶层导出的函数及变量名。 */
+function exportedNames(file: ScanFile): string[] {
+  const names = noiseMaskedOf(file).matchAll(
+    /\bexport\s+(?:async\s+)?(?:function\s*\*?\s*|const\s+|let\s+|var\s+)([A-Za-z_$][\w$]*)/g)
+  return [...names].map(m => m[1]!)
 }
 
 /** 获取文件导入及重导出的项目模块。 */
@@ -400,9 +525,11 @@ function importedModules(file: ScanFile, allFiles: ScanFile[], aliasScope: strin
     } else {
       // 别名仅在所属应用及其源码目录解析，避免跨应用误匹配。
       const prefix = aliasScope
+      // app/ 对应 Remix 的 ~/ 及 Nuxt 4 的源码目录。
       for (const key of [
         moduleKey(`${prefix}${target.key}`),
         moduleKey(`${prefix}src/${target.key}`),
+        moduleKey(`${prefix}app/${target.key}`),
       ]) {
         found.push(...(index.get(key) ?? []))
       }
@@ -412,15 +539,15 @@ function importedModules(file: ScanFile, allFiles: ScanFile[], aliasScope: strin
 }
 
 /** 按访问集合遍历导入图并判断目标模块是否可达。 */
-function importsAnyOf(route: ScanFile, modules: ScanFile[], allFiles: ScanFile[]): boolean {
+function importsAnyOf(route: Route, modules: ScanFile[], allFiles: ScanFile[]): boolean {
   if (modules.length === 0) return false
 
   const targetPaths = new Set(modules.map((file) => file.path))
   const visited = new Set<string>()
-  const aliasScope = moduleScopeOf(route.path)
+  const aliasScope = route.scope
 
   // 使用显式队列避免深层导入链导致调用栈溢出。
-  const queue: ScanFile[] = importedModules(route, allFiles, aliasScope)
+  const queue: ScanFile[] = importedModules(route.file, allFiles, aliasScope)
   while (queue.length > 0) {
     const file = queue.pop()!
     if (targetPaths.has(file.path)) return true
@@ -772,6 +899,28 @@ function middlewareCovers(ctx: ScanContext, routePath: string, url: string): boo
   return readable.some((re) => re.test(url))
 }
 
+/**
+ * SvelteKit 的 hooks.server 与 Nuxt 的 server/middleware 对所有请求生效，却没有声明式的作用范围：
+ * 路径判断写在代码里。其中含鉴权时无法确认是否覆盖该路由，结果降为疑似，而不是直接当作已保护。
+ */
+function globalGuardFor(ctx: ScanContext, route: Route): string | null {
+  const relative = (file: ScanFile): string | null =>
+    file.path.startsWith(route.scope) ? file.path.slice(route.scope.length) : null
+  const candidates = ctx.files.filter((file) => {
+    const path = relative(file)
+    if (path === null) return false
+    if (route.framework === 'sveltekit') return /^src\/hooks\.server\.[mc]?[jt]s$/.test(path)
+    if (route.framework === 'nuxt') return /^server\/middleware\/.+\.[mc]?[jt]s$/.test(path)
+    return false
+  })
+  // 全局鉴权通常先按路径分支再判断身份，须检查嵌套条件。
+  const containsAuthCheck = (file: ScanFile): boolean => {
+    const code = noiseMaskedOf(file)
+    return AUTH_ENFORCING_CALL.test(code) || hasConditionalAuthGuard(code, true)
+  }
+  return candidates.find(containsAuthCheck)?.path ?? null
+}
+
 // 生成检测结果。
 
 /** 识别摘录中需提前遮蔽的长凭据形状。 */
@@ -796,7 +945,7 @@ export const apiAuthRule: ProjectRule = {
 
   check(ctx: ScanContext): Finding[] {
     // 示例路由仍参与检查，由引擎降低置信度。
-    const routes = ctx.files.filter((f) => isApiRoute(f.path))
+    const routes = ctx.files.map(routeOf).filter((route): route is Route => route !== null)
     if (routes.length === 0) return []
 
     // 每个中间件只校验一次匹配器。
@@ -820,32 +969,40 @@ export const apiAuthRule: ProjectRule = {
     const findings: Finding[] = []
 
     for (const route of routes) {
-      const ops = unguardedOperations(route, findDataOps(route))
+      const ops = unguardedOperations(route.file, findDataOps(route.file))
       if (ops.length === 0) continue
 
-      const url = routeUrl(route.path)
-      if (isAuthEndpoint(url)) continue
-      // 逐路由判断保护范围。
-      if (middlewareCovers(ctx, route.path, url)) continue
+      const url = route.url
+      if (isAuthEndpoint(route)) continue
+      // Next.js 与 Astro 的中间件逐路由判断保护范围。
+      if ((route.framework === 'next' || route.framework === 'astro') &&
+          middlewareCovers(ctx, route.file.path, url)) continue
+      const globalGuard = globalGuardFor(ctx, route)
+      const globalNote = globalGuard === null ? [] : [
+        `${globalGuard} contains an authentication check that may cover ${url}. Its path conditions are ` +
+          `written in code, so the scan cannot tell which routes it applies to; this finding is reported at ` +
+          `lower confidence. Confirm that check runs for ${url}.`,
+      ]
 
       const admin = usesAdminClient(route, adminModules, ctx.files)
       // 存在写操作时优先用其作为证据。
       const hit = ops.find((o) => o.writes) ?? ops[0]!
       // 每个路由只构建一次行号索引。
-      const line = lineNumberAt(lineStartsOf(route.content), hit.index)
-      const excerpt = excerptFor(route, line)
+      const line = lineNumberAt(lineStartsOf(route.file.content), hit.index)
+      const excerpt = excerptFor(route.file, line)
 
       if (admin) {
         findings.push({
           ruleId: 'api/admin-db-access-without-auth',
           severity: 'P0',
-          // 管理员客户端缺少鉴权时使用确定置信度。
-          confidence: 'certain',
+          // 管理员客户端缺少鉴权时使用确定置信度；可能受全局鉴权覆盖时降为疑似。
+          confidence: globalGuard === null ? 'certain' : 'likely',
           title: `Anyone can call ${url} and it queries your database as admin`,
-          file: route.path,
+          file: route.file.path,
           line,
           excerpt,
           why: [
+            ...globalNote,
             `This route references a recognized admin client. Such clients can bypass normal per-user access checks; ` +
               `verify the effective credentials and granted permissions.`,
             `The scan did not recognize an authentication guard protecting this operation or applicable middleware. ` +
@@ -876,10 +1033,11 @@ export const apiAuthRule: ProjectRule = {
           // 公开写入可能是业务设计，保留疑似置信度。
           confidence: 'likely',
           title: `${url} writes to your database with no sign-in check`,
-          file: route.path,
+          file: route.file.path,
           line,
           excerpt,
           why: [
+            ...globalNote,
             `This route changes data, and the scan did not recognize an authentication guard before the operation. ` +
               `Indirect guards and runtime controls require manual verification.`,
             `If this route is publicly reachable and no other control rejects the caller, unauthenticated requests can trigger this write.`,
