@@ -59,7 +59,7 @@ function project(name: string, files: Record<string, string>): string {
 }
 const openRules = 'service cloud.firestore { match /documents/{id} { allow write: if true; } }'
 
-test('JSON 结构版本独立于软件包版本，保留完整性和抑制统计', () => {
+test('the JSON schema version is independent of the package version and keeps completeness and suppression counts', () => {
   const r = report({ partial: true, findings: [finding] }, '0.2.1')
   assert.equal(r.schemaVersion, 1)
   assert.equal(r.version, '0.2.1')
@@ -69,7 +69,7 @@ test('JSON 结构版本独立于软件包版本，保留完整性和抑制统计
   assert.equal(r.baselineSuppressed, 0)
 })
 
-test('JSON 不自动序列化新增的内部字段', () => {
+test('JSON does not serialize new internal fields automatically', () => {
   const source = { ...result(), internal: 'PRIVATE_INTERNAL_DATA' }
   const json = createJsonReport(source, {
     version: '0.2.1', root: '.', hiddenLikely: 0, baselineSuppressed: 0, baselineStale: 0,
@@ -78,15 +78,15 @@ test('JSON 不自动序列化新增的内部字段', () => {
 })
 
 for (const policy of ['blocking', 'any', 'none']) {
-  test(`完整空扫描通过 ${policy}`, () => assert.equal(assessReport(report(), 0, policy).failed, false))
+  test(`a complete empty scan passes ${policy}`, () => assert.equal(assessReport(report(), 0, policy).failed, false))
   for (const exit of [1, 2, 3]) {
-    test(`不完整扫描退出 ${exit} 时不能被 ${policy} 放行`, () => {
+    test(`an incomplete scan exiting ${exit} is not let through by ${policy}`, () => {
       const findings = exit === 1 ? [finding] : exit === 2 ? [{ ...finding, confidence: 'likely' as const }] : []
       assert.equal(assessReport(report({ partial: true, findings }), exit, policy).failed, true)
     })
   }
 }
-test('结果策略准确区分确定阻断、疑似结果和仅报告', () => {
+test('finding policies separate certain blockers, likely findings and report-only', () => {
   assert.equal(assessReport(report({ findings: [finding] }), 1, 'blocking').failed, true)
   assert.equal(assessReport(report({ findings: [finding] }), 1, 'none').failed, false)
   const likely = report({ findings: [{ ...finding, confidence: 'likely' }] })
@@ -94,7 +94,7 @@ test('结果策略准确区分确定阻断、疑似结果和仅报告', () => {
   assert.equal(assessReport(likely, 2, 'any').failed, true)
   assert.equal(assessReport({ ...report(), hiddenLikely: 1 }, 2, 'any').failed, true)
 })
-test('兼容已发布的无 schemaVersion 输出', () => {
+test('published output without schemaVersion is still accepted', () => {
   const { schemaVersion: _, ...legacy } = report({}, '0.2.1')
   assert.equal(assessReport(legacy, 0, 'blocking').failed, false)
 })
@@ -103,11 +103,11 @@ for (const patch of [
   { findings: {} }, { errors: undefined }, { baselineSuppressed: NaN }, { ruleSelection: {} },
   { findings: [{ ...finding, severity: 'unknown' }] },
 ]) {
-  test(`拒绝损坏的报告字段 ${Object.keys(patch)[0]}`, () => {
+  test(`a corrupt report field is rejected: ${Object.keys(patch)[0]}`, () => {
     assert.throws(() => assessReport({ ...report(), ...patch }, 0, 'blocking'))
   })
 }
-test('拒绝退出码与结果矛盾；工具错误及空扫描始终失败', () => {
+test('an exit code that contradicts the findings is rejected; tool errors and empty scans always fail', () => {
   assert.throws(() => assessReport(report({ findings: [finding] }), 0, 'none'))
   assert.throws(() => assessReport(report(), 9, 'none'))
   assert.equal(assessReport(report(), 3, 'none').failed, true)
@@ -116,25 +116,25 @@ test('拒绝退出码与结果矛盾；工具错误及空扫描始终失败', ()
 })
 
 for (const version of ['latest', '^0.2.1', '0.2.1 & echo unsafe', 'file:../package', 'https://example.com/pkg.tgz']) {
-  test(`拒绝非固定版本 ${version}`, () => assert.throws(() => parseInputs(environment({ INPUT_VERSION: version }))))
+  test(`a non-exact version is rejected: ${version}`, () => assert.throws(() => parseInputs(environment({ INPUT_VERSION: version }))))
 }
-test('Action 默认版本与配置、双语示例及参数表一致', () => {
+test('the Action default version matches its config, both README examples and the input tables', () => {
   const version = parseInputs(environment()).version
   assert.equal(version, '0.3.0')
   assert.equal(parseInputs(environment({ INPUT_VERSION: '' })).version, version)
   const metadata = readFileSync(join(repository, 'action.yml'), 'utf8')
   const versionInput = /^  version:\r?\n(?:(?: {4}[^\r\n]*|)\r?\n)*/m.exec(metadata)?.[0]
-  assert.ok(versionInput, '缺少 version 输入')
-  assert.ok(versionInput.includes(`default: '${version}'`), 'Action 配置与运行时默认版本不一致')
+  assert.ok(versionInput, 'missing version input')
+  assert.ok(versionInput.includes(`default: '${version}'`), 'the Action config and runtime default versions differ')
   for (const name of ['README.md', 'README-zh-CN.md']) {
     const readme = readFileSync(join(repository, name), 'utf8')
     const workflow = /^```yaml\r?\n([\s\S]*?)^```/m.exec(readme)?.[1]
-    assert.ok(workflow, `${name} 缺少工作流示例`)
-    assert.ok(workflow.includes(`version: '${version}'`), `${name} 示例版本不一致`)
-    assert.ok(readme.includes(`| \`version\` | \`${version}\` |`), `${name} 默认版本不一致`)
+    assert.ok(workflow, `${name} lacks a workflow example`)
+    assert.ok(workflow.includes(`version: '${version}'`), `${name} example version differs`)
+    assert.ok(readme.includes(`| \`version\` | \`${version}\` |`), `${name} default version differs`)
   }
 })
-test('显式选择 0.2.1 仍可运行旧版报告', () => {
+test('explicitly choosing 0.2.1 still works with the old report format', () => {
   const env = environment({ INPUT_VERSION: '0.2.1' })
   const { schemaVersion: _, ...legacy } = report({}, '0.2.1')
   let installed = false
@@ -149,7 +149,7 @@ test('显式选择 0.2.1 仍可运行旧版报告', () => {
   assert.equal(installed, true)
   assert.deepEqual(outcome, { findings: 0, blocking: 0, partial: false, failed: false })
 })
-test('默认安装和报告必须均为 0.3.0，拒绝其他版本报告', () => {
+test('the default install and report must both be 0.3.0; other report versions are rejected', () => {
   let installs = 0
   for (const version of ['0.3.0', '0.2.1']) {
     const execute = () => runAction(environment(), {
@@ -168,14 +168,14 @@ test('默认安装和报告必须均为 0.3.0，拒绝其他版本报告', () =>
   }
   assert.equal(installs, 2)
 })
-test('默认忽略配置和关闭上传，显式基线限定在项目内', () => {
+test('config is ignored and upload is off by default; an explicit baseline stays inside the project', () => {
   const options = parseInputs(environment({ INPUT_BASELINE: 'baseline.json' }))
   assert.equal(options.useConfig, false)
   assert.equal(options.uploadSarif, false)
   assert.equal(options.baseline, join(workspace, 'baseline.json'))
 })
 
-test('目录链接不能将扫描目标重定向至检出目录之外', () => {
+test('a directory link cannot redirect the scan target outside the checkout', () => {
   const target = join(sandbox, 'outside-directory')
   const link = join(workspace, 'linked-directory')
   mkdirSync(target)
@@ -188,9 +188,9 @@ for (const input of [
   { INPUT_USE_CONFIG: 'yes' }, { INPUT_UPLOAD_SARIF: '1' }, { INPUT_FAIL_ON: 'unknown' },
   { INPUT_CATEGORY: 'x\n::error::injected' },
 ]) {
-  test(`拒绝无效输入 ${Object.keys(input)[0]}`, () => assert.throws(() => parseInputs(environment(input))))
+  test(`an invalid input is rejected: ${Object.keys(input)[0]}`, () => assert.throws(() => parseInputs(environment(input))))
 }
-test('子目录 SARIF URI 以仓库为根，保留编码', () => {
+test('SARIF URIs from a subdirectory are rooted at the repository and keep their encoding', () => {
   const log = { version: '2.1.0', runs: [{ results: [{ locations: [
     { physicalLocation: { artifactLocation: { uri: 'src/a%20b.ts' } } },
   ] }] }] }
@@ -198,11 +198,11 @@ test('子目录 SARIF URI 以仓库为根，保留编码', () => {
   assert.equal(rebased.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri, 'apps/web%20app/src/a%20b.ts')
 })
 for (const uri of ['../outside.ts', '%2e%2e/outside.ts', '/etc/passwd', 'https://example.com/file', 'a%2fb.ts']) {
-  test(`拒绝非仓库 SARIF 路径 ${uri}`, () => assert.throws(() => rebaseSarif({
+  test(`a SARIF path outside the repository is rejected: ${uri}`, () => assert.throws(() => rebaseSarif({
     version: '2.1.0', runs: [{ results: [{ locations: [{ physicalLocation: { artifactLocation: { uri } } }] }] }],
   }, '')))
 }
-test('调用参数不经过 shell，摘要及输出不包含源码或路径', () => {
+test('arguments bypass the shell, and the summary and outputs contain no source or paths', () => {
   const env = environment()
   const assessment = runAction(env, {
     installScanner: () => 'trusted-cli.js',
@@ -220,7 +220,7 @@ test('调用参数不经过 shell，摘要及输出不包含源码或路径', ()
   assert.doesNotMatch(output + summary, /PRIVATE_|workspace|artifactLocation/)
   assert.doesNotMatch(output, /sarif-file=/)
 })
-test('超时、异常退出和截断 JSON 均不能产生成功输出', () => {
+test('a timeout, an abnormal exit or truncated JSON never produces a passing result', () => {
   for (const execution of [
     { error: new Error('PRIVATE_ERROR'), status: null },
     { signal: 'SIGTERM', status: null }, { status: 0, stdout: '{' },
@@ -230,7 +230,7 @@ test('超时、异常退出和截断 JSON 均不能产生成功输出', () => {
     assert.equal(existsSync(env.GITHUB_OUTPUT!), false)
   }
 })
-test('真实 CLI 经 Action 适配器扫描，不执行项目脚本，配置默认关闭', () => {
+test('the real CLI scans through the Action adapter without running project scripts, with config off by default', () => {
   const root = join(workspace, 'source-app')
   mkdirSync(root)
   writeFileSync(join(root, 'firestore.rules'), 'service cloud.firestore { match /documents/{id} { allow write: if true; } }')
@@ -245,7 +245,7 @@ test('真实 CLI 经 Action 适配器扫描，不执行项目脚本，配置默�
   assert.equal(runAction(environment({ ...env, INPUT_USE_CONFIG: 'true' }), sourceDependencies).findings, 0)
 })
 
-test('基线仅抑制已有问题，新增问题仍阻断并保留统计', async () => {
+test('a baseline suppresses only existing findings; new ones still block and counts are kept', async () => {
   const root = project('baseline-app', { 'firestore.rules': openRules })
   writeFileSync(join(root, 'baseline.json'), serializeBaseline(buildBaseline((await scan(root)).findings)))
   const settings = { INPUT_PATH: 'baseline-app', INPUT_VERSION: '0.0.0-dev', INPUT_BASELINE: 'baseline.json' }
@@ -261,7 +261,7 @@ test('基线仅抑制已有问题，新增问题仍阻断并保留统计', async
   assert.match(readFileSync(added.GITHUB_STEP_SUMMARY!, 'utf8'), /Baseline-suppressed findings \| 1/)
 })
 
-test('损坏基线作为报告失败，不能被 none 策略放行', () => {
+test('a corrupt baseline fails the report and is not let through by the none policy', () => {
   project('broken-baseline-app', { 'index.ts': 'export const ok = true;', 'baseline.json': '{' })
   const env = environment({ INPUT_PATH: 'broken-baseline-app', INPUT_VERSION: '0.0.0-dev',
     INPUT_BASELINE: 'baseline.json', INPUT_FAIL_ON: 'none' })
@@ -272,7 +272,7 @@ test('损坏基线作为报告失败，不能被 none 策略放行', () => {
   assert.equal(existsSync(env.GITHUB_OUTPUT!), false)
 })
 
-test('真实扫描存在结果且覆盖不完整时，none 策略仍失败', () => {
+test('the none policy still fails a real scan with findings and incomplete coverage', () => {
   project('partial-app', { 'firestore.rules': openRules, 'large.ts': ' '.repeat(2 * 1024 * 1024 + 1) })
   const env = environment({ INPUT_PATH: 'partial-app', INPUT_VERSION: '0.0.0-dev', INPUT_FAIL_ON: 'none' })
   const outcome = runAction(env, sourceDependencies)
@@ -281,7 +281,7 @@ test('真实扫描存在结果且覆盖不完整时，none 策略仍失败', () 
   assert.match(readFileSync(env.GITHUB_STEP_SUMMARY!, 'utf8'), /Coverage: \*\*incomplete\*\*/)
 })
 
-test('多个子应用各自产生独立 SARIF，并保留编码后的仓库路径和行号', () => {
+test('each sub-application produces its own SARIF with encoded repository paths and line numbers', () => {
   const paths: string[] = []
   for (const name of ['apps/first app', 'apps/second app']) {
     project(name, { 'firestore.rules': openRules })
@@ -298,7 +298,7 @@ test('多个子应用各自产生独立 SARIF，并保留编码后的仓库路�
   assert.notEqual(paths[0], paths[1])
 })
 
-test('诊断不接受伪造消息或未经允许的阶段文本', () => {
+test('diagnostics accept no forged messages or unapproved stage text', () => {
   const error = new ActionError('install')
   error.message = 'PRIVATE_RAW_ERROR'
   for (const value of [error, new Error('PRIVATE_RAW_ERROR'), { stage: 'PRIVATE_STAGE', message: 'PRIVATE_RAW_ERROR' }, new ActionError('PRIVATE_STAGE')]) {
@@ -307,7 +307,7 @@ test('诊断不接受伪造消息或未经允许的阶段文本', () => {
   assert.equal(describeActionError(error).stage, 'install')
 })
 
-test('安装、执行、报告、SARIF 和输出失败分别提供固定阶段诊断', () => {
+test('install, run, report, SARIF and output failures each give a fixed stage diagnostic', () => {
   const executed = { status: 0, stdout: JSON.stringify(report()) }
   const cases = [
     { stage: 'install', env: environment(), dependencies: { installScanner: () => { throw new Error('PRIVATE_INSTALL') } } },
@@ -326,7 +326,7 @@ test('安装、执行、报告、SARIF 和输出失败分别提供固定阶段�
   }
 })
 
-test('真实 Action 入口的输入错误返回失败并写摘要，不暴露原输入', () => {
+test('an input error at the real Action entry fails and writes a summary without echoing the input', () => {
   const env = environment({ INPUT_VERSION: 'PRIVATE_INVALID_VERSION' })
   const execution = spawnSync(process.execPath, [join(repository, 'action', 'run.mjs')], {
     cwd: repository, env: { ...process.env, ...env }, encoding: 'utf8', timeout: 10_000,

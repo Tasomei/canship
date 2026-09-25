@@ -18,7 +18,7 @@ function run(...args: string[]) {
     cwd: repository, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: 20_000,
   })
 }
-test('大 JSON 报告在异步写出后保持完整', () => {
+test('a large JSON report stays complete after an asynchronous write', () => {
   const result = run()
   assert.equal(result.status, 1)
   const report = JSON.parse(result.stdout)
@@ -26,7 +26,7 @@ test('大 JSON 报告在异步写出后保持完整', () => {
   assert.equal(report.partial, false)
   assert.ok(result.stdout.length > 1024 * 1024)
 })
-test('报告文件写入失败仍保留已生成的 JSON，退出 3', () => {
+test('a failed report-file write still keeps the generated JSON and exits 3', () => {
   const result = run(`--report=${root}`)
   assert.equal(result.status, 3)
   assert.equal(JSON.parse(result.stdout).findings.length, 1280)

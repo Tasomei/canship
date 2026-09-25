@@ -23,7 +23,7 @@ function cli(...args: string[]) {
     cwd: repository, encoding: 'utf8', timeout: 20_000,
   })
 }
-test('标准和省略摘录的 JSON 均满足版本化结构，结果身份不变', () => {
+test('standard and excerpt-free JSON both match the versioned schema with unchanged finding identities', () => {
   const standard = cli('--json', '--all')
   const omitted = cli('--json', '--all', '--no-excerpts')
   assert.equal(standard.status, 1)
@@ -38,7 +38,7 @@ test('标准和省略摘录的 JSON 均满足版本化结构，结果身份不�
   assert.equal(b.findings[0].excerpt, null)
   assert.deepEqual(a.findings.map((f: Finding) => fingerprintOf(f)), b.findings.map((f: Finding) => fingerprintOf(f)))
 })
-test('终端、修复提示、HTML 和 SARIF 都不带原始摘录', () => {
+test('terminal, fix prompt, HTML and SARIF carry no raw excerpts', () => {
   const html = join(root, 'report.html')
   const sarif = join(root, 'report.sarif')
   const terminal = cli('--no-excerpts', `--report=${html}`, `--sarif=${sarif}`)
@@ -50,7 +50,7 @@ test('终端、修复提示、HTML 和 SARIF 都不带原始摘录', () => {
     assert.match(text, /cors\.ts/)
   }
 })
-test('省略摘录不改变既有基线匹配', () => {
+test('omitting excerpts does not change existing baseline matches', () => {
   assert.equal(cli('--baseline-write').status, 0)
   const output = cli('--json', '--baseline', '--no-excerpts')
   assert.equal(output.status, 0)
@@ -59,7 +59,7 @@ test('省略摘录不改变既有基线匹配', () => {
   assert.deepEqual(report.findings, [])
   assert.equal(validate(report), true, JSON.stringify(validate.errors))
 })
-test('结构校验拒绝损坏字段，允许新增兼容字段', () => {
+test('schema validation rejects corrupt fields and allows compatible additions', () => {
   const report = JSON.parse(cli('--json').stdout)
   assert.equal(validate({ ...report, futureField: { enabled: true } }), true)
   for (const change of [{ schemaVersion: 2 }, { partial: 'false' }, { filesScanned: -1 }, { findings: [{}] },

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const manifest = JSON.parse(readFileSync(join(root, 'test/evaluation/projects.json'), 'utf8'))
-test('五个固定项目均有完整来源及范围声明', () => {
+test('all five pinned projects have a complete source and scope statement', () => {
   assert.equal(manifest.projects.length, 5)
   assert.match(manifest.scope, /history/)
   assert.equal(new Set(manifest.projects.map((p: { id: string }) => p.id)).size, 5)
@@ -21,7 +21,7 @@ test('五个固定项目均有完整来源及范围声明', () => {
     assert.ok(Array.isArray(project.expectedFindings))
   }
 })
-test('快照准备拒绝覆盖已有目录，且此分支不联网', () => {
+test('snapshot preparation refuses an existing directory, and this path makes no network request', () => {
   const target = mkdtempSync(join(tmpdir(), 'canship-corpus-existing-'))
   try {
     writeFileSync(join(target, 'keep.txt'), 'keep')
@@ -36,7 +36,7 @@ test('快照准备拒绝覆盖已有目录，且此分支不联网', () => {
   }
 })
 
-test('残缺源码快照不能被空发现误判为通过', () => {
+test('an incomplete source snapshot cannot pass on empty findings', () => {
   const target = mkdtempSync(join(tmpdir(), 'canship-corpus-incomplete-'))
   try {
     for (const project of manifest.projects) {

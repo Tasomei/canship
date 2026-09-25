@@ -9,7 +9,7 @@ const interpolation = '${'
 const cors = 'const options = { origin: true, credentials: true };'
 
 for (const comment of ["/* 注释中的引号 ' 和括号 } */", "// 注释中的引号 ' 和括号 }\n"]) {
-  test('插值注释不影响模板后的注释与真实代码', () => {
+  test('comments inside interpolations do not affect comments or code after the template', () => {
     const prefix = `const value = ${tick}text ${interpolation}${comment} 1}${tick};\n`
     const source = prefix + '// ' + cors + '\n' + cors
     const masked = maskJsComments(source)
@@ -25,7 +25,7 @@ for (const comment of ["/* 注释中的引号 ' 和括号 } */", "// 注释中�
   })
 }
 
-test('嵌套模板保留 URL、转义及插值中的代码', () => {
+test('nested templates keep URLs, escapes and code inside interpolations', () => {
   const source = `const value = ${tick}outer ${interpolation}${tick}https://example.invalid/${interpolation}user.id}${tick}} tail${tick};\n// 已停用\n`
   const comments = maskJsComments(source)
   assert.ok(comments.includes('https://example.invalid/'))
@@ -42,7 +42,7 @@ test('嵌套模板保留 URL、转义及插值中的代码', () => {
   assert.equal(maskJsNoise(escaped), tick + ' '.repeat(escaped.length - 2) + tick)
 })
 
-test('两种掩码均支持深层嵌套且保留模板后的代码', () => {
+test('both maskers handle deep nesting and keep code after the template', () => {
   const depth = 10_000
   const source = (tick + interpolation).repeat(depth) + 'user.id' + ('}' + tick).repeat(depth) + '\n' + cors
   for (const mask of [maskJsComments, maskJsNoise]) {
@@ -53,7 +53,7 @@ test('两种掩码均支持深层嵌套且保留模板后的代码', () => {
   }
 })
 
-test('未闭合的模板及注释有界结束并保留行号', () => {
+test('unterminated templates and comments end within bounds and keep line numbers', () => {
   for (const source of [tick + 'abc\n', tick + interpolation + '/* 注释', tick + interpolation + '// 注释\n']) {
     for (const mask of [maskJsComments, maskJsNoise]) {
       const result = mask(source)

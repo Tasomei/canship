@@ -40,26 +40,26 @@ function cli(root: string, ...args: string[]) {
 }
 
 for (const [name, source] of [
-  ['其他 HTTP 方法', `export async function GET(){await requireAuth();return Response.json({});}\nexport async function POST(){${WRITE};}`],
-  ['未调用的辅助函数', `async function unused(){await requireAuth();}\nexport async function POST(){${WRITE};}`],
-  ['写入之后的鉴权', `export async function POST(){${WRITE};await requireAuth();}`],
-  ['嵌套但未调用的辅助函数', `export async function POST(){async function unused(){await requireAuth();}${WRITE};}`],
-  ['未调用的简写箭头函数', `export async function POST(){const unused=()=>requireAuth();${WRITE};}`],
-  ['仅构造的鉴权包装器', `export async function POST(){const unused=withAuth(async()=>{});${WRITE};}`],
-  ['仅构造的 Auth.js 处理函数', `export async function POST(){const unused=NextAuth({providers:[]});${WRITE};}`],
-  ['条件分支中的可选鉴权', `export async function POST(req){if(req.optional){await requireAuth();}${WRITE};}`],
-  ['短路表达式中的可选鉴权', `export async function POST(req){req.optional && await requireAuth();${WRITE};}`],
-  ['三元表达式中的可选鉴权', `export async function POST(req){req.optional ? await requireAuth() : null;${WRITE};}`],
-  ['多行短路鉴权', `export async function POST(req){req.optional &&\nawait requireAuth();${WRITE};}`],
-  ['多行三元鉴权', `export async function POST(req){req.optional ?\nawait requireAuth() : null;${WRITE};}`],
-  ['空白后的嵌套条件退出', `export async function POST(req){const user=await getUser();if(!user)${' '.repeat(80)}{if(!req.debug)return new Response(null,{status:401});}${WRITE};}`],
-  ['未等待的异步鉴权', `export async function POST(){requireAuth();${WRITE};}`],
-  ['嵌套条件退出', `export async function POST(req){const user=await getUser();if(!user){if(req.optional)return new Response(null,{status:401});}${WRITE};}`],
-  ['正向条件退出', `export async function POST(){const user=await getUser();if(user){return Response.json({ok:true});}${WRITE};}`],
-  ['非空身份条件退出', `export async function POST(){const user=await getUser();if(user!==null){return Response.json({ok:true});}${WRITE};}`],
-  ['否定身份与假值比较后退出', `export async function POST(){const user=await getUser();if(!user===false){return Response.json({ok:true});}${WRITE};}`],
+  ['auth in another HTTP method', `export async function GET(){await requireAuth();return Response.json({});}\nexport async function POST(){${WRITE};}`],
+  ['auth in an uncalled helper', `async function unused(){await requireAuth();}\nexport async function POST(){${WRITE};}`],
+  ['auth after the write', `export async function POST(){${WRITE};await requireAuth();}`],
+  ['auth in a nested but uncalled helper', `export async function POST(){async function unused(){await requireAuth();}${WRITE};}`],
+  ['auth in an uncalled arrow function', `export async function POST(){const unused=()=>requireAuth();${WRITE};}`],
+  ['an auth wrapper that is only constructed', `export async function POST(){const unused=withAuth(async()=>{});${WRITE};}`],
+  ['an Auth.js handler that is only constructed', `export async function POST(){const unused=NextAuth({providers:[]});${WRITE};}`],
+  ['optional auth in an if branch', `export async function POST(req){if(req.optional){await requireAuth();}${WRITE};}`],
+  ['optional auth in a short-circuit expression', `export async function POST(req){req.optional && await requireAuth();${WRITE};}`],
+  ['optional auth in a ternary', `export async function POST(req){req.optional ? await requireAuth() : null;${WRITE};}`],
+  ['multi-line short-circuit auth', `export async function POST(req){req.optional &&\nawait requireAuth();${WRITE};}`],
+  ['multi-line ternary auth', `export async function POST(req){req.optional ?\nawait requireAuth() : null;${WRITE};}`],
+  ['a nested conditional exit after whitespace', `export async function POST(req){const user=await getUser();if(!user)${' '.repeat(80)}{if(!req.debug)return new Response(null,{status:401});}${WRITE};}`],
+  ['unawaited async auth', `export async function POST(){requireAuth();${WRITE};}`],
+  ['a nested conditional exit', `export async function POST(req){const user=await getUser();if(!user){if(req.optional)return new Response(null,{status:401});}${WRITE};}`],
+  ['an early return for a signed-in user', `export async function POST(){const user=await getUser();if(user){return Response.json({ok:true});}${WRITE};}`],
+  ['an early return when the identity is non-null', `export async function POST(){const user=await getUser();if(user!==null){return Response.json({ok:true});}${WRITE};}`],
+  ['an early return after comparing a negated identity with false', `export async function POST(){const user=await getUser();if(!user===false){return Response.json({ok:true});}${WRITE};}`],
 ] as const) {
-  test(`${name}不能使未受保护的操作消失`, async () => {
+  test(`${name} does not hide an unprotected write`, async () => {
     const root = project({ [ROUTE]: CLIENT + source })
     const result = await scan(root)
     assert.ok(result.findings.some(f => f.ruleId === 'api/admin-db-access-without-auth'))
@@ -77,13 +77,13 @@ for (const source of [
   `export async function POST(){try{await requireAuth();${WRITE};}catch{return new Response('no',{status:401});}}`,
   `export async function POST(req){if(req.write){await requireAuth();${WRITE};}}`,
 ]) {
-  test(`同一处理函数内先鉴权仍能保护操作：${source.slice(0, 30)}`, async () => {
+  test(`auth earlier in the same handler still protects the write: ${source.slice(0, 30)}`, async () => {
     const result = await scan(project({ [ROUTE]: CLIENT + source }))
     assert.deepEqual(result.findings.filter(f => f.ruleId.startsWith('api/')), [])
   })
 }
 
-test('路由组不改变 API 识别或报告 URL', async () => {
+test('route groups change neither API detection nor the reported URL', async () => {
   const path = 'app/(dashboard)/(internal)/api/users/route.ts'
   const root = project({ [path]: CLIENT + `export async function POST(){${WRITE};}` })
   const result = await scan(root)
@@ -95,7 +95,7 @@ test('路由组不改变 API 识别或报告 URL', async () => {
   assert.equal((await scan(root)).findings.some(f => f.ruleId.startsWith('api/')), false)
 })
 
-test('路由组中的工作区别名仍指向所属应用', async () => {
+test('a workspace alias inside a route group still points at its own app', async () => {
   const root = project({
     'apps/web/app/(api)/api/users/route.ts': `import {db} from '@/lib/admin';export async function POST(){${WRITE};}`,
     'apps/web/lib/admin.ts': CLIENT + 'export {db};',
@@ -103,7 +103,7 @@ test('路由组中的工作区别名仍指向所属应用', async () => {
   assert.ok((await scan(root)).findings.some(f => f.ruleId === 'api/admin-db-access-without-auth'))
 })
 
-test('总读取预算在边界处允许读取，超限时明确披露', () => {
+test('the total read budget allows reading at the limit and discloses going over it', () => {
   const root = project({ 'a.ts': 'let a=1;', 'b.ts': 'let b=2;' })
   const exact = collectFiles(root, false, null, { maxFiles: 2, maxBytes: 16 })
   assert.equal(exact.files.length, 2)
@@ -116,7 +116,7 @@ test('总读取预算在边界处允许读取，超限时明确披露', () => {
   }
 })
 
-test('被排除规则不执行，也不会用其异常影响完整性', async () => {
+test('an excluded rule does not run, so its errors cannot affect completeness', async () => {
   let calls = 0
   const sentinel = { id: 'api/db-access-without-auth', severity: 'P0' as const,
     check(): never { calls++; throw new Error('excluded-rule-sentinel') } }
@@ -129,7 +129,7 @@ test('被排除规则不执行，也不会用其异常影响完整性', async ()
   } finally { PROJECT_RULES.splice(PROJECT_RULES.indexOf(sentinel), 1) }
 })
 
-test('跨规则单文件总上限优先保留确定结果', async () => {
+test('the per-file cap across rules keeps certain findings first', async () => {
   const content = Array.from({ length: 60 }, (_, i) =>
     `const k${i}="${KEY}";\nconst v${i}=process.env.NEXT_PUBLIC_ADMIN_SECRET;`).join('\n')
   const result = await scan(project({ 'keys.ts': content }))
@@ -139,7 +139,7 @@ test('跨规则单文件总上限优先保留确定结果', async () => {
   assert.ok(result.errors.some(e => e.ruleId === 'engine/findings-limit'))
 })
 
-test('SARIF 编码文件路径并披露跳过原因', async () => {
+test('SARIF encodes file paths and discloses skip reasons', async () => {
   const result = await scan(project({ '路径 #100%.ts': `const key="${KEY}";` }))
   result.skipped.push({ path: 'large.ts', reason: 'too-large', detail: 'file limit exceeded' })
   result.partial = true
@@ -152,7 +152,7 @@ test('SARIF 编码文件路径并披露跳过原因', async () => {
   assert.match(JSON.stringify(run.invocations), /large\.ts.*too-large/)
 })
 
-test('基线区分脱敏后相同的新密钥，并允许原结果移动行号', async () => {
+test('a baseline tells apart new keys that redact identically, and lets old findings move lines', async () => {
   const root = project({ 'keys.ts': `const key="${KEY}";` })
   const first = await scan(root)
   const baseline = buildBaseline(first.findings)
@@ -166,7 +166,7 @@ test('基线区分脱敏后相同的新密钥，并允许原结果移动行号',
   assert.equal(JSON.stringify(next).includes(KEY), false)
 })
 
-test('多凭据先全部脱敏再截断，所有报告均不泄露原始片段', async () => {
+test('several credentials are all redacted before truncation, so no report leaks a raw fragment', async () => {
   const root = project({ 'keys.ts': `const a="${GH}"; ${' '.repeat(60)}const b="${OTHER}";` })
   const result = await scan(root)
   assert.equal(result.findings.length, 2)
@@ -179,7 +179,7 @@ test('多凭据先全部脱敏再截断，所有报告均不泄露原始片段',
   }
 })
 
-test('跨凭据类型达到上限时记录不完整，基线不能将它变成成功', async () => {
+test('hitting the cap across credential types is recorded as incomplete, and a baseline cannot turn that into a pass', async () => {
   const source = Array.from({ length: 100 }, (_, i) => `const k${i}="${KEY}";`).join('\n')
   const root = project({ 'keys.ts': source })
   const exact = await scan(root)
@@ -194,7 +194,7 @@ test('跨凭据类型达到上限时记录不完整，基线不能将它变成�
   assert.equal(cli(root, '--baseline', '--json').status, 3)
 })
 
-test('修复提示披露整文件忽略', () => {
+test('the fix prompt discloses whole-file exclusions', () => {
   const root = project({ 'app.ts': 'export const ok=true;',
     'keys.ts': `// canship-ignore-file\nconst key="${KEY}";` })
   const result = cli(root, '--fix-prompt')
@@ -204,7 +204,7 @@ test('修复提示披露整文件忽略', () => {
   assert.doesNotMatch(result.stdout, /Nothing to fix/)
 })
 
-test('命令行规则选择覆盖配置中的相反模式，但两种显式参数仍然报错', () => {
+test('CLI rule selection overrides the opposite config mode, but both explicit flags together still fail', () => {
   for (const [config, flag, expected] of [
     [{ skip: ['secrets'] }, '--only=secrets', 1],
     [{ only: ['cors'] }, '--skip=cors', 1],
@@ -216,7 +216,7 @@ test('命令行规则选择覆盖配置中的相反模式，但两种显式参�
   }
 })
 
-test('旧基线明确失败并保持文件原样', () => {
+test('an old baseline fails explicitly and is left untouched', () => {
   const root = project({ 'app.ts': 'export const ok=true;',
     'canship-baseline.json': '{"version":1,"generatedAt":"","entries":[]}' })
   const before = readFileSync(join(root, 'canship-baseline.json'), 'utf8')
@@ -227,7 +227,7 @@ test('旧基线明确失败并保持文件原样', () => {
   assert.equal(readFileSync(join(root, 'canship-baseline.json'), 'utf8'), before)
 })
 
-test('截断位置之后的凭据变化仍产生新的基线身份', async () => {
+test('a credential change past the truncation point still yields a new baseline identity', async () => {
   const prefix = `const label="${'x'.repeat(180)}";`
   const root = project({ 'keys.ts': `${prefix}const key="${KEY}";` })
   const first = await scan(root)
@@ -237,7 +237,7 @@ test('截断位置之后的凭据变化仍产生新的基线身份', async () =>
   assert.equal(applyBaseline(next.findings, buildBaseline(first.findings)).kept.length, 1)
 })
 
-test('受版本控制的环境文件及历史凭据变化不会沿用旧基线身份', async () => {
+test('credential changes in tracked and historical env files do not reuse an old baseline identity', async () => {
   const root = project({ 'app.ts': 'export const ok=true;', '.env': `OPENAI_KEY=${KEY}\n` })
   // 所有 Git 写入均限于本用例新建的系统临时仓库。
   const git = (...args: string[]) => execFileSync('git', [

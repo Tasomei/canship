@@ -18,7 +18,7 @@ for (const content of [
   "const headers = { 'Access-Control-Allow-Origin': `${origin}`, 'Access-Control-Allow-Credentials': 'true' };",
   "const headers = { 'Access-Control-Allow-Origin': request.headers.get('origin') || 'https://app.example.com', 'Access-Control-Allow-Credentials': 'true' };",
 ]) {
-  test(`同行回显仍应检出：${content.slice(0, 65)}`, () => {
+  test(`a same-line reflection is still detected: ${content.slice(0, 65)}`, () => {
     const findings = check(content)
     assert.equal(findings.length, 1)
     assert.equal(findings[0]?.ruleId, 'cors/reflected-origin-with-credentials')
@@ -34,17 +34,17 @@ for (const expression of [
   "lookup['a,b']",
   "(unknown, origin)",
 ]) {
-  test(`不将受控或未知来源误报为直接回显：${expression}`, () => {
+  test(`a controlled or unknown origin is not reported as a direct reflection: ${expression}`, () => {
     assert.deepEqual(check(`const headers = { 'Access-Control-Allow-Origin': ${expression}, 'Access-Control-Allow-Credentials': 'true' };`), [])
   })
 }
-test('同行通配符保持 P2 分类', () => {
+test('a same-line wildcard stays P2', () => {
   const findings = check("const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Credentials': 'true' };")
   assert.equal(findings[0]?.ruleId, 'cors/wildcard-with-credentials')
   assert.equal(findings[0]?.severity, 'P2')
 })
 
-test('长表达式中的重复响应头字样不会反复遍历剩余全文', () => {
+test('repeated header names in a long expression do not rescan the rest of the text', () => {
   const content = "'Access-Control-Allow-Credentials': 'true';" + "'Access-Control-Allow-Origin': (".repeat(20_000)
   const started = performance.now()
   assert.deepEqual(check(content), [])
@@ -52,32 +52,32 @@ test('长表达式中的重复响应头字样不会反复遍历剩余全文', ()
 })
 
 for (const fixed of ["'https://app.example.com'", 'false', 'ALLOWED', '[\'https://app.example.com\']']) {
-  test(`其他对象的通配符不能与当前配置的凭据配对：${fixed}`, () => {
+  test(`a wildcard in another object is not paired with this config's credentials: ${fixed}`, () => {
     assert.deepEqual(check(`const privateOptions = { origin: ${fixed}, credentials: true }; const publicOptions = { origin: '*' }; app.use(cors(privateOptions));`), [])
   })
 }
-test('同一行的独立配置不会互相隐藏真实回显', () => {
+test('separate configs on one line do not hide a real reflection', () => {
   const findings = check("app.use(cors({origin: true, credentials: true})); app.use(cors({origin: 'https://app.example.com'}));")
   assert.equal(findings.length, 1)
   assert.equal(findings[0]?.ruleId, 'cors/reflected-origin-with-credentials')
 })
-test('对象方法回调与同一对象的凭据仍可配对', () => {
+test('an object-method callback still pairs with credentials in the same object', () => {
   const findings = check("app.use(cors({origin(value, cb) { cb(null, true) }, credentials: true}));")
   assert.equal(findings[0]?.ruleId, 'cors/reflected-origin-with-credentials')
 })
-test('受控回调不借用其他对象中的通配符', () => {
+test('a controlled callback does not borrow a wildcard from another object', () => {
   assert.deepEqual(check("app.use(cors({origin(value, cb) { if (ALLOWED.includes(value)) cb(null, true) }, credentials: true})); const publicOptions = {origin:'*'};"), [])
 })
 
-test('源码生成器中的字符串不是生效的 CORS 配置', () => {
+test('strings in a source generator are not a live CORS config', () => {
   assert.deepEqual(check(`const source = "app.use(cors({origin:true,credentials:true}));";`), [])
   assert.deepEqual(check(`const source = "app.use(cors({origin(value, cb){cb(null,true)},credentials:true}));";`), [])
   assert.deepEqual(check(`const source = "{'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true'}";`), [])
 })
-test('示例字符串不能为真实代码提供凭据设置', () => {
+test('an example string cannot supply credentials to real code', () => {
   assert.deepEqual(check(`app.use(cors({origin:true})); const documentation = 'credentials:true';`), [])
 })
-test('同文件包含字符串示例时，真实回显仍会检出', () => {
+test('a real reflection is still detected in a file that also has string examples', () => {
   const findings = check(`const source = "app.use(cors({origin:'https://app.example.com',credentials:true}));";\napp.use(cors({origin:true,credentials:true}));`)
   assert.equal(findings.length, 1)
   assert.equal(findings[0]?.line, 2)

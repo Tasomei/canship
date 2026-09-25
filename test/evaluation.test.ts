@@ -5,10 +5,10 @@ import { evaluationCases } from './evaluation/cases.js'
 import { evaluateCase } from './evaluation/run.js'
 
 for (const sample of evaluationCases) {
-  test(`评估：${sample.id}`, async () => {
+  test(`evaluation: ${sample.id}`, async () => {
     const result = await evaluateCase(sample)
-    assert.deepEqual(result.missing, [], '漏报或结果属性变化')
-    assert.deepEqual(result.unexpected, [], '额外结果或误报')
-    assert.equal(result.coverageMatches, true, '扫描完整性不符合预期')
+    assert.deepEqual(result.missing, [], 'missed findings or changed finding attributes')
+    assert.deepEqual(result.unexpected, [], 'extra findings or false positives')
+    assert.equal(result.coverageMatches, true, 'scan completeness differs from the expectation')
   })
 }
