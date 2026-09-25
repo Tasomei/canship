@@ -1,0 +1,130 @@
+name: Publish
+
+# 推送 vX.Y.Z 标签时暂存到 npm，维护者在 npmjs.com 以两步验证批准后才上线。
+# 使用可信发布（OIDC），不保存 npm 令牌；即使工作流被攻破，也无法绕过人工批准直接发布。
+on:
+  push:
+    tags: ['v*']
+
+# 默认不授予任何权限，各任务单独声明。
+permissions: {}
+
+# 同一时间只进行一次发布，不取消正在进行的发布。
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  # 安装依赖、运行全部检查并打包。此任务会执行依赖的安装脚本和项目代码，因此不持有发布权限。
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tarball: ${{ steps.pack.outputs.tarball }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          # 需要完整历史以确认标签提交位于 main。
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Check the tag, version and branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $version."
+            exit 1
+          fi
+          # 用检出后的 HEAD 而不是 GITHUB_SHA，附注标签也解析为其指向的提交。
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME points to a commit that is not on main."
+            exit 1
+          fi
+          if npm view "canship@$version" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "::error::canship@$version is already published."
+            exit 1
+          fi
+      - run: npm ci
+      # 与本地 npm publish 前执行的检查相同：类型检查、测试、构建。
+      - run: npm run prepublishOnly
+      - run: node scripts/package-smoke.mjs
+      - name: Pack
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/package"
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/package"
+          tarball="$(cd "$RUNNER_TEMP/package" && ls -- *.tgz)"
+          sha256="$(sha256sum "$RUNNER_TEMP/package/$tarball" | cut -d' ' -f1)"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "Packed \`$tarball\` (sha256 \`$sha256\`)." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # 固定 v7.0.1 提交
+        with:
+          name: package
+          path: ${{ runner.temp }}/package/${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # 只暂存上一步测试过的压缩包，不检出源码、不安装依赖、不运行任何项目脚本。
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # 须与 npmjs.com 可信发布配置中的环境名一致；可在仓库设置中为该环境添加发布前人工确认。
+    environment: npm
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # 固定 v8.0.1 提交
+        with:
+          name: package
+          path: ${{ runner.temp }}/package
+      - name: Verify the package
+        shell: bash
+        env:
+          TARBALL: ${{ needs.build.outputs.tarball }}
+          EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/package/$TARBALL"
+          actual="$(sha256sum "$file" | cut -d' ' -f1)"
+          if [ "$actual" != "$EXPECTED_SHA256" ]; then
+            echo "::error::The package changed between build and publish."
+            exit 1
+          fi
+          manifest="$(tar -xzOf "$file" package/package.json)"
+          name="$(node -e 'console.log(JSON.parse(process.argv[1]).name)' "$manifest")"
+          version="$(node -e 'console.log(JSON.parse(process.argv[1]).version)' "$manifest")"
+          if [ "$name" != "canship" ] || [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::The package is $name@$version, not canship@${GITHUB_REF_NAME#v}."
+            exit 1
+          fi
+          # 暂存发布要求 npm 11.15.0 及以上。
+          node -e '
+            const [a, b] = process.argv[1].split(".").map(Number)
+            if (a < 11 || (a === 11 && b < 15)) {
+              console.error(`::error::npm ${process.argv[1]} is too old for staged publishing; 11.15.0 or later is required.`)
+              process.exit(1)
+            }' "$(npm --version)"
+      # 暂存发布的来源证明默认关闭，须显式开启。
+      - name: Stage for approval
+        shell: bash
+        env:
+          TARBALL: ${{ needs.build.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          npm stage publish "$RUNNER_TEMP/package/$TARBALL" --provenance --ignore-scripts
+          echo "Staged \`$TARBALL\`. Approve it on npmjs.com (canship → Staged Packages) with two-factor authentication to make it public." >> "$GITHUB_STEP_SUMMARY"
