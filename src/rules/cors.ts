@@ -38,9 +38,12 @@ function headerExpression(content: string, start: number): string {
 /** 保留固定来源及未知值，避免将其他配置的通配符与当前凭据配对。 */
 const CORS_ORIGIN_OPTION = /\borigin\s*:\s*/gi
 
-/** 识别通过回调无条件放行来源的配置。 */
+/**
+ * 识别通过回调无条件放行来源的配置。函数名之后的空白放在可选组内：
+ * 无函数名时两段 \s* 会对同一段空白二次回溯，150KB 的文件即可让一次扫描耗时约 83 秒。
+ */
 const CORS_ORIGIN_PROPERTY_START =
-  /\borigin\s*:\s*(?:async\s+)?(?:(function)\s*(?:[A-Za-z_$][\w$]*)?\s*)?\(/gi
+  /\borigin\s*:\s*(?:async\s+)?(?:(function)\s*(?:[A-Za-z_$][\w$]*\s*)?)?\(/gi
 
 /** 识别对象方法简写及返回类型。 */
 const CORS_ORIGIN_METHOD_START = /\borigin\s*\(/gi
@@ -206,10 +209,23 @@ const CORS_CREDENTIALS_OPTION = /\bcredentials\s*:\s*true\b/g
 
 type OriginKind = 'wildcard' | 'literal' | 'reflected' | 'unknown'
 
+/** 结尾需移除的空白及标点，逐个字符判断。 */
+const TRAILING_PUNCTUATION = /[\s;,)}\]!]/
+
+/**
+ * 移除结尾的空白及标点。从尾部逐字符扫描：等价的正则 /[\s;,)}\]!]+$/ 未锚定开头，
+ * 会在长空白段的每个位置重试到段尾，150KB 的文件即可让一次扫描耗时约 20 秒。
+ */
+function trimTrailingPunctuation(text: string): string {
+  let end = text.length
+  while (end > 0 && TRAILING_PUNCTUATION.test(text[end - 1]!)) end--
+  return text.slice(0, end)
+}
+
 /** 分类来源表达式；无法确认时保留未知状态。 */
 function classifyOrigin(raw: string): OriginKind {
   // 仅移除外围结尾标点，保留表达式结构。
-  let v = raw.trim().replace(/[\s;,)}\]!]+$/, '')
+  let v = trimTrailingPunctuation(raw.trim())
 
   // 截取完整字符串值，避免包含同行后续配置。
   const opening = v[0]

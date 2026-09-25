@@ -51,6 +51,15 @@ test('repeated header names in a long expression do not rescan the rest of the t
   assert.ok(performance.now() - started < 5000)
 })
 
+test('a long run of whitespace after an origin callback is scanned in linear time', () => {
+  // 修复前回调识别与结尾标点去除各自二次回溯，150KB 空白使一次扫描耗时约 83 秒。
+  const content = 'app.use(cors({ credentials: true, origin: function' + ' '.repeat(150_000) + 'x }))'
+  const started = performance.now()
+  check(content)
+  const took = performance.now() - started
+  assert.ok(took < 5000, `took ${Math.round(took)}ms`)
+})
+
 for (const fixed of ["'https://app.example.com'", 'false', 'ALLOWED', '[\'https://app.example.com\']']) {
   test(`a wildcard in another object is not paired with this config's credentials: ${fixed}`, () => {
     assert.deepEqual(check(`const privateOptions = { origin: ${fixed}, credentials: true }; const publicOptions = { origin: '*' }; app.use(cors(privateOptions));`), [])
