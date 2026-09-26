@@ -92,6 +92,26 @@ describe('Astro endpoints', () => {
     }), [])
   })
 
+  // Astro 中间件可为 src/middleware.ts 或 src/middleware/index.ts；修复前后者不被识别，路由被报为 P0 确定。
+  const GUARD = "import { defineMiddleware } from 'astro:middleware'\n" +
+    'export const onRequest = defineMiddleware(async (ctx, next) => {\n' +
+    '  if (!ctx.locals.user) return new Response(null, { status: 401 })\n  return next()\n})\n'
+  const ENDPOINT = ADMIN + `export async function GET() { return new Response(JSON.stringify(${QUERY})) }`
+
+  for (const file of ['src/middleware.ts', 'src/middleware/index.ts']) {
+    test(`an auth check in ${file} protects the endpoint`, async () => {
+      assert.deepEqual(await apiFindings({ 'src/pages/api/users.ts': ENDPOINT, [file]: GUARD }), [])
+    })
+  }
+
+  test('a helper under src/middleware that is not the entry point does not protect the endpoint', async () => {
+    assertAdmin(await apiFindings({ 'src/pages/api/users.ts': ENDPOINT, 'src/middleware/auth.ts': GUARD }), '/api/users')
+  })
+
+  test('a Next.js-style proxy.ts does not protect an Astro endpoint', async () => {
+    assertAdmin(await apiFindings({ 'src/pages/api/users.ts': ENDPOINT, 'src/proxy.ts': GUARD }), '/api/users')
+  })
+
   test('a script in src/pages that exports no HTTP method is not an endpoint', async () => {
     assert.deepEqual(await apiFindings({
       'src/pages/_helpers.ts': ADMIN + `export async function load() { return ${QUERY} }`,

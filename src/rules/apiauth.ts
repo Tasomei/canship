@@ -10,7 +10,7 @@ import { JWT_SOURCE, SB_SECRET_SOURCE } from './patterns.js'
 
 // 识别各框架可被直接请求的服务端路由。
 
-/** Next.js App Router 处理函数及 Pages Router API 文件；Astro 的 src/pages/api 同样落在此处。 */
+/** Next.js App Router 处理函数及 Pages Router API 文件；Astro 的 src/pages/api 端点在 routeOf 中按导出区分。 */
 const APP_ROUTER = /(?:^|\/)app\/api\/(?:.+\/)?route\.[mc]?[jt]sx?$/
 const PAGES_ROUTER = /(?:^|\/)pages\/api\/.+\.[mc]?[jt]sx?$/
 
@@ -33,6 +33,12 @@ const ASTRO_EXPORT =
 
 type Framework = 'next' | 'astro' | 'sveltekit' | 'nuxt' | 'remix'
 
+/** 按 HTTP 方法导出且没有默认导出的脚本是 Astro 端点。 */
+function isAstroEndpoint(file: ScanFile): boolean {
+  const code = noiseMaskedOf(file)
+  return ASTRO_EXPORT.test(code) && !/\bexport\s+default\b/.test(code)
+}
+
 /** 一个可被直接请求的服务端路由。 */
 interface Route {
   file: ScanFile
@@ -50,6 +56,11 @@ function routePathOf(path: string): string {
 /** 按框架约定识别路由；不属于任何框架时返回空值。 */
 function routeOf(file: ScanFile): Route | null {
   const path = routePathOf(file.path)
+  // src/pages/api 同时符合 Next.js Pages Router 与 Astro 的约定：Next.js 默认导出处理函数，Astro 按 HTTP 方法导出。
+  if (PAGES_ROUTER.test(file.path) && ASTRO_ENDPOINT.test(path) && isAstroEndpoint(file)) {
+    const astro = ASTRO_ENDPOINT.exec(path)!
+    return { file, framework: 'astro', url: `/${astro[2]!.replace(/(?:^|\/)index$/, '')}`, scope: astro[1] ?? '' }
+  }
   if (APP_ROUTER.test(path) || PAGES_ROUTER.test(file.path)) {
     const scope = /^(.*?)(?:src\/)?(?:app|pages)\/api\//.exec(path)?.[1] ?? ''
     return { file, framework: 'next', url: nextRouteUrl(path), scope }
@@ -71,7 +82,7 @@ function routeOf(file: ScanFile): Route | null {
   }
 
   const astro = ASTRO_ENDPOINT.exec(path)
-  if (astro && ASTRO_EXPORT.test(noiseMaskedOf(file))) {
+  if (astro && isAstroEndpoint(file)) {
     const rest = astro[2]!.replace(/(?:^|\/)index$/, '')
     return { file, framework: 'astro', url: `/${rest}`, scope: astro[1] ?? '' }
   }
@@ -685,25 +696,43 @@ function findDataOps(file: ScanFile): DataHit[] {
 
 // 检查中间件保护范围。
 
-/** 识别各应用根目录及源码目录中的中间件。 */
-const MIDDLEWARE_FILE = /(?:^|\/)(?:src\/)?middleware\.[mc]?[jt]s$/
+/**
+ * 各应用根目录及源码目录中的中间件。Next.js 16 起 middleware 更名为 proxy，两者均可能存在；
+ * Astro 的中间件只在 src 下，可为单文件或 middleware/index 目录形式。
+ */
+const NEXT_MIDDLEWARE_FILE = /(?:^|\/)(?:src\/)?(?:middleware|proxy)\.[mc]?[jt]s$/
+const ASTRO_MIDDLEWARE_FILE = /(?:^|\/)src\/middleware(?:\/index)?\.[mc]?[jt]s$/
+
+function isMiddlewareFile(path: string, framework: Framework): boolean {
+  return framework === 'astro' ? ASTRO_MIDDLEWARE_FILE.test(path) : NEXT_MIDDLEWARE_FILE.test(path)
+}
+
+/** 任一框架的中间件，用于统一校验匹配器。 */
+function isAnyMiddlewareFile(path: string): boolean {
+  return NEXT_MIDDLEWARE_FILE.test(path) || ASTRO_MIDDLEWARE_FILE.test(path)
+}
 
 /** 中间件作用域为所在应用目录。 */
 function middlewareScopeOf(path: string): string {
-  return path.replace(/(?:src\/)?middleware\.[mc]?[jt]s$/, '')
+  return path.replace(/(?:src\/)?(?:middleware(?:\/index)?|proxy)\.[mc]?[jt]s$/, '')
 }
 
-/** 选择作用域最深的中间件，避免其他应用提供错误保护证据。 */
-function middlewareFor(ctx: ScanContext, routePath: string): ScanFile | null {
-  let best: ScanFile | null = null
+/**
+ * 选择作用域最深的中间件，避免其他应用提供错误保护证据。
+ * 同一作用域可能同时存在 middleware 与 proxy（迁移过程中），全部返回，由调用方逐个判断。
+ */
+function middlewaresFor(ctx: ScanContext, routePath: string, framework: Framework): ScanFile[] {
+  let best: ScanFile[] = []
   let bestDepth = -1
   for (const file of ctx.files) {
-    if (!MIDDLEWARE_FILE.test(file.path)) continue
+    if (!isMiddlewareFile(file.path, framework)) continue
     const scope = middlewareScopeOf(file.path)
     if (!routePath.startsWith(scope)) continue
     if (scope.length > bestDepth) {
-      best = file
+      best = [file]
       bestDepth = scope.length
+    } else if (scope.length === bestDepth) {
+      best.push(file)
     }
   }
   return best
@@ -749,16 +778,16 @@ function sliceQuoted(text: string): string | null {
   return null
 }
 
-/** 定位配置对象顶层匹配器属性的值。 */
-function topLevelMatcherValueStart(objectText: string): number | null {
-  const candidates = [1]
+/** 按顶层逗号拆分对象或数组字面量，返回各成员的起点；跳过字符串及嵌套结构。 */
+function topLevelMemberStarts(text: string, container: '{' | '['): number[] {
+  const starts = [1]
   let quote: string | null = null
   let braces = 0
   let brackets = 0
   let parentheses = 0
 
-  for (let i = 0; i < objectText.length; i++) {
-    const ch = objectText[i]!
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!
     if (quote !== null) {
       if (ch === '\\') i++
       else if (ch === quote) quote = null
@@ -771,18 +800,50 @@ function topLevelMatcherValueStart(objectText: string): number | null {
     else if (ch === ']') brackets--
     else if (ch === '(') parentheses++
     else if (ch === ')') parentheses--
-    else if (ch === ',' && braces === 1 && brackets === 0 && parentheses === 0) {
-      candidates.push(i + 1)
+    else if (ch === ',' && parentheses === 0 &&
+        (container === '{' ? braces === 1 && brackets === 0 : brackets === 1 && braces === 0)) {
+      starts.push(i + 1)
     }
   }
+  return starts
+}
 
-  for (const start of candidates) {
+/** 定位对象字面量顶层指定属性的值。 */
+function topLevelPropertyStart(objectText: string, name: string): number | null {
+  const property = new RegExp(`^(?:${name}|['"]${name}['"])\\s*:\\s*`)
+  for (const start of topLevelMemberStarts(objectText, '{')) {
     let cursor = start
     while (/\s/.test(objectText[cursor] ?? '')) cursor++
-    const property = /^(?:matcher|['"]matcher['"])\s*:\s*/.exec(objectText.slice(cursor))
-    if (property) return cursor + property[0].length
+    const match = property.exec(objectText.slice(cursor))
+    if (match) return cursor + match[0].length
   }
   return null
+}
+
+/** 引号内的原始文本，与先前按引号提取的写法保持一致。 */
+function quotedValue(text: string): string | null {
+  const quoted = sliceQuoted(text)
+  return quoted === null || quoted.length < 3 ? null : quoted.slice(1, -1)
+}
+
+/**
+ * 解析匹配器的一个成员：字符串即路径模式；对象取 source，带 has 或 missing 条件的
+ * 只在部分请求上运行，不能证明路由受保护。无法解析时返回空值。
+ */
+function matcherEntry(text: string): { pattern: string } | { conditional: true } | null {
+  const trimmed = text.trimStart()
+  if (trimmed.startsWith('{')) {
+    const object = sliceDelimited(trimmed, '{', '}')
+    if (object === null) return null
+    if (topLevelPropertyStart(object, 'has') !== null || topLevelPropertyStart(object, 'missing') !== null) {
+      return { conditional: true }
+    }
+    const source = topLevelPropertyStart(object, 'source')
+    const pattern = source === null ? null : quotedValue(object.slice(source))
+    return pattern === null ? null : { pattern }
+  }
+  const pattern = quotedValue(trimmed)
+  return pattern === null ? null : { pattern }
 }
 
 /** 解析显式导出的匹配器配置。 */
@@ -803,15 +864,34 @@ function extractMatcherConfig(file: { content: string }): MatcherConfig {
   const objectText = sliceDelimited(masked.slice(objectStart), '{', '}')
   if (objectText === null) return { kind: 'unreadable' }
 
-  const valueStart = topLevelMatcherValueStart(objectText)
+  const valueStart = topLevelPropertyStart(objectText, 'matcher')
   if (valueStart === null) return { kind: 'absent' }
 
   const rest = objectText.slice(valueStart)
-  const raw = rest.startsWith('[') ? sliceBracketed(rest) : sliceQuoted(rest)
-  if (raw === null) return { kind: 'unreadable' }
+  if (!rest.startsWith('[')) {
+    const entry = matcherEntry(rest)
+    return entry === null ? { kind: 'unreadable' } : 'pattern' in entry
+      ? { kind: 'patterns', patterns: [entry.pattern] } : { kind: 'patterns', patterns: [] }
+  }
+  const array = sliceBracketed(rest)
+  if (array === null) return { kind: 'unreadable' }
 
-  const patterns = [...raw.matchAll(/['"`]([^'"`]+)['"`]/g)].map((m) => m[1]!)
-  return patterns.length === 0 ? { kind: 'unreadable' } : { kind: 'patterns', patterns }
+  const patterns: string[] = []
+  let conditional = 0
+  const starts = topLevelMemberStarts(array, '[')
+  for (const [index, start] of starts.entries()) {
+    // 末尾成员止于右方括号；允许尾随逗号。
+    const member = array.slice(start, index + 1 < starts.length ? starts[index + 1]! - 1 : array.length - 1)
+    if (member.trim() === '') continue
+    // Next.js 忽略变量等非常量成员，这里同样跳过。
+    const entry = matcherEntry(member)
+    if (entry === null) continue
+    if ('pattern' in entry) patterns.push(entry.pattern)
+    else conditional++
+  }
+  // 全部成员都带条件时，匹配器不无条件覆盖任何路由；空数组无法判断含义。
+  if (patterns.length === 0 && conditional === 0) return { kind: 'unreadable' }
+  return { kind: 'patterns', patterns }
 }
 
 /** 限制匹配器长度，避免复杂输入消耗过多资源。 */
@@ -925,10 +1005,12 @@ function matcherToRegex(pattern: string): RegExp | null {
   }
 }
 
-/** 按具体路由判断中间件覆盖及鉴权信号。 */
-function middlewareCovers(ctx: ScanContext, routePath: string, url: string): boolean {
-  const mw = middlewareFor(ctx, routePath)
-  if (!mw) return false
+/** 按具体路由判断中间件覆盖及鉴权信号；同一作用域任一中间件覆盖即可。 */
+function middlewareCovers(ctx: ScanContext, route: Route): boolean {
+  return middlewaresFor(ctx, route.file.path, route.framework).some((mw) => covers(ctx, mw, route.url))
+}
+
+function covers(ctx: ScanContext, mw: ScanFile, url: string): boolean {
   if (!hasAuthSignal(mw)) return false
 
   const { config, readable } = compiledMatchersOf(mw)
@@ -944,6 +1026,8 @@ function middlewareCovers(ctx: ScanContext, routePath: string, url: string): boo
     return true
   }
 
+  // 所有成员都带 has 或 missing 条件时，中间件不无条件运行于任何路由。
+  if (config.patterns.length === 0) return false
   // 仅使用可读模式；完全不可读时保持保守。
   if (readable.length === 0) return true
   return readable.some((re) => re.test(url))
@@ -1022,7 +1106,7 @@ export const apiAuthRule: ProjectRule = {
     if (routes.length === 0) return []
 
     // 每个中间件只校验一次匹配器。
-    for (const middlewareFile of ctx.files.filter((f) => MIDDLEWARE_FILE.test(f.path))) {
+    for (const middlewareFile of ctx.files.filter((f) => isAnyMiddlewareFile(f.path))) {
       const config = extractMatcherConfig(middlewareFile)
       // 编译失败或不安全的模式都必须记录。
       const refused =
@@ -1049,7 +1133,7 @@ export const apiAuthRule: ProjectRule = {
       if (isAuthEndpoint(route)) continue
       // Next.js 与 Astro 的中间件逐路由判断保护范围。
       if ((route.framework === 'next' || route.framework === 'astro') &&
-          middlewareCovers(ctx, route.file.path, url)) continue
+          middlewareCovers(ctx, route)) continue
       const globalGuard = globalGuardFor(ctx, route)
       const globalNote = globalGuard === null ? [] : [
         `${globalGuard} contains an authentication check that may cover ${url}. Its path conditions are ` +

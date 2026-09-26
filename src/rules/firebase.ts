@@ -19,8 +19,17 @@ function productOf(path: string): string {
   return 'Firebase'
 }
 
+/**
+ * 操作列表：逗号分隔的单词，数量和长度有界。旧写法 [a-z,\s]+? 与前后空白对同一段空白有多种划分，
+ * allow 后接 1 万个空格即需约 100 秒；Firebase 的操作只有七种，边界不影响识别。
+ */
+const OPS = String.raw`([a-z]{1,16}(?:\s*,\s*[a-z]{1,16}){0,8})`
+
 /** 匹配无条件开放的操作声明。 */
-const ALLOW_IF_TRUE = /\ballow\s+([a-z,\s]+?)\s*:\s*if\s+true\s*;/gi
+const ALLOW_IF_TRUE = new RegExp(String.raw`\ballow\s+${OPS}\s*:\s*if\s+true\s*;`, 'gi')
+
+/** 显式拒绝的操作声明。 */
+const ALLOW_IF_FALSE = new RegExp(String.raw`\ballow\s+${OPS}\s*:\s*if\s+false\s*;`, 'gi')
 
 /** 区分写入与公开只读访问。 */
 const WRITE_OPS = new Set(['write', 'create', 'update', 'delete'])
@@ -38,67 +47,58 @@ function neutralizePathWildcards(content: string): string {
   return content.replace(/\{[a-zA-Z_]\w*(?:\s*=\s*\*\*)?\}/g, (m) => '_'.repeat(m.length))
 }
 
-/** 定位包含目标位置的最内层匹配块。 */
-function enclosingMatchBlock(neutralized: string, index: number): string {
-  const matchStart = neutralized.slice(0, index).lastIndexOf('match ')
-  if (matchStart < 0) return neutralized
-  const braceStart = neutralized.indexOf('{', matchStart)
-  if (braceStart < 0 || braceStart > index) return neutralized
-
-  let depth = 0
-  for (let i = braceStart; i < neutralized.length; i++) {
-    if (neutralized[i] === '{') depth++
-    else if (neutralized[i] === '}') {
-      depth--
-      if (depth === 0) return neutralized.slice(braceStart, i + 1)
-    }
-  }
-  return neutralized.slice(braceStart)
+interface MatchBlock {
+  open: number
+  close: number
 }
 
-/** 移除子匹配块，避免子级拒绝覆盖父级规则判断。 */
-function ownStatements(block: string): string {
-  let out = ''
-  let i = 0
-  while (i < block.length) {
-    const rest = block.slice(i)
-    const nested = /^\s*match\s+[^{]*\{/.exec(rest)
-    if (nested && i > 0) {
-      // 跳过完整子级代码块。
-      let depth = 0
-      let j = i + nested[0].length - 1
-      for (; j < block.length; j++) {
-        if (block[j] === '{') depth++
-        else if (block[j] === '}') {
-          depth--
-          if (depth === 0) {
-            j++
-            break
-          }
-        }
-      }
-      i = j
-      continue
+/**
+ * 一次遍历找出全部 match 块。块头取上一个分隔符到左花括号之间的文本，每个字符只属于一个块头；
+ * 旧实现对每条语句回扫文件、并在每个字符处重试正则，168KB 的规则文件需约 77 秒。
+ */
+function matchBlocksOf(neutralized: string): MatchBlock[] {
+  const blocks: MatchBlock[] = []
+  const stack: { open: number; isMatch: boolean }[] = []
+  let lastDelimiter = -1
+  for (let i = 0; i < neutralized.length; i++) {
+    const ch = neutralized[i]
+    if (ch === '{') {
+      stack.push({ open: i, isMatch: /^\s*match\b/.test(neutralized.slice(lastDelimiter + 1, i)) })
+      lastDelimiter = i
+    } else if (ch === '}') {
+      const top = stack.pop()
+      if (top?.isMatch) blocks.push({ open: top.open, close: i })
+      lastDelimiter = i
+    } else if (ch === ';') {
+      lastDelimiter = i
     }
-    out += block[i]
-    i++
   }
-  return out
+  // 未闭合的块延伸到文件末尾。
+  for (const top of stack) if (top.isMatch) blocks.push({ open: top.open, close: neutralized.length })
+  return blocks.sort((a, b) => a.open - b.open)
 }
 
-/** 公开读取且显式拒绝写入时视为只读设计。 */
-function blockDeniesWrites(block: string): boolean {
-  const denial = /\ballow\s+([a-z,\s]+?)\s*:\s*if\s+false\s*;/gi
-  let m: RegExpExecArray | null
-  while ((m = denial.exec(block)) !== null) {
-    if (parseOps(m[1] ?? '').some((op) => WRITE_OPS.has(op))) return true
+/** 为升序位置找出最内层 match 块的序号；不在任何块内时为 -1。 */
+function innermostBlocks(blocks: MatchBlock[], positions: number[]): number[] {
+  const owners: number[] = []
+  const active: number[] = []
+  let next = 0
+  for (const at of positions) {
+    while (next < blocks.length && blocks[next]!.open < at) {
+      while (active.length && blocks[active[active.length - 1]!]!.close < blocks[next]!.open) active.pop()
+      active.push(next++)
+    }
+    while (active.length && blocks[active[active.length - 1]!]!.close < at) active.pop()
+    owners.push(active.length ? active[active.length - 1]! : -1)
   }
-  return false
+  return owners
 }
 
 /** 提取测试模式的固定到期日期。 */
-const TEST_MODE =
-  /\ballow\s+([a-z,\s]+?)\s*:\s*if\s+request\.time\s*<\s*timestamp\.date\(\s*(\d{4})\s*,\s*(\d{1,2})\s*,\s*(\d{1,2})\s*\)\s*;/gi
+const TEST_MODE = new RegExp(
+  String.raw`\ballow\s+${OPS}\s*:\s*if\s+request\.time\s*<\s*timestamp\.date\(\s*(\d{4})\s*,\s*(\d{1,2})\s*,\s*(\d{1,2})\s*\)\s*;`,
+  'gi',
+)
 
 /** 将操作列表转换为展示文本。 */
 function describeOps(raw: string): string {
@@ -137,16 +137,24 @@ export const firebaseRulesRule: Rule = {
     // 每个文件只构建一次行号索引。
     const contentLines = lineStartsOf(content)
 
+    // 块结构和写入拒绝只计算一次；子级 match 块中的拒绝不影响父级判断。
+    const blocks = matchBlocksOf(neutralized)
+    const denials = [...neutralized.matchAll(ALLOW_IF_FALSE)]
+      .filter((d) => parseOps(d[1] ?? '').some((op) => WRITE_OPS.has(op)))
+    const denyingBlocks = new Set(innermostBlocks(blocks, denials.map((d) => d.index)))
+    const opens = [...content.matchAll(ALLOW_IF_TRUE)]
+    const openOwners = innermostBlocks(blocks, opens.map((o) => o.index))
+
     // 检查无条件访问。
-    ALLOW_IF_TRUE.lastIndex = 0
     let m: RegExpExecArray | null
-    while ((m = ALLOW_IF_TRUE.exec(content)) !== null) {
+    for (const [index, open] of opens.entries()) {
+      m = open
       if (capReached()) break
       const rawOps = m[1] ?? ''
       const canWrite = parseOps(rawOps).some((op) => WRITE_OPS.has(op))
 
       // 显式拒绝写入的公开读取不报告为开放写入。
-      if (!canWrite && blockDeniesWrites(ownStatements(enclosingMatchBlock(neutralized, m.index)))) continue
+      if (!canWrite && denyingBlocks.has(openOwners[index]!)) continue
 
       const ops = describeOps(rawOps)
       findings.push({

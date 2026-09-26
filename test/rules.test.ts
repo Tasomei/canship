@@ -808,6 +808,51 @@ describe('an incomplete scan must not look like a clean one', () => {
   })
 })
 
+describe('a Supabase admin JWT is found outside JavaScript too', () => {
+  const b64 = (value: object): string => Buffer.from(JSON.stringify(value)).toString('base64url')
+  const jwt = (role: string): string =>
+    `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ iss: 'supabase', ref: 'qwertyuiopasdfghjklz', role, iat: 1700000000, exp: 2015360000 })}` +
+    '.Zk3pQ9vR2mX7tL8wN4bY6cH1dJ5gF0sA'
+
+  async function adminHits(files: Record<string, string>): Promise<Finding[]> {
+    const root = mkdtempSync(join(tmpdir(), 'canship-jwt-'))
+    try {
+      for (const [rel, body] of Object.entries(files)) {
+        const abs = join(root, rel)
+        mkdirSync(dirname(abs), { recursive: true })
+        writeFileSync(abs, body, 'utf8')
+      }
+      const { findings } = await scan(root)
+      return findings.filter((f) => f.ruleId === 'exposure/supabase-service-role-in-client')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+
+  // 修复前只检查前端源码，同一个管理员 JWT 写在以下文件中不会被报告。
+  for (const [file, body] of [
+    ['docker-compose.yml', `services:\n  api:\n    environment:\n      SUPABASE_SERVICE_ROLE_KEY: ${jwt('service_role')}\n`],
+    ['worker.py', `KEY = '${jwt('service_role')}'\n`],
+    ['config/settings.json', `{"supabaseKey": "${jwt('service_role')}"}\n`],
+  ] as const) {
+    test(`in ${file}`, async () => {
+      const hits = await adminHits({ [file]: body })
+      assert.equal(hits.length, 1)
+      assert.equal(hits[0]!.confidence, 'certain')
+      assert.equal(hits[0]!.line, body.split('\n').findIndex((l) => l.includes('eyJ')) + 1)
+      assert.ok(!hits[0]!.excerpt?.includes(jwt('service_role')), 'the key was not redacted')
+    })
+  }
+
+  test('an anon JWT outside JavaScript is not reported', async () => {
+    assert.deepEqual(await adminHits({ 'docker-compose.yml': `ANON: ${jwt('anon')}\n` }), [])
+  })
+
+  test('a server-only env file holding the admin key is where it belongs', async () => {
+    assert.deepEqual(await adminHits({ '.env.local': `SUPABASE_SERVICE_ROLE_KEY=${jwt('service_role')}\n` }), [])
+  })
+})
+
 describe('places a credential can hide that an extension list never reaches', () => {
   const PRIVATE_KEY =
     '-----BEGIN RSA PRIVATE KEY-----\n' +
@@ -1228,6 +1273,69 @@ describe('what silences the API check has to be what actually protects the route
       'middleware.ts': middleware('["/api/:path*"]'),
     })
     assert.deepEqual(found, [], 'a route genuinely behind middleware was reported')
+  })
+
+  // Next.js 16 将 middleware 更名为 proxy；修复前 proxy 中的鉴权不被识别，路由被报为 P0 确定。
+  for (const file of ['proxy.ts', 'src/proxy.ts']) {
+    test(`a Next.js ${file} covers the route like middleware does`, async () => {
+      const found = await scanProject({
+        'app/api/users/route.ts': ADMIN_ROUTE,
+        [file]: middleware('["/api/:path*"]').replace('function middleware', 'function proxy'),
+      })
+      assert.deepEqual(found, [], 'a route behind proxy was reported')
+    })
+  }
+
+  test('a proxy whose matcher excludes the route does not cover it', async () => {
+    const found = await scanProject({
+      'app/api/users/route.ts': ADMIN_ROUTE,
+      'proxy.ts': middleware('["/dashboard/:path*"]').replace('function middleware', 'function proxy'),
+    })
+    assert.deepEqual(found, ['api/admin-db-access-without-auth'])
+  })
+
+  test('a proxy.ts outside the app root is not Next.js middleware', async () => {
+    const found = await scanProject({
+      'app/api/users/route.ts': ADMIN_ROUTE,
+      'lib/net/proxy.ts': middleware('["/api/:path*"]'),
+    })
+    assert.deepEqual(found, ['api/admin-db-access-without-auth'])
+  })
+
+  test('an unguarded middleware beside a guarded proxy does not hide the guard', async () => {
+    const found = await scanProject({
+      'app/api/users/route.ts': ADMIN_ROUTE,
+      'middleware.ts': 'export function middleware(){ return }\n',
+      'proxy.ts': middleware('["/api/:path*"]').replace('function middleware', 'function proxy'),
+    })
+    assert.deepEqual(found, [])
+  })
+
+  test('matcher objects read their source', async () => {
+    const found = await scanProject({
+      'app/api/users/route.ts': ADMIN_ROUTE,
+      'middleware.ts': middleware('[{ source: "/api/:path*", locale: false }]'),
+    })
+    assert.deepEqual(found, [])
+  })
+
+  // has/missing 条件使中间件只在部分请求上运行；修复前数组中的全部字符串（含 header 名）都被当作路径。
+  for (const condition of ['has', 'missing']) {
+    test(`a matcher object with ${condition} conditions does not cover the route`, async () => {
+      const found = await scanProject({
+        'app/api/users/route.ts': ADMIN_ROUTE,
+        'middleware.ts': middleware(`[{ source: "/api/:path*", ${condition}: [{ type: "header", key: "x-internal" }] }]`),
+      })
+      assert.deepEqual(found, ['api/admin-db-access-without-auth'])
+    })
+  }
+
+  test('an unconditional matcher entry still covers beside a conditional one', async () => {
+    const found = await scanProject({
+      'app/api/users/route.ts': ADMIN_ROUTE,
+      'middleware.ts': middleware('[{ source: "/admin", has: [{ type: "cookie", key: "a" }] }, "/api/:path*"]'),
+    })
+    assert.deepEqual(found, [])
   })
 
   test('a comment is not an authorisation check', async () => {

@@ -55,17 +55,17 @@ export const exposureRule: Rule = {
   id: 'exposure/public-env',
   severity: 'P0',
 
-  appliesTo(file: ScanFile): boolean {
-    // 示例仍参与扫描，由引擎统一降低置信度。
-    const name = basename(file.path)
-    if (isEnvFile(name)) return true
-    return /\.(ts|tsx|js|jsx|mjs|cjs|svelte|vue|astro)$/.test(name)
+  appliesTo(): boolean {
+    // 所有文本文件都检查管理员 JWT；公开变量引用只在前端源码中检查。示例由引擎统一降低置信度。
+    return true
   },
 
   /** 使用有界缓冲区保留结果，超限时记录扫描缺口。 */
   check(file: ScanFile, ctx: ScanContext): Finding[] {
     const name = basename(file.path)
-    const findings = isEnvFile(name) ? checkEnvFile(file) : checkSourceFile(file)
+    const findings = isEnvFile(name)
+      ? checkEnvFile(file)
+      : FRONTEND_SOURCE.test(name) ? checkSourceFile(file) : checkOtherFile(file)
     if (!findings.overflow) return findings.items
 
     ctx.reportIncomplete(
@@ -173,6 +173,55 @@ function checkEnvFile(file: ScanFile): FindingBuffer {
   return findings
 }
 
+/** 可引用公开环境变量的前端源码。 */
+const FRONTEND_SOURCE = /\.(ts|tsx|js|jsx|mjs|cjs|svelte|vue|astro)$/
+
+/**
+ * 配置、脚本及其他语言源码中的管理员 JWT。其他凭据格式由 secrets 规则覆盖全部文本文件，
+ * 管理员 JWT 此前只在前端源码中检查，写在 docker-compose.yml 或 Python 脚本中的不会被报告。
+ */
+function checkOtherFile(file: ScanFile): FindingBuffer {
+  const findings = new FindingBuffer()
+  file.lines.forEach((line, i) => pushServiceRoleJwts(findings, file, line, i, false))
+  return findings
+}
+
+/** 报告当前行中的 Supabase 管理员 JWT。 */
+function pushServiceRoleJwts(findings: FindingBuffer, file: ScanFile, line: string, i: number, clientSide: boolean): void {
+  // 使用共享模式查找当前行的 JWT。
+  JWT_SHAPED.lastIndex = 0
+  const jwtMatches = line.match(JWT_SHAPED)
+  if (!jwtMatches) return
+  for (const jwt of jwtMatches) {
+    if (!isSupabaseServiceRole(jwt)) continue
+    findings.push({
+      ruleId: 'exposure/supabase-service-role-in-client',
+      severity: 'P0',
+      confidence: 'certain',
+      title: clientSide
+        ? 'Your Supabase admin key is hardcoded in a client component'
+        : 'Your Supabase admin key is hardcoded in source code',
+      file: file.path,
+      line: i + 1,
+      excerpt: redactLine(line, jwt),
+      why: [
+        `This is the service_role key — it bypasses every Row Level Security policy and is effectively ` +
+          `your database root password.`,
+        clientSide
+          ? `This file starts with 'use client', so it is shipped to the browser in full. Any visitor can read this key.`
+          : `Hardcoding it in source means it is in your git history, and it will be bundled anywhere this file is imported from client code.`,
+      ],
+      fix: [
+        `Remove the key from the source file entirely.`,
+        `Put it in .env as SUPABASE_SERVICE_ROLE_KEY (no public prefix) and read it via process.env on the server only.`,
+      ],
+      humanOnly: [
+        `Rotate the key in your Supabase dashboard (Project Settings -> API) — the current one must be treated as compromised.`,
+      ],
+    })
+  }
+}
+
 /** 检查源码中的私密值。 */
 function checkSourceFile(file: ScanFile): FindingBuffer {
   const findings = new FindingBuffer()
@@ -184,39 +233,7 @@ function checkSourceFile(file: ScanFile): FindingBuffer {
   const commentless = commentsMaskedOf(file).split(/\r?\n/)
 
   file.lines.forEach((line, i) => {
-    // 使用共享模式查找当前行的 JWT。
-    JWT_SHAPED.lastIndex = 0
-    const jwtMatches = line.match(JWT_SHAPED)
-    if (jwtMatches) {
-      for (const jwt of jwtMatches) {
-        if (!isSupabaseServiceRole(jwt)) continue
-        findings.push({
-          ruleId: 'exposure/supabase-service-role-in-client',
-          severity: 'P0',
-          confidence: 'certain',
-          title: clientSide
-            ? 'Your Supabase admin key is hardcoded in a client component'
-            : 'Your Supabase admin key is hardcoded in source code',
-          file: file.path,
-          line: i + 1,
-          excerpt: redactLine(line, jwt),
-          why: [
-            `This is the service_role key — it bypasses every Row Level Security policy and is effectively ` +
-              `your database root password.`,
-            clientSide
-              ? `This file starts with 'use client', so it is shipped to the browser in full. Any visitor can read this key.`
-              : `Hardcoding it in source means it is in your git history, and it will be bundled anywhere this file is imported from client code.`,
-          ],
-          fix: [
-            `Remove the key from the source file entirely.`,
-            `Put it in .env as SUPABASE_SERVICE_ROLE_KEY (no public prefix) and read it via process.env on the server only.`,
-          ],
-          humanOnly: [
-            `Rotate the key in your Supabase dashboard (Project Settings -> API) — the current one must be treated as compromised.`,
-          ],
-        })
-      }
-    }
+    pushServiceRoleJwts(findings, file, line, i, clientSide)
 
     // 识别点访问和字符串索引访问中的公开私密变量。
     const envRef =

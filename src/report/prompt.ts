@@ -28,8 +28,9 @@ function renderInstruction(f: Finding, index: number): string {
 
   lines.push(`${index}. ${location} — ${defuseMarkers(f.title)}`)
   if (f.excerpt) lines.push(`   Found: ${defuseMarkers(f.excerpt)}`)
+  // 修复步骤会拼入仓库中的文件名，同样不能伪造结构标记。
   for (const step of f.fix) {
-    lines.push(`   - ${step}`)
+    lines.push(`   - ${defuseMarkers(step)}`)
   }
   return lines.join('\n')
 }
@@ -163,7 +164,7 @@ export function renderFixPrompt(findings: Finding[], ctx?: PromptContext): strin
     for (const { step } of humanSteps) {
       if (seen.has(step)) continue
       seen.add(step)
-      out.push(`- ${step}`)
+      out.push(`- ${defuseMarkers(step)}`)
     }
     out.push('')
     out.push('Until these are done, the exposure is still live — the code fix alone does not close it.')

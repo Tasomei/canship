@@ -375,22 +375,53 @@ function collectCredentialLines(file: ScanFile): CredentialMark[] {
   return lines
 }
 
-/** 将凭据配置与最近的来源声明配对。 */
-function nearestOrigin(origins: OriginMark[], credLine: number): OriginMark | null {
-  let best = Infinity
-  let closest: OriginMark[] = []
-  for (const o of origins) {
-    const d = Math.abs(o.line - credLine)
-    if (d < best) {
-      best = d
-      closest = [o]
-    } else if (d === best) {
-      closest.push(o)
+/** 同组来源声明按行汇总：该行出现的类型，以及原始顺序中最早的一条。 */
+interface OriginLine {
+  line: number
+  kinds: Set<OriginKind>
+  first: OriginMark
+  order: number
+}
+
+/**
+ * 按行索引一组来源声明，供每个凭据配置二分查找。
+ * 旧实现对每个凭据配置遍历全部来源声明，1.17MB 的文件约需 10 秒。
+ */
+function indexOrigins(origins: { mark: OriginMark; order: number }[]): OriginLine[] {
+  const byLine = new Map<number, OriginLine>()
+  for (const { mark, order } of origins) {
+    const entry = byLine.get(mark.line)
+    if (entry === undefined) byLine.set(mark.line, { line: mark.line, kinds: new Set([mark.kind]), first: mark, order })
+    else {
+      entry.kinds.add(mark.kind)
+      if (order < entry.order) {
+        entry.first = mark
+        entry.order = order
+      }
     }
   }
-  if (best > PAIRING_DISTANCE || closest.length === 0) return null
-  const kinds = new Set(closest.map((o) => o.kind))
-  return kinds.size === 1 ? closest[0]! : null
+  return [...byLine.values()].sort((a, b) => a.line - b.line)
+}
+
+/** 将凭据配置与最近的来源声明配对；距离相同但类型不一时无法判断，不配对。 */
+function nearestOrigin(lines: OriginLine[], credLine: number): OriginMark | null {
+  // 第一个行号不小于凭据所在行的位置。
+  let lo = 0
+  let hi = lines.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (lines[mid]!.line < credLine) lo = mid + 1
+    else hi = mid
+  }
+  const below = lo > 0 ? lines[lo - 1] : undefined
+  const above = lines[lo]
+  const best = Math.min(below ? credLine - below.line : Infinity, above ? above.line - credLine : Infinity)
+  if (best > PAIRING_DISTANCE) return null
+  const closest = [below, above].filter((entry): entry is OriginLine =>
+    entry !== undefined && Math.abs(entry.line - credLine) === best)
+  const kinds = new Set(closest.flatMap((entry) => [...entry.kinds]))
+  if (kinds.size !== 1) return null
+  return closest.reduce((a, b) => (b.order < a.order ? b : a)).first
 }
 
 export const corsRule: Rule = {
@@ -415,10 +446,20 @@ export const corsRule: Rule = {
     // 每类配置问题在同一文件中只报告一次。
     const reported = new Set<OriginKind>()
 
+    // 响应头之间直接配对；对象选项只与同一花括号作用域内的配对。
+    const groupOf = (mark: { mode: 'header' | 'option'; at: number }): string =>
+      mark.mode === 'header' ? 'header' : `option:${scopes.get(mark.at)}`
+    const grouped = new Map<string, { mark: OriginMark; order: number }[]>()
+    origins.forEach((mark, order) => {
+      const group = grouped.get(groupOf(mark)) ?? []
+      group.push({ mark, order })
+      grouped.set(groupOf(mark), group)
+    })
+    const indexes = new Map([...grouped].map(([group, marks]) => [group, indexOrigins(marks)]))
+
     for (const credential of credentialLines) {
-      const candidates = origins.filter(origin => origin.mode === credential.mode &&
-        (credential.mode === 'header' || scopes.get(origin.at) === scopes.get(credential.at)))
-      const origin = nearestOrigin(candidates, credential.line)
+      if (reported.size === 2) break
+      const origin = nearestOrigin(indexes.get(groupOf(credential)) ?? [], credential.line)
       if (!origin) continue
       if (origin.kind !== 'reflected' && origin.kind !== 'wildcard') continue
       if (reported.has(origin.kind)) continue

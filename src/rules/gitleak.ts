@@ -208,11 +208,14 @@ function historicalEvidence(
   entry: HistoricalPath,
 ): HistoryScan | null {
   // 路径筛选使用扫描相对路径，对象读取使用仓库相对路径。
+  // 删除该文件的提交中已无此路径，读取必然失败，不能计为无法读取的历史版本。
   const all =
     (git(root, gitExecutable, [
       'log',
       '--no-ext-diff',
       '--no-textconv',
+      '--no-renames',
+      '--diff-filter=d',
       '--all',
       '--format=%H',
       `--max-count=${MAX_HISTORY_REVISIONS + 1}`,
