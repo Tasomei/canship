@@ -81,6 +81,19 @@
           "line": { "anyOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
           "excerpt": { "type": ["string", "null"] },
           "sourceFingerprint": { "type": "string" },
+          "evidenceTruncated": { "type": "boolean" },
+          "evidence": {
+            "type": "array", "maxItems": 24,
+            "items": {
+              "type": "object", "required": ["kind", "file", "line", "description"],
+              "properties": {
+                "kind": { "enum": ["operation", "import", "admin-client"] },
+                "file": { "type": "string" },
+                "line": { "anyOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+                "description": { "type": "string" }
+              }
+            }
+          },
           "why": { "$ref": "#/definitions/strings" },
           "fix": { "$ref": "#/definitions/strings" },
           "humanOnly": { "$ref": "#/definitions/strings" }

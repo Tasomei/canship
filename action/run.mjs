@@ -160,7 +160,7 @@ export function rebaseSarif(log, prefix) {
   for (const run of log.runs) {
     if (!Array.isArray(run.results)) throw new Error('Invalid SARIF results.')
     for (const result of run.results) {
-      for (const location of result.locations ?? []) {
+      for (const location of [...(result.locations ?? []), ...(result.relatedLocations ?? [])]) {
         const artifact = location.physicalLocation?.artifactLocation
         if (!artifact || typeof artifact.uri !== 'string') throw new Error('Invalid SARIF location.')
         const parts = artifact.uri.split('/').map(decodeURIComponent)

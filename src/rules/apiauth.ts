@@ -1,7 +1,7 @@
 /** 检查未认证请求可触达的数据操作；结合函数内控制流、客户端类型和中间件判断。 */
 
 import { posix } from 'node:path'
-import type { Finding, ProjectRule, ScanContext, ScanFile } from '../types.js'
+import type { EvidenceStep, Finding, ProjectRule, ScanContext, ScanFile } from '../types.js'
 import { isSupabaseServiceRole } from './framework.js'
 import { redactSecret } from '../redact.js'
 import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
@@ -779,10 +779,14 @@ function usesSessionClient(route: Route, sessionModules: ScanFile[], allFiles: S
 
 /** Nuxt 自动导入 server/utils 的导出，路由不写 import 也能调用。 */
 function autoImportsAnyOf(route: Route, modules: ScanFile[]): boolean {
-  if (route.framework !== 'nuxt') return false
+  return autoImportedModule(route, modules) !== undefined
+}
+
+function autoImportedModule(route: Route, modules: ScanFile[]): ScanFile | undefined {
+  if (route.framework !== 'nuxt') return undefined
   const utils = `${route.scope}server/utils/`
   const code = noiseMaskedOf(route.file)
-  return modules.some(module => module.path.startsWith(utils) && exportedNames(module).some(name =>
+  return modules.find(module => module.path.startsWith(utils) && exportedNames(module).some(name =>
     new RegExp(`(?<![\\w$.])${name.replace(/\$/g, '\\$')}\\s*\\(`).test(code)))
 }
 
@@ -793,9 +797,11 @@ function exportedNames(file: ScanFile): string[] {
   return [...names].map(m => m[1]!)
 }
 
-/** 获取文件导入及重导出的项目模块。 */
-function importedModules(file: ScanFile, allFiles: ScanFile[], aliasScope: string): ScanFile[] {
-  const found: ScanFile[] = []
+interface ImportEdge { from: ScanFile; to: ScanFile; line: number }
+
+/** 获取文件导入及重导出的项目模块，并保留导入位置。 */
+function importedEdges(file: ScanFile, allFiles: ScanFile[], aliasScope: string): ImportEdge[] {
+  const found: ImportEdge[] = []
   const source = commentsMaskedOf(file)
   const code = noiseMaskedOf(file)
   IMPORT_SPEC.lastIndex = 0
@@ -806,8 +812,11 @@ function importedModules(file: ScanFile, allFiles: ScanFile[], aliasScope: strin
     if (!target) continue
 
     const index = moduleIndexOf(allFiles)
+    const append = (targets: ScanFile[]): void => {
+      for (const to of targets) found.push({ from: file, to, line: lineNumberAt(lineStartsCached(file), m!.index) })
+    }
     if (!target.alias) {
-      found.push(...(index.get(target.key) ?? []))
+      append(index.get(target.key) ?? [])
     } else {
       // 别名仅在所属应用及其源码目录解析，避免跨应用误匹配。
       const prefix = aliasScope
@@ -817,7 +826,7 @@ function importedModules(file: ScanFile, allFiles: ScanFile[], aliasScope: strin
         moduleKey(`${prefix}src/${target.key}`),
         moduleKey(`${prefix}app/${target.key}`),
       ]) {
-        found.push(...(index.get(key) ?? []))
+        append(index.get(key) ?? [])
       }
     }
   }
@@ -826,36 +835,64 @@ function importedModules(file: ScanFile, allFiles: ScanFile[], aliasScope: strin
 
 /** 按访问集合遍历导入图并判断目标模块是否可达。 */
 /** 同一文件的多个 Server Action 共享导入图结果，按模块列表、文件和别名范围缓存。 */
-const importsCache = new WeakMap<ScanFile[], WeakMap<ScanFile, Map<string, boolean>>>()
+const importsCache = new WeakMap<ScanFile[], WeakMap<ScanFile, Map<string, ImportEdge[] | null>>>()
 
 function importsAnyOf(route: Route, modules: ScanFile[], allFiles: ScanFile[]): boolean {
-  if (modules.length === 0) return false
-  const byFile = importsCache.get(modules) ?? new WeakMap<ScanFile, Map<string, boolean>>()
+  return importChain(route, modules, allFiles) !== null
+}
+
+function importChain(route: Route, modules: ScanFile[], allFiles: ScanFile[]): ImportEdge[] | null {
+  if (modules.length === 0) return null
+  const byFile = importsCache.get(modules) ?? new WeakMap<ScanFile, Map<string, ImportEdge[] | null>>()
   importsCache.set(modules, byFile)
-  const byScope = byFile.get(route.file) ?? new Map<string, boolean>()
+  const byScope = byFile.get(route.file) ?? new Map<string, ImportEdge[] | null>()
   byFile.set(route.file, byScope)
   const cached = byScope.get(route.scope)
   if (cached !== undefined) return cached
-  const result = importsAnyOfUncached(route, modules, allFiles)
+  const result = importChainUncached(route, modules, allFiles)
   byScope.set(route.scope, result)
   return result
 }
 
-function importsAnyOfUncached(route: Route, modules: ScanFile[], allFiles: ScanFile[]): boolean {
+function importChainUncached(route: Route, modules: ScanFile[], allFiles: ScanFile[]): ImportEdge[] | null {
   const targetPaths = new Set(modules.map((file) => file.path))
-  const visited = new Set<string>()
-  const aliasScope = route.scope
-
-  // 使用显式队列避免深层导入链导致调用栈溢出。
-  const queue: ScanFile[] = importedModules(route.file, allFiles, aliasScope)
-  while (queue.length > 0) {
-    const file = queue.pop()!
-    if (targetPaths.has(file.path)) return true
-    if (visited.has(file.path)) continue
-    visited.add(file.path)
-    queue.push(...importedModules(file, allFiles, aliasScope))
+  const visited = new Set([route.file.path])
+  const parents = new Map<string, ImportEdge>()
+  const queue = [route.file]
+  // 广度优先保留一条最短静态路径，循环导入不会重复入队。
+  for (let i = 0; i < queue.length; i++) {
+    for (const edge of importedEdges(queue[i]!, allFiles, route.scope)) {
+      if (visited.has(edge.to.path)) continue
+      visited.add(edge.to.path)
+      parents.set(edge.to.path, edge)
+      if (targetPaths.has(edge.to.path)) {
+        const chain: ImportEdge[] = []
+        let current: ImportEdge | undefined = edge
+        while (current) { chain.push(current); current = parents.get(current.from.path) }
+        return chain.reverse()
+      }
+      queue.push(edge.to)
+    }
   }
-  return false
+  return null
+}
+
+/** 为管理员客户端结果补充静态导入证据；不推断变量绑定或运行时执行。 */
+function adminEvidence(route: Route, modules: ScanFile[], allFiles: ScanFile[], line: number): Pick<Finding, 'evidence' | 'evidenceTruncated'> {
+  const chain = buildsAdminClient(route.file) ? [] : importChain(route, modules, allFiles)
+  const evidence: EvidenceStep[] = [{ kind: 'operation', file: route.file.path, line,
+    description: 'Data operation without a recognized authentication guard.' }]
+  for (const edge of (chain ?? []).slice(0, 22)) evidence.push({
+    kind: 'import', file: edge.from.path, line: edge.line, description: `Statically imports ${edge.to.path}.`,
+  })
+  const target = chain?.at(-1)?.to ?? (buildsAdminClient(route.file) ? route.file : autoImportedModule(route, modules))
+  if (target) {
+    const at = NUXT_SUPABASE_ADMIN.exec(noiseMaskedOf(target))?.index ?? CLIENT_CONSTRUCTOR.exec(noiseMaskedOf(target))?.index
+    evidence.push({ kind: 'admin-client', file: target.path,
+      line: at === undefined ? null : lineNumberAt(lineStartsCached(target), at),
+      description: 'Admin-client construction detected in this module; imports are not proof of runtime data flow.' })
+  }
+  return { evidence, evidenceTruncated: (chain?.length ?? 0) > 22 }
 }
 
 // 识别实际数据操作。
@@ -1394,6 +1431,7 @@ export const apiAuthRule: ProjectRule = {
       if (admin) {
         findings.push({
           ruleId: 'api/admin-db-access-without-auth',
+          ...adminEvidence(route, adminModules, ctx.files, line),
           severity: 'P0',
           // 管理员客户端缺少鉴权时使用确定置信度；可能受全局鉴权覆盖时降为疑似。
           confidence: globalGuard === null ? 'certain' : 'likely',

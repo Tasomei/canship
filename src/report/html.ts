@@ -49,6 +49,8 @@ function renderFinding(f: Finding, index: number): string {
   </header>
   <div class="loc">${esc(location)}${f.confidence === 'likely' ? ' <span class="tag">lower confidence</span>' : ''}</div>
   ${f.excerpt ? `<pre><code>${esc(f.excerpt)}</code></pre>` : ''}
+  ${f.evidence?.length ? `<h4>Evidence (static relationships)</h4><ol>${f.evidence.map(step =>
+    `<li><code>${esc(locationOf(step))}</code> — ${esc(step.description)}</li>`).join('')}</ol>${f.evidenceTruncated ? '<p>Additional dependency steps omitted.</p>' : ''}` : ''}
   <div class="why">${linkify(paragraphs(f.why))}</div>
   ${fixList}
   ${humanList}

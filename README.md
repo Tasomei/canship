@@ -77,6 +77,10 @@ JSON uses `schemaVersion: 1`, independent of the package version; the npm packag
 
 `findings` contains results after suppressions and filtering; `hiddenLikely`, `baselineSuppressed`, and `baselineStale` provide related counts. Check coverage separately through `partial`, `errors`, `skipped`, and `filesScanned`. SARIF includes execution status and diagnostic notifications.
 
+### Static evidence
+
+Admin-client findings include static evidence linking the data operation, imports, and client-construction module. Terminal, HTML, fix prompts, and JSON include these steps; SARIF uses related locations. Evidence adds no source excerpts, is limited to 24 steps, and discloses truncation. Imports are not proof of runtime data flow.
+
 ## Programmatic API
 
 Node.js ESM entry point with TypeScript declarations and no runtime dependencies.

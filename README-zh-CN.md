@@ -77,6 +77,10 @@ JSON 使用独立于包版本的 `schemaVersion: 1`，npm 包附带 [结构定�
 
 `findings` 为抑制和筛选后的结果；`hiddenLikely`、`baselineSuppressed`、`baselineStale` 提供相关统计。完整性需另查 `partial`、`errors`、`skipped`、`filesScanned`；SARIF 提供执行状态与诊断通知。
 
+### 静态证据链
+
+管理员客户端相关结果附带静态证据链，列出数据操作、导入位置和客户端构造文件。终端、HTML、修复指令与 JSON 均展示证据，SARIF 使用关联位置；不包含额外源码摘录，最多 24 步，截断时明确提示。导入关系不等于运行时数据流证明。
+
 ## 程序化 API
 
 提供 Node.js ESM 入口和 TypeScript 类型，不增加运行时依赖。

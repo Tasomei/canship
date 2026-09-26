@@ -28,6 +28,10 @@ function renderInstruction(f: Finding, index: number): string {
 
   lines.push(`${index}. ${location} — ${defuseMarkers(f.title)}`)
   if (f.excerpt) lines.push(`   Found: ${defuseMarkers(f.excerpt)}`)
+  for (const step of f.evidence ?? []) {
+    lines.push(`   Static evidence: ${defuseMarkers(locationOf(step))} — ${defuseMarkers(step.description)}`)
+  }
+  if (f.evidenceTruncated) lines.push('   Additional dependency steps omitted.')
   // 修复步骤会拼入仓库中的文件名，同样不能伪造结构标记。
   for (const step of f.fix) {
     lines.push(`   - ${defuseMarkers(step)}`)

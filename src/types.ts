@@ -21,6 +21,14 @@ export interface ScanFile {
   isExampleContext: boolean
 }
 
+/** 静态证据位置，不包含源码摘录或运行时结论。 */
+export interface EvidenceStep {
+  kind: 'operation' | 'import' | 'admin-client'
+  file: string
+  line: number | null
+  description: string
+}
+
 /** 单条扫描结果。 */
 export interface Finding {
   /** 对外展示的规则 ID。 */
@@ -37,6 +45,9 @@ export interface Finding {
   excerpt: string | null
   /** 原始来源行或文件证据的摘要，独立于展示用的脱敏和截断。 */
   sourceFingerprint?: string
+  evidence?: EvidenceStep[]
+  /** 展示链达到长度上限，不影响已经完成的扫描。 */
+  evidenceTruncated?: boolean
   /** 影响说明，每个元素独立表示一个段落。 */
   why: string[]
   /** 可执行的代码修复步骤。 */

@@ -112,6 +112,12 @@ function renderFinding(f: Finding, index: number): string[] {
     out.push(`${INDENT}${INDENT}${gray(f.excerpt)}`)
   }
 
+  if (f.evidence?.length) {
+    out.push('', `${INDENT}${INDENT}${bold('Evidence (static relationships):')}`)
+    for (const step of f.evidence) out.push(`${INDENT}${INDENT}  ${locationOf(step)} — ${step.description}`)
+    if (f.evidenceTruncated) out.push(`${INDENT}${INDENT}  Additional dependency steps omitted.`)
+  }
+
   out.push('')
   // 输出边界已清理段内换行，此处恢复段落结构。
   for (const line of wrapText(f.why.join('\n\n'), 76)) {

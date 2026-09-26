@@ -8,7 +8,7 @@ import type { RuleDescription } from './rules/catalog.js'
 import { verdictOf } from './report/shared.js'
 import type { ScanOptions as EngineOptions, ScanResult } from './types.js'
 
-export type { Finding, Severity, Confidence, ScanResult, ScanError, SkippedFile, RuleSelection } from './types.js'
+export type { Finding, EvidenceStep, Severity, Confidence, ScanResult, ScanError, SkippedFile, RuleSelection } from './types.js'
 export type { RuleDescription } from './rules/catalog.js'
 
 export interface ScanOptions extends EngineOptions {

@@ -110,6 +110,17 @@ function resultsOf(findings: Finding[]): unknown[] {
             },
           ],
     partialFingerprints: { canshipFindingV2: fingerprintOf(f) },
+    ...(f.evidence?.length ? {
+      relatedLocations: f.evidence.map((step, index) => ({
+        id: index + 1,
+        message: { text: step.description },
+        physicalLocation: {
+          artifactLocation: { uri: step.file.split('/').map(part => encodeURIComponent(part)).join('/') },
+          ...(step.line === null ? {} : { region: { startLine: step.line } }),
+        },
+      })),
+      properties: { evidenceTruncated: f.evidenceTruncated ?? false },
+    } : {}),
   }))
 }
 

@@ -82,6 +82,12 @@ function sanitize(findings: Finding[], files: ScanFile[]): Finding[] {
     file: f.file === null ? null : clean(f.file),
     // 先脱敏再截断，避免截断导致凭据特征失效。
     excerpt: f.excerpt === null ? null : truncate(clean(f.excerpt)),
+    ...(f.evidence ? {
+      evidence: f.evidence.slice(0, 24).map(step => ({
+        kind: step.kind, file: clean(step.file), line: step.line, description: clean(step.description),
+      })),
+      evidenceTruncated: f.evidenceTruncated === true || f.evidence.length > 24,
+    } : {}),
     fix: f.fix.map(clean),
     ...(f.humanOnly ? { humanOnly: f.humanOnly.map(clean) } : {}),
   }))

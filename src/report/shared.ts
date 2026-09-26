@@ -9,7 +9,7 @@ export function plural(n: number, word: string): string {
 }
 
 /** 格式化结果位置；无文件时显示仓库级位置。 */
-export function locationOf(f: Finding): string {
+export function locationOf(f: Pick<Finding, 'file' | 'line'>): string {
   if (!f.file) return 'the repository'
   return f.line ? `${f.file}:${f.line}` : f.file
 }
