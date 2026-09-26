@@ -6,8 +6,35 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { projectCanaries, scanWithCanary } from './evaluation/project-canaries.js'
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const manifest = JSON.parse(readFileSync(join(root, 'test/evaluation/projects.json'), 'utf8'))
+for (const source of manifest.projects) {
+  for (const canary of projectCanaries(source.id)) {
+    test(`project canary ${source.id}/${canary.id} has exact findings and preserves the source`, async () => {
+      const target = mkdtempSync(join(tmpdir(), 'canship-canary-test-'))
+      try {
+        const pkg = '{"dependencies":{"@supabase/supabase-js":"2"}}'
+        writeFileSync(join(target, 'package.json'), pkg)
+        const result = await scanWithCanary(target, canary)
+        assert.equal(result.partial, false)
+        assert.deepEqual(result.findings.map(f => ({ rule: f.ruleId, severity: f.severity,
+          confidence: f.confidence, file: f.file, line: f.line })), canary.expected)
+        assert.equal(readFileSync(join(target, 'package.json'), 'utf8'), pkg)
+      } finally { rmSync(target, { recursive: true, force: true }) }
+    })
+  }
+}
+test('project canaries reject traversal and existing files', async () => {
+  const target = mkdtempSync(join(tmpdir(), 'canship-canary-path-'))
+  try {
+    writeFileSync(join(target, 'keep.ts'), 'keep')
+    const canary = projectCanaries('firebase-auth')[0]!
+    await assert.rejects(scanWithCanary(target, { ...canary, file: '../outside.ts' }), /Invalid canary/)
+    await assert.rejects(scanWithCanary(target, { ...canary, file: 'keep.ts' }), /overwrite/)
+    assert.equal(readFileSync(join(target, 'keep.ts'), 'utf8'), 'keep')
+  } finally { rmSync(target, { recursive: true, force: true }) }
+})
 test('all five pinned projects have a complete source and scope statement', () => {
   assert.equal(manifest.projects.length, 5)
   assert.match(manifest.scope, /history/)

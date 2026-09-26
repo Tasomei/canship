@@ -218,7 +218,7 @@ node scripts/fetch-evaluation-projects.mjs "$env:TEMP/canship-evaluation"
 npm run evaluate:projects -- "$env:TEMP/canship-evaluation"
 ```
 
-CI 使用同一评估集，不验证 Git 历史或线上行为。
+每个快照另生成开放与受限两种检测样本，共 15 个完整项目场景；在临时副本中执行，原快照不变。比较原项目和新增样本的全部结果，同时检查漏报与误报。CI 使用同一评估集，不验证 Git 历史或线上行为。
 
 ## 许可
 

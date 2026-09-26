@@ -143,6 +143,13 @@ jobs:
             echo "expected exit code 1 on the vulnerable fixture, got $status"
             exit 1
           fi
+      - name: The library runs on Node 18
+        run: |
+          node --input-type=module -e "
+            import { scan, summarize, listRules } from './dist/index.js';
+            const result = await scan(process.env.RUNNER_TEMP + '/clean-nextjs', { noExcerpts: true });
+            if (summarize(result).exitCode !== 0 || listRules().length === 0) process.exit(1);
+          "
 
   # 用构建后的扫描器检查自身源码。
   dogfood:

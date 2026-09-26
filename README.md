@@ -218,7 +218,7 @@ Then evaluate offline without installing or running sample dependencies:
 npm run evaluate:projects -- "$env:TEMP/canship-evaluation"
 ```
 
-CI uses the same corpus. Git history and deployed behaviour are outside this evaluation.
+Each snapshot also receives an open and a guarded canary, giving 15 full-project scenarios. Scans use temporary copies; original snapshots stay unchanged. All original and added findings are compared to check both missing and unexpected results. CI uses the same corpus; Git history and deployed behaviour remain outside scope.
 
 ## License
 
