@@ -8,9 +8,9 @@ const MAX_STATEMENT = 4000
 
 /** 从起点读到分号为止的语句范围。 */
 export function statementEnd(masked: string, from: number): number {
-  const semicolon = masked.indexOf(';', from)
   const limit = Math.min(masked.length, from + MAX_STATEMENT)
-  return semicolon === -1 || semicolon > limit ? limit : semicolon
+  const semicolon = masked.slice(from, limit).indexOf(';')
+  return semicolon === -1 ? limit : from + semicolon
 }
 
 /** 从左括号起读取成对括号内的范围；屏蔽后的文本中字符串里的括号已不存在。 */
@@ -23,13 +23,46 @@ function parenthesized(masked: string, open: number, end: number): { from: numbe
   return null
 }
 
-/** 移除注释、空白与外层括号并转为小写，供恒真判断使用。 */
+/** 仅规范化 SQL 语法，保留字符串中的大小写、空白及转义。 */
 function normalizeExpression(text: string): string {
-  let out = text.replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, '').toLowerCase()
-  while (out.startsWith('(') && out.endsWith(')') && parenthesized(out, 0, out.length)?.to === out.length - 1) {
-    out = out.slice(1, -1)
+  const parts: string[] = []
+  for (let i = 0; i < text.length;) {
+    const ch = text[i]!
+    if (ch === "'") {
+      const start = i++
+      let closed = false
+      while (i < text.length) {
+        if (text[i++] !== "'") continue
+        if (text[i] === "'") { i++; continue }
+        closed = true
+        break
+      }
+      if (!closed) return ''
+      parts.push(text.slice(start, i))
+    } else if (text.startsWith('--', i)) {
+      const end = text.indexOf('\n', i + 2)
+      i = end === -1 ? text.length : end
+    } else if (text.startsWith('/*', i)) {
+      let depth = 1
+      i += 2
+      while (i < text.length && depth > 0) {
+        if (text.startsWith('/*', i)) { depth++; i += 2 }
+        else if (text.startsWith('*/', i)) { depth--; i += 2 }
+        else i++
+      }
+      if (depth !== 0) return ''
+    } else {
+      if (!/\s/.test(ch)) parts.push(ch.toLowerCase())
+      i++
+    }
   }
-  return out
+  const out = parts.join('')
+  // 仅支持被成对外括号包围的简单常量式，不求值复合表达式。
+  let start = 0
+  let end = out.length
+  while (out[start] === '(') start++
+  while (end > start && out[end - 1] === ')') end--
+  return start === out.length - end ? out.slice(start, end) : out
 }
 
 /** 恒为真的条件：true、相同数字相等、相同字符串相等。 */
@@ -38,13 +71,13 @@ export function isAlwaysTrue(expression: string): boolean {
   if (e === 'true') return true
   const numbers = /^(\d+)=(\d+)$/.exec(e)
   if (numbers) return numbers[1] === numbers[2]
-  const strings = /^'([^']*)'='([^']*)'$/.exec(e)
+  const strings = /^'((?:[^']|'')*)'='((?:[^']|'')*)'$/.exec(e)
   return strings !== null && strings[1] === strings[2]
 }
 
 /** 条件仅按存储桶筛选，如 bucket_id = 'avatars'；返回桶名。 */
 export function bucketOnlyCondition(expression: string): string | null {
-  return /^(?:(?:storage\.)?objects\.)?bucket_id='([^']*)'$/.exec(normalizeExpression(expression))?.[1] ?? null
+  return /^(?:(?:storage\.)?objects\.)?bucket_id='((?:[^']|'')*)'$/.exec(normalizeExpression(expression))?.[1]?.replace(/''/g, "'") ?? null
 }
 
 /** 未引用标识符转为小写，引用标识符保留大小写。 */

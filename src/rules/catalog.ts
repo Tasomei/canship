@@ -40,10 +40,10 @@ export const RULE_CATALOG: readonly RuleDescription[] = [
     'Tracked environment files; templates and public-only values are treated separately.', 'Unrecognized private values are heuristic findings, not verified credentials.'),
   rule('supabase/permissive-policy', 'Row Level Security policy with an always-true condition', 'P1', 'varies',
     'Supabase SQL migrations, replayed by application scope: permissive policies whose USING or WITH CHECK is always true (true, 1=1, \'a\'=\'a\'). Changing or deleting any row is certain; reading or inserting any row requires review.',
-    'Policies missing a USING or WITH CHECK clause are not checked; dashboard changes and restrictive policies elsewhere are not visible.'),
-  rule('supabase/public-bucket-listing', 'Public storage bucket whose contents can be listed', 'P2', 'certain',
+    'Missing clauses and dashboard changes are not checked; matching restrictive policies and nontrivial WITH CHECK conditions lower confidence.'),
+  rule('supabase/public-bucket-listing', 'Public storage bucket whose contents can be listed', 'P2', 'varies',
     'Public buckets declared in migrations or supabase/config.toml, paired with a SELECT policy on storage.objects that is always true or filters only by that bucket.',
-    'Buckets created from the dashboard or at runtime are not visible.'),
+    'Buckets created from the dashboard or at runtime are not visible; restrictive policies may limit listing and lower confidence.'),
   rule('supabase/rls-not-enabled', 'Table without RLS in migrations', 'P1', 'certain',
     'Supabase SQL migrations, replayed by application scope.', 'Migration state is not deployed database state; grants and policy correctness are outside this check.'),
   ...SECRET_PATTERNS.map(pattern => ({

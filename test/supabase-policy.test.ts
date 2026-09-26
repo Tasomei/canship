@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { scan } from '../src/engine.js'
 import type { Finding } from '../src/types.js'
-import { isAlwaysTrue } from '../src/rules/sqlpolicy.js'
+import { bucketOnlyCondition, isAlwaysTrue } from '../src/rules/sqlpolicy.js'
 
 const roots: string[] = []
 after(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }) })
@@ -38,6 +38,16 @@ describe('always-true expressions', () => {
   for (const expression of ['auth.uid() = user_id', '1=2', "'a'='b'", 'true and auth.uid() = user_id', 'false']) {
     test(`${expression} is not`, () => assert.equal(isAlwaysTrue(expression), false))
   }
+  for (const expression of ["'A'='a'", "'a b'='ab'", "'a/*x*/b'='ab'", "'a--x'='a'"]) {
+    test(`literal content is preserved: ${expression}`, () => assert.equal(isAlwaysTrue(expression), false))
+  }
+  test('SQL strings preserve escapes, case and spaces in bucket names', () => {
+    assert.equal(isAlwaysTrue("(('A'' B') = ('A B'))"), false)
+    assert.equal(isAlwaysTrue("('A'' B' = 'A'' B')"), true)
+    assert.equal(bucketOnlyCondition("(bucket_id = 'Team Files')"), 'Team Files')
+    assert.equal(bucketOnlyCondition("bucket_id = 'owner''s'"), "owner's")
+    assert.equal(isAlwaysTrue('true /* outer /* inner */ outer */'), true)
+  })
 })
 
 describe('permissive policies', () => {
@@ -132,6 +142,26 @@ describe('permissive policies', () => {
     const { findings } = await scan(root)
     assert.deepEqual(findings.filter((f) => f.ruleId.startsWith('supabase/')), [])
   })
+  test('a restrictive companion makes the broad policy a review finding', async () => {
+    const found = await policyFindings({ '1.sql': TABLE +
+      'create policy wide on posts for update using (true);\n' +
+      'create policy own on posts as restrictive for update using (auth.uid() = user_id);\n' })
+    assert.deepEqual(found.map(f => f.confidence), ['likely'])
+    assert.doesNotMatch(found[0]!.why.join(' '), /whatever the other policies say/)
+    assert.match(found[0]!.why.join(' '), /restrictive/i)
+  })
+  test('a restrictive policy on another table does not downgrade the finding', async () => {
+    const found = await policyFindings({ '1.sql': TABLE +
+      'create policy wide on posts for delete using (true);\n' +
+      'create policy own on other as restrictive using (false);\n' })
+    assert.deepEqual(found.map(f => f.confidence), ['certain'])
+  })
+  test('an UPDATE check is not described as unrestricted write access', async () => {
+    const found = await policyFindings({ '1.sql': TABLE +
+      'create policy wide on posts for update using (true) with check (auth.uid() = user_id);\n' })
+    assert.deepEqual(found.map(f => f.confidence), ['likely'])
+    assert.doesNotMatch(found[0]!.title, /change every row/)
+  })
 })
 
 describe('public buckets that can be listed', () => {
@@ -175,6 +205,13 @@ describe('public buckets that can be listed', () => {
 
   test('a public bucket with no listing policy is not reported', async () => {
     assert.deepEqual(await policyFindings({ '1_storage.sql': PUBLIC }), [])
+  })
+  test('bucket matching preserves case and whitespace', async () => {
+    const found = await policyFindings({ '1.sql':
+      "insert into storage.buckets (id, public) values ('Team Files', true);\n" +
+      "create policy listing on storage.objects for select using (bucket_id = 'Team Files');\n" })
+    assert.deepEqual(found.map(f => f.ruleId), ['supabase/public-bucket-listing'])
+    assert.match(found[0]!.title, /Team Files/)
   })
 })
 

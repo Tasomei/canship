@@ -647,7 +647,19 @@ function policyFindings(
   for (const [key, bucket] of buckets) {
     if (!bucket.public) continue
     const [scope, id] = JSON.parse(key) as [string, string]
-    publicBuckets.set(scope, [...(publicBuckets.get(scope) ?? []), id])
+    const ids = publicBuckets.get(scope) ?? []
+    ids.push(id)
+    publicBuckets.set(scope, ids)
+  }
+
+  // 限制性策略按表和命令索引；角色继承未知时保守降级，不宣称实际访问已开放。
+  const restrictiveCommands = new Map<string, Set<PolicyCommand>>()
+  for (const policy of policies) {
+    if (!policy.restrictive) continue
+    const key = keyOf(policy.scope, policy.schema, policy.table)
+    const commands = restrictiveCommands.get(key) ?? new Set<PolicyCommand>()
+    commands.add(policy.command)
+    restrictiveCommands.set(key, commands)
   }
 
   for (const p of policies) {
@@ -655,6 +667,9 @@ function policyFindings(
     if (live.get(keyOf(p.scope, p.schema, p.table))?.rls === false) continue
     const table = `${renderIdent(p.schema)}.${renderIdent(p.table)}`
     const audience = audienceOf(p.roles)
+    const restrictions = restrictiveCommands.get(keyOf(p.scope, p.schema, p.table))
+    const hasRestriction = restrictions !== undefined &&
+      (p.command === 'all' || restrictions.has('all') || restrictions.has(p.command))
 
     // 可枚举的公开存储桶：条件为 true 或仅按桶名筛选的读取策略。
     if (p.schema === 'storage' && p.table === 'objects' && (p.command === 'select' || p.command === 'all') && p.using !== undefined) {
@@ -665,8 +680,10 @@ function policyFindings(
         push({
           ruleId: 'supabase/public-bucket-listing',
           severity: 'P2',
-          confidence: 'certain',
-          title: `Policy "${p.name}" lets ${audience} list every file in the public "${id}" bucket`,
+          confidence: hasRestriction ? 'likely' : 'certain',
+          title: hasRestriction
+            ? `Policy "${p.name}" permits listing the public "${id}" bucket, subject to restrictive policies`
+            : `Policy "${p.name}" lets ${audience} list every file in the public "${id}" bucket`,
           file: p.file,
           line: p.line,
           excerpt: excerpt(p.file, p.line),
@@ -675,6 +692,7 @@ function policyFindings(
               `This SELECT policy on storage.objects adds something else: it lets callers list the bucket's contents.`,
             `Listing reveals every file name, including files uploaded by other users that were only meant to be ` +
               `reachable by someone who already had the link.`,
+            ...(hasRestriction ? ['Restrictive policies also apply with AND; their conditions and role coverage require review.'] : []),
           ],
           fix: [
             `If the app only serves files by URL, drop this policy: public object URLs keep working without it.`,
@@ -692,21 +710,26 @@ function policyFindings(
 
     // 修改或删除任意行很少是设计；公开读取和公开表单常见，保留为疑似。
     const modifiesAny = usingTrue && (p.command === 'update' || p.command === 'delete' || p.command === 'all')
+    const limitedCheck = (p.command === 'update' || p.command === 'all') && p.check !== undefined && !checkTrue
+    const needsReview = hasRestriction || limitedCheck
     const verb = { all: 'read, change and delete', select: 'read', insert: 'insert any data into', update: 'change', delete: 'delete' }[p.command]
     push({
       ruleId: 'supabase/permissive-policy',
       severity: 'P1',
-      confidence: modifiesAny ? 'certain' : 'likely',
-      title: opensRows
+      confidence: modifiesAny && !needsReview ? 'certain' : 'likely',
+      title: needsReview
+        ? `Policy "${p.name}" has an unrestricted condition on ${table}; other conditions require review`
+        : opensRows
         ? `Policy "${p.name}" lets ${audience} ${verb} every row of ${table}`
         : `Policy "${p.name}" lets ${audience} write any values into ${table}`,
       file: p.file,
       line: p.line,
       excerpt: excerpt(p.file, p.line),
       why: [
-        `Row Level Security is on, but this policy's condition is always true, so it does not restrict rows at all. ` +
-          `Permissive policies are combined with OR: one always-true policy opens the table for its command ` +
-          `whatever the other policies say.`,
+        `This policy contains an always-true condition. Permissive policies combine with OR, while applicable ` +
+          `restrictive policies combine with AND. Database grants, SELECT policies and WITH CHECK conditions may further limit access.`,
+        ...(hasRestriction ? ['A restrictive policy on this table may limit access; verify its command and role coverage.'] : []),
+        ...(limitedCheck ? ['The WITH CHECK condition is not known to be always true, so unrestricted updates are not established.'] : []),
         ...(p.command === 'select' || p.command === 'insert'
           ? [`Public read-only tables and open forms can be intentional. If this one is, keep it and consider ` +
               `restricting the columns the API exposes.`]
