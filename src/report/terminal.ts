@@ -2,7 +2,7 @@
 
 import type { Finding, ScanResult, SkipReason } from '../types.js'
 import { bold, dim, red, green, yellow, cyan, gray } from '../colors.js'
-import { SKIP_LABEL, locationOf, plural, verdictOf } from './shared.js'
+import { changeViewNotice, SKIP_LABEL, locationOf, plural, verdictOf } from './shared.js'
 
 const INDENT = '  '
 
@@ -53,6 +53,7 @@ export function renderReport(result: ScanResult, opts: RenderOptions): string {
     `${INDENT}${bold('canship')} ${dim(`scanned ${result.filesScanned} ${plural(result.filesScanned, 'file')} in ${result.durationMs}ms`)}`,
   )
   out.push(`${INDENT}${dim(opts.root)}`)
+  if (result.changeView) out.push(`${INDENT}${yellow(changeViewNotice(result.changeView))}`)
   out.push('')
 
   if (findings.length === 0) {
@@ -188,6 +189,8 @@ function renderClean(result: ScanResult, opts: RenderOptions): string[] {
         ? `! No certain findings — ${opts.hiddenLikely} lower-confidence ${plural(opts.hiddenLikely, 'finding')} hidden, and not everything was checked`
         : '! No findings — but not everything was checked'
     out.push(`${INDENT}${yellow(bold(headline))}`)
+  } else if ((result.changeView?.hiddenFindings ?? 0) > 0) {
+    out.push(`${INDENT}${yellow(bold('! No visible findings in changed files — other findings still exist'))}`)
   } else if (opts.hiddenLikely > 0) {
     out.push(
       `${INDENT}${yellow(bold(`! No certain findings — ${opts.hiddenLikely} lower-confidence ${plural(opts.hiddenLikely, 'finding')} hidden`))}`,

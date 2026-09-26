@@ -22,6 +22,7 @@ import {
 import { ConfigError, CONFIG_FILENAME, loadConfig } from './config.js'
 import { isKnownSelector } from './rules/index.js'
 import { RULE_CATALOG, renderRuleCatalog } from './rules/catalog.js'
+import { changedFilesSince, changedFileView, ChangeViewError } from './changes.js'
 
 /** 构建时从包信息注入版本；源码运行使用开发版本。 */
 declare const __CANSHIP_VERSION__: string | undefined
@@ -55,6 +56,7 @@ interface Args {
   version: boolean
   listRules: boolean
   noExcerpts: boolean
+  changedSince: string | null
 }
 
 /** 保留退出码，等待标准输出和错误输出写完后自然结束。 */
@@ -148,10 +150,16 @@ function parseArgs(argv: string[]): Args {
     version: false,
     listRules: false,
     noExcerpts: false,
+    changedSince: null,
   }
   const positional: string[] = []
 
   for (const arg of argv) {
+    if (arg.startsWith('--changed-since=')) {
+      if (args.changedSince !== null || arg === '--changed-since=') argumentError('--changed-since requires one non-empty reference')
+      args.changedSince = arg.slice('--changed-since='.length)
+      continue
+    }
     // 支持逗号分隔及重复参数；移除空条目。
     const list = (name: string): string[] | null => {
       if (!arg.startsWith(`${name}=`)) return null
@@ -279,6 +287,8 @@ const HELP = `
                       markers; use with --no-config for untrusted projects
         --list-rules  List rule IDs, scope, and limits; add --json for structured output
         --no-excerpts Omit source excerpts from every report; paths and descriptions remain
+        --changed-since=REF  Show changed-file findings since the local merge base;
+                             scan scope and exit status remain unchanged
     -h, --help        Show this help
     -v, --version     Show version
 
@@ -334,6 +344,10 @@ async function main(): Promise<void> {
     process.stderr.write(`${red('canship:')} not a directory: ${cleanForOutput(args.root)}\n`)
     return finish(3)
   }
+  if (args.changedSince !== null && (args.baselineWrite !== null || args.baselineWriteDefault)) {
+    argumentError('--changed-since cannot be combined with --baseline-write')
+  }
+  const changed = args.changedSince === null ? null : changedFilesSince(args.root, args.changedSince)
 
   // 从扫描目录加载配置。
   let config
@@ -448,11 +462,14 @@ async function main(): Promise<void> {
   // 基线计算完成后统一移除摘录，不改变结果身份、置信度或退出码。
   if (args.noExcerpts) result = { ...result, findings: result.findings.map(finding => ({ ...finding, excerpt: null })) }
 
+  const fullResult = result
+  if (changed) result = changedFileView(result, changed)
   const shown = showAll ? result.findings : result.findings.filter((f) => f.confidence === 'certain')
   const hiddenLikely = showAll ? 0 : result.findings.filter((f) => f.confidence === 'likely').length
 
   if (args.fixPrompt) {
     const prompt = renderFixPrompt(shown, {
+      ...(result.changeView ? { changeView: result.changeView } : {}),
       partial: result.partial,
       filesScanned: result.filesScanned,
       hiddenLikely,
@@ -554,15 +571,15 @@ async function main(): Promise<void> {
   }
 
   // 严重确定结果优先，其次为其他结果，最后判断完整性。
-  if (verdictOf(result.findings).blocking > 0) return finish(1)
-  if (result.findings.length > 0) return finish(2)
+  if (verdictOf(fullResult.findings).blocking > 0) return finish(1)
+  if (fullResult.findings.length > 0) return finish(2)
   // 仅在无发现时按完整性决定退出状态。
   if (result.partial && !bestEffort) return finish(3)
   return finish(0)
 }
 
 main().catch((err: unknown) => {
-  if (err instanceof ArgumentError) process.stderr.write(`canship: ${err.message}\n`)
+  if (err instanceof ArgumentError || err instanceof ChangeViewError) process.stderr.write(`canship: ${err.message}\n`)
   else process.stderr.write(`${red('canship: unexpected error')}\n${cleanForOutput(String(err))}\n`)
   finish(3)
 })

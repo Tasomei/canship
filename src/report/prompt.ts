@@ -1,7 +1,7 @@
 /** 生成修复提示，将代码修改与需人工执行的操作分开。 */
 
-import type { Finding } from '../types.js'
-import { locationOf } from './shared.js'
+import type { ChangeView, Finding } from '../types.js'
+import { changeViewNotice, locationOf } from './shared.js'
 
 /** 提示的结构标记；引用内容不能伪造这些边界。 */
 const STRUCTURAL_MARKERS = [
@@ -41,6 +41,7 @@ function renderInstruction(f: Finding, index: number): string {
 
 /** 生成提示所需的扫描上下文。 */
 export interface PromptContext {
+  changeView?: ChangeView
   /** 扫描是否未完成。 */
   partial: boolean
   /** 实际扫描文件数；零文件不能视为无需修复。 */
@@ -78,6 +79,7 @@ export function renderFixPrompt(findings: Finding[], ctx?: PromptContext): strin
   const baselineSuppressed = ctx?.baselineSuppressed ?? 0
   const silenced = ctx?.silenced ?? []
   const suppressedNotes = [
+    ctx?.changeView ? changeViewNotice(ctx.changeView) : null,
     !ctx?.ignoredFiles?.length
       ? null
       : `Note: ${ctx.ignoredFiles.length} file(s) excluded by canship-ignore-file: ` +

@@ -42,5 +42,6 @@ export function createJsonReport(result: ScanResult, options: JsonOptions): Json
     baselineStale: options.baselineStale,
     excerptsOmitted: options.excerptsOmitted ?? false,
     findings: result.findings,
+    ...(result.changeView ? { changeView: result.changeView } : {}),
   }
 }

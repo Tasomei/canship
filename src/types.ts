@@ -149,8 +149,21 @@ export interface ScanError {
   kind: 'crashed' | 'incomplete'
 }
 
+/** 变更视图的比较基准、隐藏数量及完整扫描统计。 */
+export interface ChangeView {
+  baseCommit: string
+  mergeBase: string
+  changedFiles: number
+  hiddenFindings: number
+  totalFindings: number
+  totalBlocking: number
+  totalLikely: number
+}
+
 /** 扫描汇总；结果为空时仍需保留完整性信息。 */
 export interface ScanResult {
+  /** 仅筛选展示；统计和退出码仍基于完整扫描。 */
+  changeView?: ChangeView
   findings: Finding[]
   /** 实际读取并扫描的文件数。 */
   filesScanned: number

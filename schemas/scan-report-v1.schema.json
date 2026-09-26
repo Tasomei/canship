@@ -15,6 +15,19 @@
     "baselineSuppressed": { "$ref": "#/definitions/count" },
     "baselineStale": { "$ref": "#/definitions/count" },
     "excerptsOmitted": { "type": "boolean" },
+    "changeView": {
+      "type": "object",
+      "required": ["baseCommit", "mergeBase", "changedFiles", "hiddenFindings", "totalFindings", "totalBlocking", "totalLikely"],
+      "properties": {
+        "baseCommit": { "type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" },
+        "mergeBase": { "type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" },
+        "changedFiles": { "$ref": "#/definitions/count" },
+        "hiddenFindings": { "$ref": "#/definitions/count" },
+        "totalFindings": { "$ref": "#/definitions/count" },
+        "totalBlocking": { "$ref": "#/definitions/count" },
+        "totalLikely": { "$ref": "#/definitions/count" }
+      }
+    },
     "ignored": { "$ref": "#/definitions/strings" },
     "errors": {
       "type": "array",

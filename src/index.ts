@@ -8,7 +8,7 @@ import type { RuleDescription } from './rules/catalog.js'
 import { verdictOf } from './report/shared.js'
 import type { ScanOptions as EngineOptions, ScanResult } from './types.js'
 
-export type { Finding, EvidenceStep, Severity, Confidence, ScanResult, ScanError, SkippedFile, RuleSelection } from './types.js'
+export type { Finding, EvidenceStep, ChangeView, Severity, Confidence, ScanResult, ScanError, SkippedFile, RuleSelection } from './types.js'
 export type { RuleDescription } from './rules/catalog.js'
 
 export interface ScanOptions extends EngineOptions {
@@ -33,13 +33,15 @@ export function listRules(): RuleDescription[] {
 /** 统计全部结果；结果退出码优先，完整性始终单独保留。 */
 export function summarize(result: ScanResult): ScanSummary {
   const verdict = verdictOf(result.findings)
+  const findings = result.changeView?.totalFindings ?? result.findings.length
+  const blocking = result.changeView?.totalBlocking ?? verdict.blocking
   const partial = result.partial || result.filesScanned === 0 || result.errors.length > 0 || result.skipped.length > 0
   return {
-    findings: result.findings.length,
-    blocking: verdict.blocking,
-    likely: verdict.unsure,
+    findings,
+    blocking,
+    likely: result.changeView?.totalLikely ?? verdict.unsure,
     partial,
-    exitCode: verdict.blocking > 0 ? 1 : result.findings.length > 0 ? 2 : partial ? 3 : 0,
+    exitCode: blocking > 0 ? 1 : findings > 0 ? 2 : partial ? 3 : 0,
   }
 }
 

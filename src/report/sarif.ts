@@ -3,6 +3,7 @@
 import type { Finding, ScanResult } from '../types.js'
 import { fingerprintOf } from '../baseline.js'
 import { BLOCKING } from '../types.js'
+import { changeViewNotice } from './shared.js'
 
 /** 工具项目地址。 */
 const INFORMATION_URI = 'https://github.com/Tasomei/canship'
@@ -21,6 +22,7 @@ export interface SarifOptions {
 /** 通过通知披露基线、忽略标记和规则筛选造成的结果隐藏。 */
 function suppressionNotes(result: ScanResult, opts: SarifOptions): unknown[] {
   const notes: unknown[] = []
+  if (result.changeView) notes.push({ level: 'warning', message: { text: changeViewNotice(result.changeView) } })
   const baseline = opts.baselineSuppressed ?? 0
   const hidden = opts.hiddenLikely ?? 0
   if (baseline > 0) {

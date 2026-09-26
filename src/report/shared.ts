@@ -1,7 +1,13 @@
 /** 各报告共用的结论、位置和跳过原因。 */
 
-import type { Finding, SkipReason } from '../types.js'
+import type { ChangeView, Finding, SkipReason } from '../types.js'
 import { BLOCKING } from '../types.js'
+
+/** 各输出格式统一披露变更视图隐藏的结果和完整扫描结论。 */
+export function changeViewNotice(view: ChangeView): string {
+  return `Changed-file view: ${view.changedFiles} changed files; ${view.hiddenFindings} findings hidden. ` +
+    `Full scan: ${view.totalFindings} findings, ${view.totalBlocking} blocking. Scan scope and exit status are unchanged.`
+}
 
 /** 按数量选择英文单复数。 */
 export function plural(n: number, word: string): string {

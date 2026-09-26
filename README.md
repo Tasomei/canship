@@ -55,12 +55,15 @@ Omitting the path scans the current directory.
 | `--no-ignore-markers` | Disregard ignore markers in scanned source |
 | `--list-rules` | List rules and limits without scanning; supports `--json` |
 | `--no-excerpts` | Omit source excerpts from every report; preserve findings and exit status |
+| `--changed-since=ref` | Show changed-file findings from a local merge base; preserve scan scope and exit status |
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show version |
 
 `--json` and `--fix-prompt` are mutually exclusive; HTML and SARIF work with either. Reports are in English. `--all` applies to every format.
 
 ### Exit codes
+
+`--changed-since=origin/main` still scans the whole project, showing findings in changed files or known evidence locations. It compares the local merge base with the working tree, includes non-ignored untracked files, and never fetches. Repository-wide findings and truncated evidence are retained. Every format discloses hidden counts; JSON `changeView` also retains full-scan totals. Missing local refs, history, or Git exit `3`. This option cannot accompany `--baseline-write` and is not a policy that blocks CI only on new issues.
 
 | Code | Meaning |
 |---|---|

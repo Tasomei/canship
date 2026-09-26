@@ -1,7 +1,7 @@
 /** 生成自包含的离线 HTML 报告，不加载外部资源。 */
 
 import type { Finding, ScanResult } from '../types.js'
-import { locationOf, plural, skipPhrase, verdictOf } from './shared.js'
+import { changeViewNotice, locationOf, plural, skipPhrase, verdictOf } from './shared.js'
 
 /** 转义插入 HTML 的文本。 */
 function esc(s: string): string {
@@ -89,6 +89,8 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
             hiddenLikely > 0
               ? `<div class="verdict warn">No certain findings &mdash; ${hiddenLikely} lower-confidence ${plural(hiddenLikely, 'finding')} hidden, and not everything was checked</div>`
               : `<div class="verdict warn">No findings &mdash; but not everything was checked</div>`
+          : (result.changeView?.hiddenFindings ?? 0) > 0
+            ? `<div class="verdict warn">No visible findings in changed files &mdash; other findings still exist</div>`
           : hiddenLikely > 0
             ? `<div class="verdict warn">No certain findings &mdash; ${hiddenLikely} lower-confidence ${plural(hiddenLikely, 'finding')} hidden</div>`
             : // 基线抑制结果时明确说明，避免误报为项目无问题。
@@ -112,6 +114,8 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
            gitignored or build output that canship skips. If the project lives in a
            subdirectory, point canship at it: <code>npx canship ./app</code>.</p>
          </div>`
+        : (result.changeView?.hiddenFindings ?? 0) > 0
+          ? '<div class="clean-note">This view hides existing findings. Re-run without --changed-since for the full report.</div>'
         : hiddenLikely > 0
           ? `<div class="clean-note">
              <p><strong>This is not a finding-free result.</strong> The default report hides
@@ -279,6 +283,7 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
   <h1>canship report</h1>
   <div class="meta">${esc(opts.root)}<br>${esc(opts.generatedAt)} &middot; ${result.filesScanned} ${plural(result.filesScanned, 'file')} scanned in ${result.durationMs}ms</div>
   ${verdict}
+  ${result.changeView ? `<p class="opted-out">${esc(changeViewNotice(result.changeView))}</p>` : ''}
   <div class="notice">
     Credential values canship recognises are masked in this report. One in a format it has no
     pattern for can still appear inside a quoted line, and this report lists your
