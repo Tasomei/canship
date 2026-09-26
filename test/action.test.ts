@@ -118,7 +118,8 @@ test('an exit code that contradicts the findings is rejected; tool errors and em
 for (const version of ['latest', '^0.2.1', '0.2.1 & echo unsafe', 'file:../package', 'https://example.com/pkg.tgz']) {
   test(`a non-exact version is rejected: ${version}`, () => assert.throws(() => parseInputs(environment({ INPUT_VERSION: version }))))
 }
-test('the Action default version matches its config, both README examples and the input tables', () => {
+test('the Action defaults match the documented defaults and README examples select the package version', () => {
+  const packageVersion = JSON.parse(readFileSync(join(repository, 'package.json'), 'utf8')).version
   const version = parseInputs(environment()).version
   assert.equal(version, '0.3.2')
   assert.equal(parseInputs(environment({ INPUT_VERSION: '' })).version, version)
@@ -130,10 +131,29 @@ test('the Action default version matches its config, both README examples and th
     const readme = readFileSync(join(repository, name), 'utf8')
     const workflow = /^```yaml\r?\n([\s\S]*?)^```/m.exec(readme)?.[1]
     assert.ok(workflow, `${name} lacks a workflow example`)
-    assert.ok(workflow.includes(`version: '${version}'`), `${name} example version differs`)
+    assert.ok(workflow.includes(`version: '${packageVersion}'`), `${name} example version differs`)
+    assert.match(workflow, /^      - uses: Tasomei\/canship@[a-f0-9]{40}\r?$/m)
     assert.ok(readme.includes(`| \`version\` | \`${version}\` |`), `${name} default version differs`)
   }
 })
+test('an explicit release version accepts only reports from that version', () => {
+  const version = JSON.parse(readFileSync(join(repository, 'package.json'), 'utf8')).version
+  for (const actual of [version, '0.0.0-test']) {
+    const execute = () => runAction(environment({ INPUT_VERSION: version }), {
+      installScanner: options => {
+        assert.equal(options.version, version)
+        return 'trusted-cli.js'
+      },
+      execute: () => ({ status: 0, stdout: JSON.stringify(report({}, actual)) }),
+    })
+    if (actual === version) assert.equal(execute().failed, false)
+    else assert.throws(execute, (error: unknown) => {
+      assert.equal(describeActionError(error).stage, 'report')
+      return true
+    })
+  }
+})
+
 test('explicitly choosing 0.2.1 still works with the old report format', () => {
   const env = environment({ INPUT_VERSION: '0.2.1' })
   const { schemaVersion: _, ...legacy } = report({}, '0.2.1')

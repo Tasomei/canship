@@ -1,16 +1,18 @@
 # canship
 
-A local static scanner for JavaScript and TypeScript projects. Detects exposed credentials and access-control misconfigurations. Scans do not execute project code, upload files, or use the network.
+A local static scanner for JavaScript and TypeScript projects. Detects exposed credentials and access-control misconfigurations without executing project code, uploading files, or making network requests.
 
-This branch includes unreleased changes. Published behaviour follows the matching [npm version](https://www.npmjs.com/package/canship); the programmatic API below currently requires a local build.
+[简体中文](./README-zh-CN.md)
+
+## Quick start
 
 ```powershell
 npx canship .
 ```
 
-Requires Node.js ≥18; no runtime dependencies. `npx` may download the package; scans use only local files and Git history. Unavailable Git in a repository marks the scan incomplete.
+Requires Node.js ≥18; no runtime dependencies. Package installation may use the network. Git checks use local history only; unavailable Git in a repository marks the scan incomplete.
 
-[简体中文](./README-zh-CN.md)
+> Documentation for 0.4.0. Earlier [npm versions](https://www.npmjs.com/package/canship) may not include all features below.
 
 ## Checks
 
@@ -18,97 +20,108 @@ Requires Node.js ≥18; no runtime dependencies. `npx` may download the package;
 |---|---|
 | Hardcoded credentials, private keys, and database URLs containing passwords | P0 |
 | Private values in public environment variables | P0 |
-| Supabase admin keys exposed to clients | P0 |
+| Supabase admin credentials in source or public environment variables | P0 |
 | Credentials or suspected private values in Git-tracked and historical `.env` files | P0 |
 | Supabase tables without Row Level Security (RLS) in migrations | P1 |
-| Supabase RLS policies whose condition is always true | P1 |
-| Public Supabase storage buckets whose contents can be listed | P2 |
-| Firebase unconditional access (Firestore, Storage, Realtime Database) and date-based test rules | P1 |
-| Server route and Server Action data operations without recognised authentication | P0 / P1 |
+| Supabase RLS policies with always-true conditions | P1 |
+| Public Supabase storage buckets with listable contents | P2 |
+| Firebase unconditional access and date-based test rules (Firestore, Storage, Realtime Database) | P1 |
+| Server-side data operations without recognised authentication | P0 / P1 |
 | Credentialed CORS with reflected or wildcard origins | P1 / P2 |
 
-Supports OpenAI, Anthropic, OpenRouter, Groq, Hugging Face, Replicate, xAI, Perplexity, AWS, Stripe, GitHub, npm, Slack, SendGrid, and other credential formats, plus common frontend public environment prefixes.
+Recognises OpenAI, Anthropic, AWS, Stripe, GitHub, npm, and other credential formats, plus common frontend public environment prefixes. Use `--list-rules` for rule IDs, scope, and limits.
 
-API authentication checks cover Next.js (route handlers anywhere under `app/`, Pages Router `/api`, and Server Functions marked with `'use server'`), SvelteKit (`+server` endpoints and form actions in `+page.server`), Nuxt (`server/api` and `server/routes`), Remix and React Router (modules in `app/routes` exporting `loader` or `action`), and Astro (endpoints in `src/pages`), including route groups and workspace applications. SvelteKit page loads and remote functions are not checked. Next.js `middleware` or `proxy` and Astro middleware protect routes their matcher covers; Server Functions have no URL of their own and must check authentication inside each function, as Next.js documents. An authentication check in SvelteKit `hooks.server` or Nuxt `server/middleware` lowers confidence instead of suppressing findings, because the routes it covers are decided in code.
+### Authentication coverage
 
-Supabase policy checks follow Supabase's own advisor lints 0024 and 0025 and replay migrations in order: always-true `USING` or `WITH CHECK` conditions (`true`, `1=1`, `'a'='a'`), and public buckets paired with a `SELECT` policy that lets clients list them. Policies missing a `USING` or `WITH CHECK` clause, and anything changed only in the dashboard, are not visible to these checks.
-
-Confidence is `certain` or `likely`, describing static evidence rather than credential validity or deployed state. Only certain findings are shown by default; hidden likely findings still affect the exit code.
-
-## Usage
-
-Omitting the path scans the current directory.
-
-| Option | Description |
+| Framework | Checked entry points |
 |---|---|
-| `-a`, `--all` | Include likely findings |
+| Next.js | Route handlers under `app/`, Pages Router `/api`, and `'use server'` functions |
+| SvelteKit | `+server` endpoints and `+page.server` form actions |
+| Nuxt | `server/api` and `server/routes` |
+| Remix / React Router | `loader` and `action` exports in `app/routes` |
+| Astro | Endpoints in `src/pages` |
+
+Supports route groups and workspace applications. SvelteKit page loads and remote functions are outside scope. Recognised Next.js and Astro middleware guards may suppress covered route findings; Server Functions require a guard within each function. SvelteKit hooks, Nuxt middleware, and local auth helpers can lower confidence without suppressing findings.
+
+Supabase checks replay local migrations and read supported bucket configuration. Dashboard-only changes and policy conditions implied by missing clauses are not checked.
+
+### Confidence and evidence
+
+`certain` and `likely` describe static evidence, not credential validity or deployed state. Only `certain` findings are shown by default; hidden `likely` findings still affect exit status.
+
+Admin-client findings include operation, import, and client-construction locations. Supabase constructor aliases and local auth imports, re-exports, and function-returning wrappers are recognised within bounded patterns. Auth resolution follows up to eight hops; evidence chains contain at most 24 steps and disclose truncation. Indirect auth evidence retains the finding at lower confidence; import relationships do not prove runtime data flow.
+
+## CLI
+
+Omitting the path scans the current directory. Reports are in English.
+
+| Option | Effect |
+|---|---|
+| `-a`, `--all` | Include `likely` findings in every format |
 | `--json` | Output JSON |
-| `--fix-prompt` | Output remediation instructions and separate manual actions |
+| `--fix-prompt` | Output repair instructions and separate manual actions |
 | `--report[=file]` | Write HTML; default: `canship-report.html` |
 | `--sarif[=file]` | Write SARIF 2.1.0; default: `canship.sarif` |
-| `--best-effort` | Permit exit `0` for an incomplete scan with no findings |
-| `--baseline[=file]` | Apply a baseline; default: `canship-baseline.json` |
-| `--baseline-write[=file]` | Write current findings as a baseline and exit; same default path |
-| `--only=ids` | Run matching rules; comma-separated and repeatable |
-| `--skip=ids` | Exclude matching rules; comma-separated and repeatable |
+| `--no-excerpts` | Omit source excerpts; preserve findings and exit status |
+| `--changed-since=ref` | Filter the report by changed files, not the scan or exit status |
+| `--only=ids` / `--skip=ids` | Select or exclude rules; comma-separated and repeatable |
+| `--list-rules` | List rules without scanning; supports `--json` |
+| `--baseline[=file]` | Suppress recorded findings; default: `canship-baseline.json` |
+| `--baseline-write[=file]` | Record findings and exit; same default path |
 | `--no-config` | Ignore project configuration |
-| `--no-ignore-markers` | Disregard ignore markers in scanned source |
-| `--list-rules` | List rules and limits without scanning; supports `--json` |
-| `--no-excerpts` | Omit source excerpts from every report; preserve findings and exit status |
-| `--changed-since=ref` | Show changed-file findings from a local merge base; preserve scan scope and exit status |
-| `-h`, `--help` | Show help |
-| `-v`, `--version` | Show version |
+| `--no-ignore-markers` | Disregard source ignore markers |
+| `--best-effort` | Allow exit `0` for an incomplete scan with no findings |
+| `-h`, `--help` / `-v`, `--version` | Show help or version |
 
-`--json` and `--fix-prompt` are mutually exclusive; HTML and SARIF work with either. Reports are in English. `--all` applies to every format.
+`--json` and `--fix-prompt` are mutually exclusive; HTML and SARIF can accompany either.
 
 ### Exit codes
 
-`--changed-since=origin/main` still scans the whole project, showing findings in changed files or known evidence locations. It compares the local merge base with the working tree, includes non-ignored untracked files, and never fetches. Repository-wide findings and truncated evidence are retained. Every format discloses hidden counts; JSON `changeView` also retains full-scan totals. Missing local refs, history, or Git exit `3`. This option cannot accompany `--baseline-write` and is not a policy that blocks CI only on new issues.
-
 | Code | Meaning |
 |---|---|
-| `0` | No findings, with a complete scan or an incomplete scan accepted by `--best-effort` |
-| `1` | At least one certain P0/P1 finding |
-| `2` | Other findings, including hidden likely findings |
-| `3` | Invalid arguments, a tool error, or an unaccepted incomplete scan |
+| `0` | No findings; scan complete or incompleteness accepted by `--best-effort` |
+| `1` | At least one `certain` P0/P1 finding |
+| `2` | Other findings, including hidden `likely` findings |
+| `3` | Invalid arguments, tool error, or unaccepted incomplete scan |
 
-Finding exit codes take precedence over incompleteness; `--best-effort` does not change `1` or `2`.
+Counts apply after rule selection, ignore markers, and baselines. Findings take precedence over incompleteness; `--best-effort` does not change `1` or `2`.
 
-### Machine-readable output
+### Changed-file view
 
-JSON uses `schemaVersion: 1`, independent of the package version; the npm package includes its [schema](./schemas/scan-report-v1.schema.json). Accept additive fields and reject unsupported schema versions. `--list-rules --json` is a separate `kind: "rule-catalog"` document.
+`--changed-since=origin/main` compares the local merge base with the working tree, including non-ignored untracked files. It does not fetch. The whole project is still scanned; findings are shown when their primary or evidence locations changed. Repository-wide findings and truncated evidence are retained.
 
-`findings` contains results after suppressions and filtering; `hiddenLikely`, `baselineSuppressed`, and `baselineStale` provide related counts. Check coverage separately through `partial`, `errors`, `skipped`, and `filesScanned`. SARIF includes execution status and diagnostic notifications.
+Hidden findings still affect exit status: this is a review view, not a “new issues only” CI policy. Missing Git, refs, or merge history exits `3`, even with `--best-effort`. Cannot be combined with `--baseline-write`.
 
-### Static evidence
+### Structured reports
 
-Supports named import aliases for Supabase constructors and named/default function imports or re-exports of local auth helpers and wrappers returning a function (up to eight hops). Indirect auth evidence requires a recognized call position; it lowers confidence but retains the finding. Dynamic imports, complex return values, type-only imports, and unknown wrappers do not establish authentication.
+JSON uses `schemaVersion: 1`; the package includes its [schema](./schemas/scan-report-v1.schema.json). Consumers should accept additive fields and reject unsupported schema versions.
 
-Admin-client findings include static evidence linking the data operation, imports, and client-construction module. Terminal, HTML, fix prompts, and JSON include these steps; SARIF uses related locations. Evidence adds no source excerpts, is limited to 24 steps, and discloses truncation. Imports are not proof of runtime data flow.
+- `findings`: results after suppression and display filtering.
+- `hiddenLikely`, `baselineSuppressed`, `baselineStale`: filtering and baseline counts.
+- `partial`, `errors`, `skipped`, `filesScanned`: scan coverage; check separately from exit status.
+- `changeView`: changed-file filtering counts and full-scan totals, when enabled.
+
+SARIF includes execution diagnostics and related evidence locations. `--list-rules --json` returns a separate `kind: "rule-catalog"` document.
 
 ## Programmatic API
 
-Node.js ESM entry point with TypeScript declarations and no runtime dependencies.
+Node.js ESM with TypeScript declarations:
 
 ```js
 import { scan, summarize, listRules } from 'canship'
 
-const result = await scan('./my-app', {
-  only: ['api', 'supabase', 'firebase'],
-  honorIgnoreMarkers: false,
-  noExcerpts: true,
-})
-const summary = summarize(result)
-console.log(summary, listRules().length)
+const result = await scan('./my-app', { noExcerpts: true })
+console.log(summarize(result))
+console.log(listRules())
 ```
 
-`scan()` returns all confidence levels without loading project configuration, applying baselines, writing reports, or changing the process exit code. Options: `only`, `skip`, `honorIgnoreMarkers` (default `true`), `noExcerpts` (default `false`). Invalid arguments or root directories throw; coverage gaps remain in the result. `summarize()` returns finding, blocking and likely counts, coverage status, and the default CLI exit code; check `partial` separately. `listRules()` returns an independent catalog copy.
+`scan()` returns all confidence levels. Options: `only`, `skip`, `honorIgnoreMarkers` (default `true`), `noExcerpts` (default `false`). It does not load project configuration, apply baselines, write reports, or set the process exit code. Invalid arguments or root directories throw; coverage gaps remain in the result.
+
+`summarize()` returns finding, blocking and likely counts, `partial`, and the default CLI exit code. `listRules()` returns an independent catalog copy.
 
 ## GitHub Action
 
-Save as `.github/workflows/canship.yml` to scan on pushes and pull requests, with a counts-only summary. Scanner installation requires network access; scanning does not. Project dependencies are not installed or executed, and SARIF upload is disabled by default.
-
-The example pins the Action commit and explicitly installs npm version `0.3.2`; `version` does not use unreleased repository source. The Action accepts 0.2.1 reports without `schemaVersion`.
+Save as `.github/workflows/canship.yml`. The Action installs an exact npm version, scans the checkout, and produces a counts-only summary. It does not install or execute project dependencies; SARIF upload is opt-in.
 
 ```yaml
 name: canship
@@ -123,29 +136,31 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@5272bf3ca44663582d72935003a2782ad44579a7
+      - uses: Tasomei/canship@b4cbbfe6b5c4c88164b9388d121f7651032259a4
         with:
-          version: '0.3.2'
+          version: '0.4.0'
 ```
+
+The commit pins the Action wrapper; `version` selects the npm scanner, not repository source. The pinned Action defaults to 0.3.2; this example explicitly selects 0.4.0.
 
 | Input | Default | Meaning |
 |---|---|---|
-| `path` | `.` | Directory within the checkout |
+| `path` | `.` | Scan directory within the checkout |
 | `version` | `0.3.2` | Exact npm version; no ranges or tags |
-| `fail-on` | `blocking` | `blocking`: certain P0/P1; `any`: all findings; `none`: findings only reported |
-| `only` / `skip` | unset | Mutually exclusive, comma-separated rule selectors |
-| `baseline` | unset | Existing baseline relative to the scanned directory |
+| `fail-on` | `blocking` | `blocking`: certain P0/P1; `any`: all findings; `none`: report only |
+| `only` / `skip` | unset | Mutually exclusive rule selectors |
+| `baseline` | unset | Existing baseline relative to the scan directory |
 | `use-config` | `false` | Enable project configuration |
-| `upload-sarif` | `false` | Upload SARIF to GitHub code scanning |
-| `category` | `canship` | Distinct SARIF category for each scan target |
+| `upload-sarif` | `false` | Upload to GitHub code scanning |
+| `category` | `canship` | SARIF category for the scan target |
 
-Outputs: `exit-code`, `findings`, `blocking`, `partial`. Policies include likely findings; baselines and exclusions still apply. Incomplete scans, tool errors, and incompatible reports always fail, including with `fail-on: none`.
+Outputs: `exit-code`, `findings`, `blocking`, `partial`. Counts include likely findings after baselines and exclusions. Incomplete scans, tool errors, and incompatible reports always fail, even with `fail-on: none`.
 
-SARIF upload requires `security-events: write` and [GitHub code scanning support](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file); fork PRs may lack permission. Review paths and finding details before upload. Use `pull_request`, not `pull_request_target`, for untrusted PRs. The Action sets Node.js 22 for subsequent steps; use a separate scan job if another version is needed.
+SARIF upload needs `security-events: write` and [code scanning support](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file); fork PR permissions may be insufficient. Review reports before upload. Use `pull_request`, not `pull_request_target`, for untrusted PRs. The Action sets Node.js 22 for subsequent steps; isolate the scan job if another version is required.
 
 ## Configuration and baselines
 
-Place `canship.config.json` in the scanned directory. Supported keys: `baseline`, `only`, `skip`, `all`.
+`canship.config.json` in the scan directory accepts `baseline`, `only`, `skip`, and `all`:
 
 ```json
 {
@@ -154,18 +169,18 @@ Place `canship.config.json` in the scanned directory. Supported keys: `baseline`
 }
 ```
 
-CLI options take precedence. `only` and `skip` are mutually exclusive and accept rule IDs or namespaces. Unselected rules do not run; `ruleSelection.removed` counts filtered findings only from executed rules. For untrusted projects use `--no-config --no-ignore-markers`; the scanned project controls both. `bestEffort` is CLI-only.
+CLI options take precedence. `only` and `skip` are mutually exclusive and accept rule IDs or namespaces. `--best-effort` is CLI-only. For untrusted projects, use `--no-config --no-ignore-markers`.
 
 ### Ignore markers
 
-A standalone `canship-ignore-file` comment excludes a file; `canship-ignore-next-line` suppresses the next line, with an optional rule ID:
+A standalone `canship-ignore-file` comment excludes the file. `canship-ignore-next-line` suppresses the next line, optionally for one rule:
 
 ```ts
 // canship-ignore-next-line cors/wildcard-with-credentials
 const corsOptions = { origin: '*', credentials: true }
 ```
 
-Reports disclose exclusions, rule selection, and baseline suppression. Deliberate exclusions do not mark the scan incomplete. Markers can lower the exit code to `0`; `--no-config` does not affect them, `--no-ignore-markers` disables both kinds.
+Reports disclose exclusions and suppressions. Deliberate exclusions do not mark the scan incomplete and can reduce the exit code to `0`. `--no-config` does not disable markers; `--no-ignore-markers` does.
 
 ### Baselines
 
@@ -175,29 +190,26 @@ Record existing findings:
 npx canship --baseline-write
 ```
 
-Report only new findings:
+Suppress them on subsequent scans:
 
 ```powershell
 npx canship --baseline
 ```
 
-The default baseline is in the scanned directory; explicit paths are relative to the working directory. A successful write exits `0`, regardless of findings; incomplete or selectively scanned input produces a warning.
+The default path is relative to the scan directory; explicit paths are relative to the working directory. Read and write modes are mutually exclusive. Successful writes exit `0` regardless of findings; incomplete or selective scans produce a warning.
 
-Baseline format v2 fingerprints survive line moves but change when credentials change. Missing, malformed, and v1 baselines exit `3`. Baselines omit source but retain paths, rules, and issue descriptions; review before committing.
+Format v2 fingerprints survive line moves but change with credentials. Missing, malformed, or v1 baselines exit `3`. Baselines omit source excerpts but retain paths, rules, and issue descriptions; review before committing.
 
-## Privacy and limitations
+## Privacy and limits
 
-- Static analysis may produce false positives or negatives. Deployed behaviour, rate limiting, injection, dependency vulnerabilities, and business authorisation are outside scope. No findings does not prove security.
-- Redaction covers recognised formats only; unknown secrets may appear in source excerpts. `--no-excerpts` omits excerpts, recorded as `excerptsOmitted` in JSON. Paths, names, descriptions, and baselines are not anonymised; review before sharing.
-- Google/Firebase/Maps `AIza...` values are public identifiers, not evidence of a leak on their own.
+- Static checks can miss issues or report intentional configurations. They do not verify deployed behaviour, rate limiting, injection, dependency vulnerabilities, or business authorisation. No findings does not prove security.
+- Redaction covers recognised formats only. Unknown secrets may remain in excerpts; `--no-excerpts` omits excerpts and sets JSON `excerptsOmitted`. Paths, names, descriptions, and baselines are not anonymised.
+- Google/Firebase/Maps `AIza...` keys are treated as public identifiers, not leak evidence on their own.
 - Read limits: 2 MiB per file, 128 MiB and 10,000 files per scan, 16 directory levels. At most 100 findings per file across rules, prioritising severity and confidence.
-- Git history checks cover up to 100 relevant revisions per file, with a 30-second timeout per Git command. Exceeded limits and timeouts report coverage gaps.
-- Supabase policy and bucket statements have a 4,000-character parse limit; exceeding it marks the scan incomplete.
-- Symbolic links are not followed; scan nested repositories and submodules separately. Skipped paths within scope mark the scan incomplete; built-in build and dependency exclusions do not.
+- Git history: up to 100 relevant revisions per file; 30-second timeout per Git command. Supabase policy and bucket statements: 4,000-character parse limit. Exceeded limits report incomplete coverage.
+- Symbolic links are not followed; nested repositories and submodules need separate scans. Skipped in-scope paths mark coverage incomplete; built-in dependency and build exclusions do not.
 
 ## Development
-
-New rules require positive and negative [test cases](./test/fixtures/).
 
 ```powershell
 npm ci
@@ -207,28 +219,30 @@ npm ci
 npm run prepublishOnly
 ```
 
-Offline evaluation:
+```powershell
+npm run test:package
+```
+
+New rules need positive and negative [fixtures](./test/fixtures/). Run the offline [evaluation corpus](./test/fixtures/evaluation/):
 
 ```powershell
 npm run evaluate
 ```
 
-The corpus has 10 synthetic cases and nine pinned upstream examples and mutations, also run by `npm test`. [Sources and licences](./test/fixtures/evaluation/) accompany the fixtures. Assertions cover rules, files, severity, confidence, and coverage, not real-world detection rates.
-
-Five [application-directory snapshots](./test/evaluation/projects.json) provide additional evaluation. Preparation uses the network and verifies Git object hashes; the target must be a new directory outside Git:
+For [application snapshots](./test/evaluation/projects.json), fetch and verify sources into a new directory outside Git:
 
 ```powershell
 node scripts/fetch-evaluation-projects.mjs "$env:TEMP/canship-evaluation"
 ```
 
-Then evaluate offline without installing or running sample dependencies:
+Then evaluate offline:
 
 ```powershell
 npm run evaluate:projects -- "$env:TEMP/canship-evaluation"
 ```
 
-Each snapshot also receives an open and a guarded canary, giving 15 full-project scenarios. Scans use temporary copies; original snapshots stay unchanged. All original and added findings are compared to check both missing and unexpected results. CI uses the same corpus; Git history and deployed behaviour remain outside scope.
+Project evaluation compares all findings in original and open/guarded test variants using temporary copies. Sample dependencies are not installed or run. These tests do not measure real-world detection rates, Git-history coverage, or deployed behaviour.
 
 ## License
 
-[MIT](./LICENSE). Supabase and Firebase fixtures retain Apache-2.0; Next.js and `cors` fixtures retain MIT. Each includes its source and licence.
+[MIT](./LICENSE). Supabase and Firebase fixtures retain Apache-2.0; Next.js and `cors` fixtures retain MIT. Sources and licences accompany the fixtures.
