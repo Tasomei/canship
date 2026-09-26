@@ -525,6 +525,9 @@ export const supabaseRlsRule: ProjectRule = {
         if (cur) {
           const next: LivePolicy = {
             ...cur, ...(c.roles ? { roles: c.roles } : {}),
+            // 角色或条件改变时，证据位置跟随实际修改；单纯改名保留原条件位置。
+            ...(c.roles !== undefined || c.using !== undefined || c.check !== undefined
+              ? { file: ev.file, line: ev.line } : {}),
             ...(c.using === undefined ? {} : { using: c.using }), ...(c.check === undefined ? {} : { check: c.check }),
           }
           deletePolicy(k)
@@ -698,7 +701,7 @@ function policyFindings(
           ],
           fix: [
             `If the app only serves files by URL, drop this policy: public object URLs keep working without it.`,
-            `If the app really needs listing, make the bucket private and scope the policy to the owner, e.g. USING (bucket_id = '${id}' AND owner_id = (select auth.uid()::text)).`,
+            `If the app really needs listing, make the bucket private and scope the policy to the owner, e.g. USING (bucket_id = '${id.replace(/'/g, "''")}' AND owner_id = (select auth.uid()::text)).`,
           ],
         })
       }

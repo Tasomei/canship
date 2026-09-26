@@ -98,6 +98,16 @@ describe('permissive policies', () => {
       '2_fix.sql': 'alter policy "edit" on posts using (auth.uid() = user_id);\n',
     }), [])
   })
+  test('a policy widened later points to the migration that changed it', async () => {
+    const found = await policyFindings({
+      '1_init.sql': TABLE + 'create policy edit on posts for update using (auth.uid() = user_id);',
+      '2_open.sql': 'alter policy edit on posts using (true);',
+    })
+    assert.equal(found.length, 1)
+    assert.equal(found[0]!.file, 'supabase/migrations/2_open.sql')
+    assert.equal(found[0]!.line, 1)
+    assert.match(found[0]!.excerpt!, /alter policy edit/)
+  })
 
   test('a renamed policy is still the same policy', async () => {
     const found = await policyFindings({
@@ -212,6 +222,13 @@ describe('public buckets that can be listed', () => {
       "create policy listing on storage.objects for select using (bucket_id = 'Team Files');\n" })
     assert.deepEqual(found.map(f => f.ruleId), ['supabase/public-bucket-listing'])
     assert.match(found[0]!.title, /Team Files/)
+  })
+  test('bucket names are escaped in SQL remediation examples', async () => {
+    const found = await policyFindings({ '1.sql':
+      "insert into storage.buckets (id, public) values ('owner''s', true);\n" +
+      "create policy listing on storage.objects for select using (bucket_id = 'owner''s');\n" })
+    assert.equal(found.length, 1)
+    assert.ok(found[0]!.fix.some(step => step.includes("bucket_id = 'owner''s'")))
   })
 })
 
