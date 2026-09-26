@@ -123,3 +123,15 @@ test('likely findings and incomplete coverage survive display filtering', () => 
   assert.equal(JSON.parse(result.stdout).partial, true)
   assert.equal(cli(partial, '--changed-since=missing', '--best-effort').status, 3)
 })
+
+test('a visible minor finding cannot hide the full-scan blocking verdict', () => {
+  const root = project()
+  write(root, 'new.ts', "app.use(cors({ origin: '*', credentials: true }));")
+  const html = join(root, 'canship-report.html')
+  const result = cli(root, '--changed-since=HEAD', `--report=${html}`)
+  assert.equal(result.status, 1)
+  for (const output of [result.stdout, readFileSync(html, 'utf8')]) {
+    assert.match(output, /1 critical issue/)
+    assert.doesNotMatch(output, /nothing exposed/)
+  }
+})

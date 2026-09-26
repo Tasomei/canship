@@ -82,6 +82,8 @@ JSON uses `schemaVersion: 1`, independent of the package version; the npm packag
 
 ### Static evidence
 
+Supports named import aliases for Supabase constructors and named/default function imports or re-exports of local auth helpers and wrappers returning a function (up to eight hops). Indirect auth evidence requires a recognized call position; it lowers confidence but retains the finding. Dynamic imports, complex return values, type-only imports, and unknown wrappers do not establish authentication.
+
 Admin-client findings include static evidence linking the data operation, imports, and client-construction module. Terminal, HTML, fix prompts, and JSON include these steps; SARIF uses related locations. Evidence adds no source excerpts, is limited to 24 steps, and discloses truncation. Imports are not proof of runtime data flow.
 
 ## Programmatic API

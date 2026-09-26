@@ -100,7 +100,7 @@
             "items": {
               "type": "object", "required": ["kind", "file", "line", "description"],
               "properties": {
-                "kind": { "enum": ["operation", "import", "admin-client"] },
+                "kind": { "enum": ["operation", "import", "admin-client", "auth-helper"] },
                 "file": { "type": "string" },
                 "line": { "anyOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
                 "description": { "type": "string" }

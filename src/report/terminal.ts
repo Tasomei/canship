@@ -62,7 +62,8 @@ export function renderReport(result: ScanResult, opts: RenderOptions): string {
   }
 
   // 按严重度和置信度生成结论。
-  const { blocking, minor: confirmedMinor, unsure } = verdictOf(findings)
+  const { blocking: visibleBlocking, minor: confirmedMinor, unsure } = verdictOf(findings)
+  const blocking = result.changeView?.totalBlocking ?? visibleBlocking
   if (blocking > 0) {
     out.push(`${INDENT}${red(bold(`✗ ${blocking} critical ${plural(blocking, 'issue')} — do not deploy`))}`)
   } else if (confirmedMinor > 0) {

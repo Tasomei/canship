@@ -77,7 +77,8 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
   const baselineSuppressed = opts.baselineSuppressed ?? 0
   const baselineStale = opts.baselineStale ?? 0
   // 联合严重度和置信度计算报告结论。
-  const { blocking: certain, minor, unsure } = verdictOf(findings)
+  const { blocking, minor, unsure } = verdictOf(findings)
+  const certain = result.changeView?.totalBlocking ?? blocking
 
   const verdict =
     findings.length === 0

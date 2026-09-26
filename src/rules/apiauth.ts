@@ -7,6 +7,7 @@ import { redactSecret } from '../redact.js'
 import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { JWT_SOURCE, SB_SECRET_SOURCE } from './patterns.js'
+import { bindingsOf, namePattern } from './bindings.js'
 
 // 识别各框架可被直接请求的服务端路由。
 
@@ -570,7 +571,13 @@ function cachedByFile(check: (file: ScanFile) => boolean): (file: ScanFile) => b
   }
 }
 
-function unguardedOperations(file: ScanFile, ops: DataHit[]): DataHit[] {
+interface ExtraGuards {
+  guards: Set<string>
+  wrappers: Set<string>
+  onGuard(index: number, name: string): void
+}
+
+function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards): DataHit[] {
   if (ops.length === 0) return ops
   const code = noiseMaskedOf(file)
   const pairs = delimiterPairs(code)
@@ -578,14 +585,19 @@ function unguardedOperations(file: ScanFile, ops: DataHit[]): DataHit[] {
   const declarations = new Map(bodies.map(body => [body.declaration, body]))
   const functionStarts = new Set(bodies.map(body => body.start))
   const guardEnds = new Map<number, number>()
+  const guardNames = new Map<number, string>()
+  const extraCalls = extra?.guards.size ? new RegExp(`^(${namePattern(extra.guards)})\\s*\\(`) : null
   type Block = Pick<FunctionBody, 'start' | 'end'>
   const blocks: Block[] = [...pairs].filter(([start]) => code[start] === '{')
     .map(([start, end]) => ({ start, end })).sort((a, b) => a.start - b.start)
   const active: Block[] = []
   let blockIndex = 0
-  const wrappers = [...code.matchAll(/\b(?:withAuth|NextAuth)\s*\(/g)].map(match => {
+  const wrapperPattern = extra?.wrappers.size
+    ? new RegExp(`(?<![\\w$.])(${namePattern(extra.wrappers)})\\s*\\(`, 'g') : null
+  const wrappers = [...code.matchAll(/\b(withAuth|NextAuth)\s*\(/g),
+    ...(wrapperPattern ? code.matchAll(wrapperPattern) : [])].map(match => {
     const open = match.index + match[0].length - 1
-    return { start: open, end: pairs.get(open) ?? open }
+    return { start: open, end: pairs.get(open) ?? open, name: match[1]! }
   })
 
   // 每个函数最多扫描一次，不能对每个数据操作重新遍历整个函数前缀。
@@ -611,7 +623,8 @@ function unguardedOperations(file: ScanFile, ops: DataHit[]): DataHit[] {
         i = Math.min(end, owner.end) - 1
         continue
       }
-      const call = AUTH_ENFORCING_CALL.exec(code.slice(i, i + 100))
+      const indirectCall = i > 0 && /[\w$.]/.test(code[i - 1]!) ? null : extraCalls?.exec(code.slice(i, i + 100))
+      const call = indirectCall ?? AUTH_ENFORCING_CALL.exec(code.slice(i, i + 100))
       // 构造一个包装后的处理函数并不鉴权当前请求；只在包围操作时认它。
       if (call?.index === 0 && !/^(?:withAuth|NextAuth)\b/i.test(call[0]) &&
           !/\bfunction\s*$/.test(code.slice(Math.max(owner.start, i - 30), i))) {
@@ -625,7 +638,10 @@ function unguardedOperations(file: ScanFile, ops: DataHit[]): DataHit[] {
           /^(?:(?:const|let|var)\s+[\w$]+\s*=\s*)?(?:[\w$]+\.)*$/.test(prefix)
         if (!awaited && !synchronous) continue
         const close = pairs.get(i + call[0].length - 1)
-        if (close !== undefined && close < owner.end) return close + 1
+        if (close !== undefined && close < owner.end) {
+          if (indirectCall) guardNames.set(owner.start, indirectCall[1]!)
+          return close + 1
+        }
       }
       const close = pairs.get(i)
       if (close !== undefined) i = close
@@ -641,7 +657,11 @@ function unguardedOperations(file: ScanFile, ops: DataHit[]): DataHit[] {
       active.push(block)
     }
     while (active.length && active[active.length - 1]!.end < op.index) active.pop()
-    if (wrappers.some(w => w.start < op.index && w.end > op.index)) return false
+    const wrapper = wrappers.find(w => w.start < op.index && w.end > op.index)
+    if (wrapper) {
+      if (extra?.wrappers.has(wrapper.name)) extra.onGuard(op.index, wrapper.name)
+      return false
+    }
     let ownerIndex = active.length - 1
     while (ownerIndex >= 0 && !functionStarts.has(active[ownerIndex]!.start)) ownerIndex--
     // 未识别到函数边界时不借用模块级的鉴权。
@@ -654,7 +674,11 @@ function unguardedOperations(file: ScanFile, ops: DataHit[]): DataHit[] {
         end = guardEnd(block)
         guardEnds.set(block.start, end)
       }
-      if (end <= op.index) return false
+      if (end <= op.index) {
+        const name = guardNames.get(block.start)
+        if (name) extra?.onGuard(op.index, name)
+        return false
+      }
     }
     return true
   })
@@ -667,6 +691,22 @@ function unguardedOperations(file: ScanFile, ops: DataHit[]): DataHit[] {
  * 两段 \s* 在无泛型时会对同一段空白二次回溯，屏蔽后的长注释即可让单个文件拖慢整次扫描。
  */
 const CLIENT_CONSTRUCTOR = /\b(?:createClient|createServerClient)\s*(?:<[^()]{0,200}>\s*)?\(/
+
+/** 识别 Supabase 官方模块中命名构造器的导入别名。 */
+const constructorCache = new WeakMap<ScanFile, number | null>()
+function clientConstructorAt(file: ScanFile): number | undefined {
+  const cached = constructorCache.get(file)
+  if (cached !== undefined) return cached ?? undefined
+  const code = noiseMaskedOf(file)
+  const direct = CLIENT_CONSTRUCTOR.exec(code)?.index
+  if (direct !== undefined) { constructorCache.set(file, direct); return direct }
+  const aliases = bindingsOf(file).imports.filter(binding =>
+    /^@supabase\/(?:supabase-js|ssr)$/.test(binding.spec ?? '') &&
+    ['createClient', 'createServerClient'].includes(binding.imported)).map(binding => binding.local)
+  const found = aliases.length === 0 ? undefined : new RegExp(`(?<![\\w$.])(?:${namePattern(aliases)})\\s*(?:<[^()]{0,200}>\\s*)?\\(`).exec(code)?.index
+  constructorCache.set(file, found ?? null)
+  return found
+}
 
 const SERVICE_ROLE_ENV = /\bSUPABASE_SERVICE_ROLE(?:_KEY)?\b|\bSERVICE_ROLE_KEY\b|\bSUPABASE_SECRET_KEY\b/
 const SERVICE_ROLE_LITERAL = new RegExp(String.raw`['"\`](${JWT_SOURCE}|${SB_SECRET_SOURCE})['"\`]`, 'g')
@@ -693,7 +733,7 @@ const buildsAdminClient = cachedByFile(buildsAdminClientUncached)
 function buildsAdminClientUncached(file: ScanFile): boolean {
   const code = noiseMaskedOf(file)
   if (NUXT_SUPABASE_ADMIN.test(code)) return true
-  if (!CLIENT_CONSTRUCTOR.test(code)) return false
+  if (clientConstructorAt(file) === undefined) return false
 
   const source = commentsMaskedOf(file)
   if (referencesServiceRole(code, source)) return true
@@ -711,7 +751,7 @@ function buildsSessionClientUncached(file: ScanFile): boolean {
   const code = noiseMaskedOf(file)
   if (NUXT_SUPABASE_ADMIN.test(code)) return false
   if (NUXT_SUPABASE_SESSION.test(code)) return true
-  if (!CLIENT_CONSTRUCTOR.test(code)) return false
+  if (clientConstructorAt(file) === undefined) return false
   // 含管理员凭据的客户端不能按会话客户端处理。
   if (referencesServiceRole(code, commentsMaskedOf(file))) return false
   return /\bcookies\b/.test(code)
@@ -881,13 +921,13 @@ function importChainUncached(route: Route, modules: ScanFile[], allFiles: ScanFi
 function adminEvidence(route: Route, modules: ScanFile[], allFiles: ScanFile[], line: number): Pick<Finding, 'evidence' | 'evidenceTruncated'> {
   const chain = buildsAdminClient(route.file) ? [] : importChain(route, modules, allFiles)
   const evidence: EvidenceStep[] = [{ kind: 'operation', file: route.file.path, line,
-    description: 'Data operation without a recognized authentication guard.' }]
+    description: 'Data operation selected for authentication review.' }]
   for (const edge of (chain ?? []).slice(0, 22)) evidence.push({
     kind: 'import', file: edge.from.path, line: edge.line, description: `Statically imports ${edge.to.path}.`,
   })
   const target = chain?.at(-1)?.to ?? (buildsAdminClient(route.file) ? route.file : autoImportedModule(route, modules))
   if (target) {
-    const at = NUXT_SUPABASE_ADMIN.exec(noiseMaskedOf(target))?.index ?? CLIENT_CONSTRUCTOR.exec(noiseMaskedOf(target))?.index
+    const at = clientConstructorAt(target) ?? NUXT_SUPABASE_ADMIN.exec(noiseMaskedOf(target))?.index
     evidence.push({ kind: 'admin-client', file: target.path,
       line: at === undefined ? null : lineNumberAt(lineStartsCached(target), at),
       description: 'Admin-client construction detected in this module; imports are not proof of runtime data flow.' })
@@ -895,8 +935,121 @@ function adminEvidence(route: Route, modules: ScanFile[], allFiles: ScanFile[], 
   return { evidence, evidenceTruncated: (chain?.length ?? 0) > 22 }
 }
 
-// 识别实际数据操作。
+// 识别导入的本地鉴权封装。
 
+interface GuardDefinition { file: ScanFile; line: number; wrapper: boolean }
+interface GuardDefinitions { locals: Map<string, GuardDefinition>; exports: Map<string, GuardDefinition> }
+const definitionsCache = new WeakMap<ScanFile, GuardDefinitions>()
+
+/** 只分析模块级函数；函数体中的同名嵌套函数不作为可导出证据。 */
+function guardDefinitions(file: ScanFile): GuardDefinitions {
+  const cached = definitionsCache.get(file)
+  if (cached) return cached
+  const result: GuardDefinitions = { locals: new Map(), exports: new Map() }
+  const code = noiseMaskedOf(file)
+  const pairs = delimiterPairs(code)
+  const openers = new Map([...pairs].map(([open, close]) => [close, open]))
+  const bodies = functionBodies(code, pairs)
+  const byDeclaration = new Map(bodies.map(body => [body.declaration, body]))
+  const candidates: { name: string; exported: string | null; definition: GuardDefinition; at: number }[] = []
+  let until = -1
+  for (const body of bodies) {
+    if (body.start < until) continue
+    until = body.end
+    const declaration = declarationOf(code, body, openers)
+    if (!declaration) continue
+    const returned = /\breturn\s+(?:async\s+)?(?:function\b|(?:\([^)]{0,200}\)|[A-Za-z_$][\w$]*)\s*=>)/.exec(code.slice(body.start + 1, body.end))
+    const nestedAt = returned ? body.start + 1 + returned.index +
+      (returned[0].includes('=>') ? returned[0].lastIndexOf('=>') : returned[0].lastIndexOf('function')) : -1
+    const target = byDeclaration.get(nestedAt) ?? body
+    // 取首次顶层 return 之前的证据，不能借用未调用嵌套函数或不可达代码。
+    let at = target.end
+    for (let i = target.start + 1; i < target.end; i++) {
+      if (code.startsWith('return', i) && !/[\w$]/.test(code[i - 1] ?? '') && !/[\w$]/.test(code[i + 6] ?? '')) { at = i; break }
+      const close = pairs.get(i)
+      if (close !== undefined) i = close
+    }
+    const definition = { file, line: lineNumberAt(lineStartsCached(file), body.declaration),
+      wrapper: target !== body }
+    const exported = !declaration.exported ? null
+      : /\bexport\s+default\s+(?:async\s+)?$/.test(code.slice(Math.max(0, body.declaration - 80), body.declaration))
+        ? 'default' : declaration.name
+    candidates.push({ name: declaration.name, exported, definition, at })
+  }
+  // 同一文件一次分析所有候选，避免按函数重扫全文。
+  const unguarded = new Set(unguardedOperations(file,
+    candidates.map(candidate => ({ index: candidate.at, writes: false })).sort((a, b) => a.index - b.index)).map(hit => hit.index))
+  for (const candidate of candidates) {
+    if (unguarded.has(candidate.at)) continue
+    result.locals.set(candidate.name, candidate.definition)
+    if (candidate.exported) result.exports.set(candidate.exported, candidate.definition)
+  }
+  definitionsCache.set(file, result)
+  return result
+}
+
+/** 本地模块唯一可定位时才解析符号；路径别名遵循当前应用范围。 */
+function bindingModule(spec: string, file: ScanFile, allFiles: ScanFile[], scope: string): ScanFile | null {
+  const target = normalizeSpec(spec, file.path)
+  if (!target) return null
+  const keys = target.alias ? [`${scope}${target.key}`, `${scope}src/${target.key}`, `${scope}app/${target.key}`] : [target.key]
+  const found = new Set(keys.flatMap(key => moduleIndexOf(allFiles).get(moduleKey(key)) ?? []))
+  return found.size === 1 ? [...found][0]! : null
+}
+
+/** 有界解析本地导出、别名及重导出；未知模块和循环不视为鉴权成功。 */
+function exportedGuard(file: ScanFile, name: string, allFiles: ScanFile[], scope: string,
+  depth = 0, seen = new Set<string>()): GuardDefinition | null {
+  const key = `${file.path}\0${name}`
+  if (depth >= 8 || seen.has(key)) return null
+  seen.add(key)
+  const definitions = guardDefinitions(file)
+  const direct = definitions.exports.get(name)
+  if (direct) return direct
+  const bindings = bindingsOf(file)
+  const exported = bindings.exports.find(binding => binding.local === name)
+  const follow = (spec: string, imported: string): GuardDefinition | null => {
+    const target = bindingModule(spec, file, allFiles, scope)
+    return target ? exportedGuard(target, imported, allFiles, scope, depth + 1, seen) : null
+  }
+  if (exported) {
+    if (exported.spec) return follow(exported.spec, exported.imported)
+    const local = definitions.locals.get(exported.imported)
+    if (local) return local
+    const imported = bindings.imports.find(binding => binding.local === exported.imported)
+    if (imported?.spec) return follow(imported.spec, imported.imported)
+  }
+  if (name !== 'default') for (const spec of bindings.stars) {
+    const found = follow(spec, name)
+    if (found) return found
+  }
+  return null
+}
+
+/** 仅为实际调用位置提供间接鉴权提示，不删除原始发现。 */
+function indirectGuardOperations(route: Route, allFiles: ScanFile[]): Map<number, GuardDefinition> {
+  const names = new Map<string, GuardDefinition>()
+  const code = noiseMaskedOf(route.file)
+  for (const binding of bindingsOf(route.file).imports) {
+    if (!binding.spec) continue
+    const name = namePattern([binding.local])
+    // 明显的局部同名声明或参数遮蔽时，不借用导入的鉴权证据。
+    if (new RegExp(`\\b(?:const|let|var|function|class)\\s+${name}(?![\\w$])|[({,]\\s*${name}\\s*[,}):=]|(?<![\\w$])${name}\\s*=>`).test(code)) continue
+    const target = bindingModule(binding.spec, route.file, allFiles, route.scope)
+    const definition = target ? exportedGuard(target, binding.imported, allFiles, route.scope) : null
+    if (definition) names.set(binding.local, definition)
+  }
+  const protectedOps = new Map<number, GuardDefinition>()
+  if (names.size === 0) return protectedOps
+  unguardedOperations(route.file, unguardedOpsOf(route.file), {
+    guards: new Set([...names].filter(([, definition]) => !definition.wrapper).map(([name]) => name)),
+    wrappers: new Set([...names].filter(([, definition]) => definition.wrapper).map(([name]) => name)),
+    onGuard: (index, name) => { const definition = names.get(name); if (definition) protectedOps.set(index, definition) },
+  })
+  return protectedOps
+}
+
+// 识别实际数据操作。
 interface DataHit {
   /** 操作的字符偏移，用于定位行号。 */
   index: number
@@ -1402,12 +1555,20 @@ export const apiAuthRule: ProjectRule = {
     const adminModules = ctx.files.filter(buildsAdminClient)
     const sessionModules = ctx.files.filter(buildsSessionClient)
     const findings: Finding[] = []
+    const indirectByFile = new Map<ScanFile, Map<number, GuardDefinition>>()
 
     for (const route of routes) {
       const reachable = route.reachable
-      const ops = unguardedOpsOf(route.file).filter((op) =>
+      let ops = unguardedOpsOf(route.file).filter((op) =>
         reachable === undefined || (op.index > reachable.start && op.index < reachable.end))
       if (ops.length === 0) continue
+      let indirectOps = indirectByFile.get(route.file)
+      if (!indirectOps) {
+        indirectOps = indirectGuardOperations(route, ctx.files)
+        indirectByFile.set(route.file, indirectOps)
+      }
+      const unprotected = ops.filter(op => !indirectOps.has(op.index))
+      if (unprotected.length > 0) ops = unprotected
 
       const url = route.url
       if (isAuthEndpoint(route)) continue
@@ -1424,18 +1585,26 @@ export const apiAuthRule: ProjectRule = {
       const admin = usesAdminClient(route, adminModules, ctx.files)
       // 存在写操作时优先用其作为证据。
       const hit = ops.find((o) => o.writes) ?? ops[0]!
+      const indirect = indirectOps.get(hit.index)
       // 每个路由只构建一次行号索引。
       const line = lineNumberAt(lineStartsCached(route.file), hit.index)
       const excerpt = excerptFor(route.file, line)
+      const indirectEvidence: EvidenceStep[] = indirect ? [{ kind: 'auth-helper', file: indirect.file.path, line: indirect.line,
+        description: 'Local authentication helper recognized through imports; verify its runtime behaviour and caller coverage.' }] : []
+      if (indirect) globalNote.push('A local authentication helper or wrapper was recognized before this operation. ' +
+        'This finding is retained for review because indirect control flow is not a proof of authorization.')
 
       if (admin) {
+        const trace = adminEvidence(route, adminModules, ctx.files, line)
         findings.push({
           ruleId: 'api/admin-db-access-without-auth',
-          ...adminEvidence(route, adminModules, ctx.files, line),
+          ...trace,
+          evidence: [...(trace.evidence ?? []), ...indirectEvidence],
           severity: 'P0',
           // 管理员客户端缺少鉴权时使用确定置信度；可能受全局鉴权覆盖时降为疑似。
-          confidence: globalGuard === null ? 'certain' : 'likely',
-          title: `Anyone can call ${url} and it queries your database as admin`,
+          confidence: globalGuard === null && !indirect ? 'certain' : 'likely',
+          title: indirect ? `Review indirect authentication for admin database access in ${url}`
+            : `Anyone can call ${url} and it queries your database as admin`,
           file: route.file.path,
           line,
           excerpt,
@@ -1443,8 +1612,10 @@ export const apiAuthRule: ProjectRule = {
             ...globalNote,
             `This route references a recognized admin client. Such clients can bypass normal per-user access checks; ` +
               `verify the effective credentials and granted permissions.`,
-            `The scan did not recognize an authentication guard protecting this operation or applicable middleware. ` +
-              `Indirect wrappers and deployment-level controls may not be recognized; verify them before exposing this route.`,
+            indirect
+              ? 'A local guard was recognized, but its runtime enforcement and business authorization still require verification.'
+              : `The scan did not recognize an authentication guard protecting this operation or applicable middleware. ` +
+                `Indirect wrappers and deployment-level controls may not be recognized; verify them before exposing this route.`,
             `If ${url} is reachable without authentication, callers can trigger the admin-backed operations implemented by this handler.`,
             `If this endpoint is meant to be public — handing out a guest session, taking a waitlist signup — ` +
               `then the problem is not that it is open, it is that it is open *and* holds the admin key. Give it ` +
@@ -1471,14 +1642,19 @@ export const apiAuthRule: ProjectRule = {
           // 公开写入可能是业务设计，保留疑似置信度。
           confidence: 'likely',
           // Server Action 的名称以小写开头，放在句首时首字母大写。
-          title: `${url.charAt(0).toUpperCase()}${url.slice(1)} writes to your database with no sign-in check`,
+          title: indirect ? `Review indirect authentication for database writes in ${url}`
+            : `${url.charAt(0).toUpperCase()}${url.slice(1)} writes to your database with no sign-in check`,
           file: route.file.path,
           line,
           excerpt,
+          ...(indirect ? { evidence: [{ kind: 'operation' as const, file: route.file.path, line,
+            description: 'Data write using a local authentication helper.' }, ...indirectEvidence] } : {}),
           why: [
             ...globalNote,
-            `This route changes data, and the scan did not recognize an authentication guard before the operation. ` +
-              `Indirect guards and runtime controls require manual verification.`,
+            indirect
+              ? 'This route changes data after a local authentication helper; verify that it rejects unauthorized callers.'
+              : `This route changes data, and the scan did not recognize an authentication guard before the operation. ` +
+                `Indirect guards and runtime controls require manual verification.`,
             `If this route is publicly reachable and no other control rejects the caller, unauthenticated requests can trigger this write.`,
             `If this is a public form — a waitlist, a contact box — that may be intentional. It is still worth ` +
               `rate limiting, because an open write endpoint is what gets a database filled with spam overnight.`,

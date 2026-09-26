@@ -23,7 +23,7 @@ export interface ScanFile {
 
 /** 静态证据位置，不包含源码摘录或运行时结论。 */
 export interface EvidenceStep {
-  kind: 'operation' | 'import' | 'admin-client'
+  kind: 'operation' | 'import' | 'admin-client' | 'auth-helper'
   file: string
   line: number | null
   description: string
