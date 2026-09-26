@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path'
 import { cpSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import type { Finding } from '../src/types.js'
 import { scan } from '../src/engine.js'
 import { renderFixPrompt } from '../src/report/prompt.js'
@@ -1273,6 +1274,16 @@ describe('what silences the API check has to be what actually protects the route
       'middleware.ts': middleware('["/api/:path*"]'),
     })
     assert.deepEqual(found, [], 'a route genuinely behind middleware was reported')
+  })
+
+  // 按 Next.js 16.3.6 自身的 getMiddlewareMatchers 实测：'/api' 只匹配 /api，不匹配 /api/users。
+  // 官方文档称 '/about' 会匹配 '/about/team'，与实现不符，不能据此放宽。
+  test('a bare path matcher covers only that exact path', async () => {
+    const found = await scanProject({
+      'app/api/users/route.ts': ADMIN_ROUTE,
+      'middleware.ts': middleware('["/api"]'),
+    })
+    assert.deepEqual(found, ['api/admin-db-access-without-auth'])
   })
 
   // Next.js 16 将 middleware 更名为 proxy；修复前 proxy 中的鉴权不被识别，路由被报为 P0 确定。
@@ -2782,5 +2793,58 @@ describe('the fix prompt is not silent either', () => {
   test('a genuinely clean scan still says nothing', () => {
     // 没有相关状态时不输出多余提示。
     assert.equal(renderFixPrompt([], { partial: false }), null)
+  })
+})
+
+describe('AI provider keys', () => {
+  // 假密钥在运行时由哈希生成，源码中不出现凭据形状的字面量。
+  const body = (seed: string, length: number): string => {
+    let out = ''
+    for (let i = 0; out.length < length; i++) out += createHash('sha256').update(`${seed}${i}`).digest('base64').replace(/[^A-Za-z0-9]/g, '')
+    return out.slice(0, length)
+  }
+  const KEYS = {
+    openrouter: `sk-or-v1-${body('or', 64)}`,
+    groq: `gsk_${body('groq', 52)}`,
+    huggingface: `hf_${body('hf', 34)}`,
+    replicate: `r8_${body('r8', 37)}`,
+    xai: `xai-${body('xai', 80)}`,
+    perplexity: `pplx-${body('pplx', 48)}`,
+  }
+
+  async function scanSource(content: string): Promise<Finding[]> {
+    const root = mkdtempSync(join(tmpdir(), 'canship-ai-keys-'))
+    try {
+      writeFileSync(join(root, 'client.ts'), content, 'utf8')
+      return (await scan(root)).findings
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+
+  for (const [id, key] of Object.entries(KEYS)) {
+    test(`${id}: a key is reported and redacted`, async () => {
+      const findings = await scanSource(`const client = new Client({ apiKey: '${key}' })\n`)
+      assert.deepEqual(findings.map((f) => f.ruleId), [`secrets/hardcoded/${id}`])
+      assert.equal(findings[0]!.confidence, 'certain')
+      assert.ok(!findings[0]!.excerpt?.includes(key), 'the key was printed in full')
+      assert.ok(!redactAll(`key=${key}`).includes(key))
+    })
+  }
+
+  test('an OpenRouter key is not reported as an OpenAI key', async () => {
+    const findings = await scanSource(`const k = '${KEYS.openrouter}'\n`)
+    assert.ok(!findings.some((f) => f.ruleId === 'secrets/hardcoded/openai'))
+  })
+
+  // 各服务官方文档中的示例写法。
+  for (const example of ['gsk_your_groq_api_key_here', 'hf_...', 'xai-...', 'pplx-1234567890abcdef', 'sk-or-v1-your-key-here', 'sk-or-v1-...']) {
+    test(`the documentation example ${example} is not reported`, async () => {
+      assert.deepEqual(await scanSource(`const k = '${example}'\n`), [])
+    })
+  }
+
+  test('a Replicate token of the wrong length is not a Replicate token', async () => {
+    assert.deepEqual(await scanSource(`const k = 'r8_${body('short', 20)}'\n`), [])
   })
 })

@@ -82,8 +82,9 @@ export const evaluationCases: readonly EvaluationCase[] = [
     }, expected: [],
   },
   {
+    // 官方示例的 profiles 读取策略为 using (true)，与 Supabase 检查规则 0024 一致地报告为疑似：公开只读表可以是有意设计。
     id: 'supabase-upstream-rls-enabled', origin: 'upstream-derived',
-    files: { [migrationPath]: migration }, expected: [],
+    files: { [migrationPath]: migration }, expected: [finding('supabase/permissive-policy', migrationPath, 'P1', 'likely')],
   },
   {
     id: 'supabase-upstream-rls-disabled-later', origin: 'mutated-upstream',

@@ -5,6 +5,19 @@ import { isSupabaseProject } from './framework.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { MAX_FINDINGS_PER_FILE } from './limits.js'
 import { blank, codesOf, stringOf } from '../mask.js'
+import {
+  ALTER_POLICY,
+  CREATE_POLICY,
+  DROP_POLICY,
+  bucketDeclarations,
+  bucketOnlyCondition,
+  configPublicBuckets,
+  isAlwaysTrue,
+  policyClauses,
+  statementEnd,
+  identAt,
+} from './sqlpolicy.js'
+import type { PolicyClauses, PolicyCommand } from './sqlpolicy.js'
 
 /** 默认不通过公共数据接口暴露的内部模式。 */
 const INTERNAL_SCHEMAS = new Set([
@@ -26,7 +39,13 @@ const INTERNAL_SCHEMAS = new Set([
 
 /** 保留源码顺序的结构变更事件。 */
 interface SqlEvent {
-  kind: 'create' | 'drop' | 'enable-rls' | 'disable-rls' | 'rename'
+  kind: 'create' | 'drop' | 'enable-rls' | 'disable-rls' | 'rename' | 'policy' | 'policy-drop' | 'policy-alter' | 'bucket'
+  /** 策略名，仅策略事件使用。 */
+  policy?: string
+  /** 策略子句；alter policy 只含被修改的部分。 */
+  clauses?: PolicyClauses
+  /** 存储桶公开状态，仅存储桶事件使用。 */
+  bucket?: { id: string; public: boolean }
   schema: string
   table: string
   file: string
@@ -374,11 +393,56 @@ export const supabaseRlsRule: ProjectRule = {
           line: lineNumberAt(sqlLines, m.index),
         })
       }
+
+      // 策略按迁移顺序重放，删除和修改会改变最终状态；存储模式中的策略同样需要检查。
+      for (const [pattern, kind] of [
+        [CREATE_POLICY, 'policy'],
+        [DROP_POLICY, 'policy-drop'],
+        [ALTER_POLICY, 'policy-alter'],
+      ] as const) {
+        pattern.lastIndex = 0
+        while ((m = pattern.exec(sql)) !== null) {
+          const end = statementEnd(sql, m.index)
+          events.push({
+            kind,
+            policy: identAt(file.content, m, 1)!,
+            schema: m[2] ? unquote(m[2]) : 'public',
+            table: unquote(m[3]!),
+            ...(kind === 'policy-drop' ? {} : { clauses: policyClauses(sql, file.content, m.index + m[0].length, end) }),
+            file: file.path,
+            scope,
+            at: m.index,
+            line: lineNumberAt(sqlLines, m.index),
+          })
+        }
+      }
+
+      for (const bucket of bucketDeclarations(sql, file.content)) {
+        events.push({
+          kind: 'bucket', bucket: { id: bucket.id, public: bucket.public }, schema: 'storage', table: 'buckets',
+          file: file.path, scope, at: bucket.at, line: lineNumberAt(sqlLines, bucket.at),
+        })
+      }
     }
 
     // 同一文件内按语句出现顺序重放。
     const fileOrder = new Map(sqlFiles.map((f, i) => [f.path, i]))
     events.sort((a, b) => (fileOrder.get(a.file)! - fileOrder.get(b.file)!) || a.at - b.at)
+
+    /** 重放结束时仍存在的策略。 */
+    interface LivePolicy {
+      name: string
+      scope: string
+      schema: string
+      table: string
+      file: string
+      line: number
+      restrictive: boolean
+      command: PolicyCommand
+      roles: string[]
+      using?: string
+      check?: string
+    }
 
     /** 重放结束时仍存在的表及其安全状态。 */
     interface LiveTable {
@@ -393,6 +457,30 @@ export const supabaseRlsRule: ProjectRule = {
     const keyOf = (scope: string, schema: string, table: string): string =>
       JSON.stringify([scope, schema, table])
 
+    /** 重放结束时仍存在的策略；键含所属表，表改名或删除时随之迁移或移除。 */
+    const policies = new Map<string, LivePolicy>()
+    const policyKey = (scope: string, schema: string, table: string, name: string): string =>
+      JSON.stringify([scope, schema, table, name])
+    // 按表索引策略，删表和改表名时不遍历全部策略。
+    const byTable = new Map<string, Set<string>>()
+    const setPolicy = (k: string, p: LivePolicy): void => {
+      policies.set(k, p)
+      const tableKey = keyOf(p.scope, p.schema, p.table)
+      const set = byTable.get(tableKey) ?? new Set<string>()
+      set.add(k)
+      byTable.set(tableKey, set)
+    }
+    const deletePolicy = (k: string): void => {
+      const p = policies.get(k)
+      if (!p) return
+      policies.delete(k)
+      byTable.get(keyOf(p.scope, p.schema, p.table))?.delete(k)
+    }
+    const policiesOn = (key: string): [string, LivePolicy][] =>
+      [...(byTable.get(key) ?? [])].map((k) => [k, policies.get(k)!])
+    /** 存储桶的最终公开状态，键为作用域和桶名。 */
+    const buckets = new Map<string, { public: boolean; file: string; line: number }>()
+
     for (const ev of events) {
       // 作用域隔离不同数据库及示例迁移。
       const scope = ev.scope
@@ -403,16 +491,58 @@ export const supabaseRlsRule: ProjectRule = {
         live.set(key, { schema: ev.schema, table: ev.table, file: ev.file, line: ev.line, rls: false })
       } else if (ev.kind === 'drop') {
         live.delete(key)
+        for (const [k] of policiesOn(key)) deletePolicy(k)
       } else if (ev.kind === 'rename') {
-        // 重命名时迁移表名和安全状态。
+        // 重命名时迁移表名、安全状态和表上的策略。
         const cur = live.get(key)
         if (cur) {
           live.delete(key)
           live.set(keyOf(scope, ev.schema, ev.renamedTo!), { ...cur, table: ev.renamedTo! })
         }
-      } else {
+        for (const [k, p] of policiesOn(key)) {
+          deletePolicy(k)
+          setPolicy(policyKey(scope, ev.schema, ev.renamedTo!, p.name), { ...p, table: ev.renamedTo! })
+        }
+      } else if (ev.kind === 'enable-rls' || ev.kind === 'disable-rls') {
         const cur = live.get(key)
         if (cur) cur.rls = ev.kind === 'enable-rls'
+      } else if (ev.kind === 'policy') {
+        const c = ev.clauses ?? {}
+        setPolicy(policyKey(scope, ev.schema, ev.table, ev.policy!), {
+          name: ev.policy!, scope, schema: ev.schema, table: ev.table, file: ev.file, line: ev.line,
+          restrictive: c.restrictive ?? false, command: c.command ?? 'all', roles: c.roles ?? ['public'],
+          ...(c.using === undefined ? {} : { using: c.using }), ...(c.check === undefined ? {} : { check: c.check }),
+        })
+      } else if (ev.kind === 'policy-drop') {
+        deletePolicy(policyKey(scope, ev.schema, ev.table, ev.policy!))
+      } else if (ev.kind === 'policy-alter') {
+        // alter policy 只能改角色、表达式或名称；命令和宽松/限制类型不可修改。
+        const k = policyKey(scope, ev.schema, ev.table, ev.policy!)
+        const cur = policies.get(k)
+        const c = ev.clauses ?? {}
+        if (cur) {
+          const next: LivePolicy = {
+            ...cur, ...(c.roles ? { roles: c.roles } : {}),
+            ...(c.using === undefined ? {} : { using: c.using }), ...(c.check === undefined ? {} : { check: c.check }),
+          }
+          deletePolicy(k)
+          const name = c.renamedTo ?? cur.name
+          setPolicy(policyKey(scope, ev.schema, ev.table, name), { ...next, name })
+        }
+      } else if (ev.kind === 'bucket') {
+        buckets.set(JSON.stringify([scope, ev.bucket!.id]), { public: ev.bucket!.public, file: ev.file, line: ev.line })
+      }
+    }
+
+    // config.toml 中的公开存储桶；同名桶以迁移中的最终状态为准。
+    for (const file of ctx.files) {
+      if (!/(?:^|\/)supabase\/config\.toml$/.test(file.path)) continue
+      const projectScope = projectScopeOf(file.path, projectScopes)
+      if (!activeScopes.has(projectScope)) continue
+      const scope = replayScopeOf(file, projectScope)
+      for (const bucket of configPublicBuckets(file.content)) {
+        const k = JSON.stringify([scope, bucket.id])
+        if (!buckets.has(k)) buckets.set(k, { public: true, file: file.path, line: bucket.line })
       }
     }
 
@@ -464,6 +594,139 @@ export const supabaseRlsRule: ProjectRule = {
       )
     }
 
+    findings.push(...policyFindings(ctx, [...policies.values()], live, keyOf, buckets))
     return findings
   },
+}
+
+/** 这些角色本身绕过行级安全，授予它们的恒真策略不扩大访问。 */
+const PRIVILEGED_ROLES = new Set(['service_role', 'postgres', 'supabase_admin'])
+
+interface PolicyView {
+  name: string
+  scope: string
+  schema: string
+  table: string
+  file: string
+  line: number
+  restrictive: boolean
+  command: PolicyCommand
+  roles: string[]
+  using?: string
+  check?: string
+}
+
+/** 描述策略适用的调用者。 */
+function audienceOf(roles: string[]): string {
+  if (roles.includes('public') || roles.includes('anon')) return 'anyone, signed in or not,'
+  if (roles.includes('authenticated')) return 'any signed-in user'
+  return `the ${roles.join(', ')} role${roles.length === 1 ? '' : 's'}`
+}
+
+/**
+ * 依据 Supabase 检查规则 0024 与 0025 报告过宽策略和可枚举的公开存储桶。
+ * 表在迁移中未开启行级安全时策略不生效，该表已由 rls-not-enabled 报告，不再重复。
+ */
+function policyFindings(
+  ctx: ScanContext,
+  policies: PolicyView[],
+  live: Map<string, { rls: boolean }>,
+  keyOf: (scope: string, schema: string, table: string) => string,
+  buckets: Map<string, { public: boolean; file: string; line: number }>,
+): Finding[] {
+  const lines = new Map(ctx.files.map((file) => [file.path, file.lines]))
+  const excerpt = (file: string, line: number): string | null => lines.get(file)?.[line - 1]?.trim() ?? null
+  const findings: Finding[] = []
+  let unreported = 0
+  const push = (finding: Finding): void => {
+    if (findings.length >= MAX_FINDINGS_PER_FILE) unreported++
+    else findings.push(finding)
+  }
+  // 按作用域汇总公开存储桶，每条策略只查本作用域。
+  const publicBuckets = new Map<string, string[]>()
+  for (const [key, bucket] of buckets) {
+    if (!bucket.public) continue
+    const [scope, id] = JSON.parse(key) as [string, string]
+    publicBuckets.set(scope, [...(publicBuckets.get(scope) ?? []), id])
+  }
+
+  for (const p of policies) {
+    if (p.restrictive || p.roles.every((role) => PRIVILEGED_ROLES.has(role))) continue
+    if (live.get(keyOf(p.scope, p.schema, p.table))?.rls === false) continue
+    const table = `${renderIdent(p.schema)}.${renderIdent(p.table)}`
+    const audience = audienceOf(p.roles)
+
+    // 可枚举的公开存储桶：条件为 true 或仅按桶名筛选的读取策略。
+    if (p.schema === 'storage' && p.table === 'objects' && (p.command === 'select' || p.command === 'all') && p.using !== undefined) {
+      const onlyBucket = bucketOnlyCondition(p.using)
+      const everyBucket = isAlwaysTrue(p.using)
+      const listable = (publicBuckets.get(p.scope) ?? []).filter((id) => everyBucket || onlyBucket === id)
+      for (const id of listable) {
+        push({
+          ruleId: 'supabase/public-bucket-listing',
+          severity: 'P2',
+          confidence: 'certain',
+          title: `Policy "${p.name}" lets ${audience} list every file in the public "${id}" bucket`,
+          file: p.file,
+          line: p.line,
+          excerpt: excerpt(p.file, p.line),
+          why: [
+            `Files in a public bucket can already be downloaded by anyone who has their URL, without any policy. ` +
+              `This SELECT policy on storage.objects adds something else: it lets callers list the bucket's contents.`,
+            `Listing reveals every file name, including files uploaded by other users that were only meant to be ` +
+              `reachable by someone who already had the link.`,
+          ],
+          fix: [
+            `If the app only serves files by URL, drop this policy: public object URLs keep working without it.`,
+            `If the app really needs listing, make the bucket private and scope the policy to the owner, e.g. USING (bucket_id = '${id}' AND owner_id = (select auth.uid()::text)).`,
+          ],
+        })
+      }
+    }
+
+    const usingTrue = p.using !== undefined && isAlwaysTrue(p.using)
+    const checkTrue = p.check !== undefined && isAlwaysTrue(p.check)
+    const opensRows = usingTrue && p.command !== 'insert'
+    const opensWrites = checkTrue && (p.command === 'insert' || p.command === 'update' || p.command === 'all')
+    if (!opensRows && !opensWrites) continue
+
+    // 修改或删除任意行很少是设计；公开读取和公开表单常见，保留为疑似。
+    const modifiesAny = usingTrue && (p.command === 'update' || p.command === 'delete' || p.command === 'all')
+    const verb = { all: 'read, change and delete', select: 'read', insert: 'insert any data into', update: 'change', delete: 'delete' }[p.command]
+    push({
+      ruleId: 'supabase/permissive-policy',
+      severity: 'P1',
+      confidence: modifiesAny ? 'certain' : 'likely',
+      title: opensRows
+        ? `Policy "${p.name}" lets ${audience} ${verb} every row of ${table}`
+        : `Policy "${p.name}" lets ${audience} write any values into ${table}`,
+      file: p.file,
+      line: p.line,
+      excerpt: excerpt(p.file, p.line),
+      why: [
+        `Row Level Security is on, but this policy's condition is always true, so it does not restrict rows at all. ` +
+          `Permissive policies are combined with OR: one always-true policy opens the table for its command ` +
+          `whatever the other policies say.`,
+        ...(p.command === 'select' || p.command === 'insert'
+          ? [`Public read-only tables and open forms can be intentional. If this one is, keep it and consider ` +
+              `restricting the columns the API exposes.`]
+          : []),
+      ],
+      fix: [
+        `Replace the condition with one that ties each row to its owner, e.g. USING ((select auth.uid()) = user_id)` +
+          `${p.command === 'insert' || p.command === 'update' || p.command === 'all' ? ' and WITH CHECK ((select auth.uid()) = user_id)' : ''}.`,
+        `If a broad policy is needed as a base, add an AS RESTRICTIVE policy alongside it to limit which rows it reaches.`,
+        `Keep the change in a migration, so the rule travels with your code.`,
+      ],
+      humanOnly: [
+        `Check the policy in the Supabase dashboard (Authentication -> Policies); a policy changed there is not visible in the repository.`,
+      ],
+    })
+  }
+
+  if (unreported > 0) {
+    ctx.reportIncomplete('supabase/permissive-policy',
+      `${unreported} further permissive ${unreported === 1 ? 'policy was' : 'policies were'} not reported individually`)
+  }
+  return findings
 }

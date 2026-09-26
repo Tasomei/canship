@@ -124,7 +124,7 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
            </div>`
             : `<div class="clean-note">
            <p>canship checked for hardcoded API keys, server secrets exposed to the browser,
-            Supabase tables without Row Level Security, open Firebase rules, API routes that reach
+            Supabase tables without Row Level Security or with policies open to everyone, open Firebase rules, API routes and server actions that reach
             the database with no sign-in check, CORS that lets other sites use your visitors&rsquo;
            sessions, and <code>.env</code> files committed to git.</p>
            <p><strong>A clean result means those checks passed &mdash; not that your app is secure.</strong>

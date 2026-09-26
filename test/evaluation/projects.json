@@ -21,8 +21,10 @@
       "tree": "d5e1805d0bdc82bad6c01d4c200d2b1e97a7972c",
       "license": "Apache-2.0",
       "sourceFiles": 32,
-      "expectedFindings": [],
-      "note": "No findings expected within the scanner's supported static checks."
+      "expectedFindings": [
+        { "rule": "supabase/permissive-policy", "severity": "P1", "confidence": "likely", "file": "supabase/migrations/20221017024722_init.sql", "line": 17 }
+      ],
+      "note": "The profiles SELECT policy uses using (true), which Supabase's own advisor (lint 0024) flags; a public read can be intentional, so it is likely rather than certain."
     },
     {
       "id": "supabase-react-user-management",

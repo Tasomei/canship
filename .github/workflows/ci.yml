@@ -41,6 +41,9 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Prepare pinned source snapshots
+        # 只读令牌仅发送给 api.github.com，避免共享 runner IP 的匿名限额导致偶发失败。
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/fetch-evaluation-projects.mjs "$RUNNER_TEMP/canship-projects"
       - name: Evaluate source snapshots offline
         run: npm run evaluate:projects -- "$RUNNER_TEMP/canship-projects"

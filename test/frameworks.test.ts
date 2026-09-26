@@ -72,6 +72,50 @@ describe('auth guards the scan recognises in any framework', () => {
   }
 })
 
+describe('Next.js route handlers outside /api', () => {
+  const handler = `export async function POST() { return Response.json(${QUERY}) }`
+
+  // route 文件放在 app 下任何位置都是处理函数；修复前只检查 app/api。
+  for (const [path, url] of [
+    ['app/webhooks/stripe/route.ts', '/webhooks/stripe'],
+    ['src/app/(admin)/users/route.ts', '/users'],
+    ['app/%5Finternal/route.ts', '/_internal'],
+    ['packages/web/src/app/export/route.ts', '/export'],
+  ] as const) {
+    test(`${path} is checked as ${url}`, async () => {
+      assertAdmin(await apiFindings({ [path]: ADMIN + handler }), url)
+    })
+  }
+
+  test('a re-exported handler is recognised', async () => {
+    assertAdmin(await apiFindings({
+      'app/export/route.ts': ADMIN + `async function handler() { return Response.json(${QUERY}) }\nexport { handler as GET, handler as POST }\n`,
+    }), '/export')
+  })
+
+  test('a private folder is not routed', async () => {
+    assert.deepEqual(await apiFindings({ 'app/_lib/route.ts': ADMIN + handler }), [])
+    assert.deepEqual(await apiFindings({ 'app/api/_lib/route.ts': ADMIN + handler }), [])
+  })
+
+  test('a route file with no HTTP method export is not a handler', async () => {
+    assert.deepEqual(await apiFindings({ 'app/reports/route.ts': ADMIN + `export async function build() { return ${QUERY} }` }), [])
+  })
+
+  test('a Remix folder route stays a Remix route', async () => {
+    assertAdmin(await apiFindings({
+      'app/routes/dashboard/route.tsx': ADMIN + `export async function loader() { return ${QUERY} }`,
+    }), '/dashboard')
+  })
+
+  test('an auth check protects a handler outside /api too', async () => {
+    assert.deepEqual(await apiFindings({
+      'app/webhooks/stripe/route.ts': ADMIN +
+        `export async function POST() { const s = await getServerSession(); if (!s?.user) return new Response(null, { status: 401 }); return Response.json(${QUERY}) }`,
+    }), [])
+  })
+})
+
 describe('Astro endpoints', () => {
   test('an endpoint under src/pages/api is checked', async () => {
     assertAdmin(await apiFindings({
@@ -180,6 +224,59 @@ describe('SvelteKit endpoints', () => {
     assert.deepEqual(await apiFindings({
       'src/routes/login/github/callback/+server.ts': SK_ADMIN +
         "export async function GET() { await db.from('users').insert({ a: 1 }); return new Response(null) }",
+    }), [])
+  })
+})
+
+describe('SvelteKit form actions', () => {
+  // actions 以 POST 直接调用，修复前 +page.server 完全不检查。
+  const WRITE = "await db.from('todos').delete().eq('id', 1)"
+
+  test('a default action writing with the admin client is reported', async () => {
+    const findings = await apiFindings({
+      'src/routes/todos/+page.server.ts': SK_ADMIN + `export const actions = { default: async ({ request }) => { ${WRITE}; return { ok: true } } } satisfies Actions`,
+    })
+    assertAdmin(findings, '/todos')
+  })
+
+  test('a typed actions export and a route group are handled', async () => {
+    assertAdmin(await apiFindings({
+      'src/routes/(app)/admin/+page.server.ts': SK_ADMIN +
+        `export const actions: Actions = {\n  remove: async ({ locals }) => {\n    ${WRITE}\n  },\n}\n`,
+    }), '/admin')
+  })
+
+  test('a locals.user check that fails the action protects it', async () => {
+    assert.deepEqual(await apiFindings({
+      'src/routes/todos/+page.server.ts': SK_ADMIN +
+        `export const actions = { default: async ({ locals }) => { if (!locals.user) return fail(401, { message: 'no' }); ${WRITE} } }`,
+    }), [])
+  })
+
+  test('a redirect for a missing session protects it', async () => {
+    assert.deepEqual(await apiFindings({
+      'src/routes/todos/+page.server.ts': SK_ADMIN +
+        `export const actions = { default: async ({ locals: { safeGetSession } }) => { const { session } = await safeGetSession(); if (!session) redirect(303, '/login'); ${WRITE} } }`,
+    }), [])
+  })
+
+  test('a query in load is not treated as an action', async () => {
+    assert.deepEqual(await apiFindings({
+      'src/routes/todos/+page.server.ts': SK_ADMIN +
+        `export const load = async () => ({ todos: ${QUERY} })\nexport const actions = { default: async ({ locals }) => { if (!locals.user) return fail(401); ${WRITE} } }`,
+    }), [])
+  })
+
+  test('a page server file without actions is not a route', async () => {
+    assert.deepEqual(await apiFindings({
+      'src/routes/todos/+page.server.ts': SK_ADMIN + `export const load = async () => { ${WRITE} }`,
+    }), [])
+  })
+
+  test('a write through locals.supabase in an action is left to row level security', async () => {
+    assert.deepEqual(await apiFindings({
+      'src/routes/notes/+page.server.ts':
+        "export const actions = { default: async ({ locals }) => { await locals.supabase.from('notes').insert({ a: 1 }) } }",
     }), [])
   })
 })
@@ -317,5 +414,107 @@ describe('the client detection cannot be made slow', () => {
     }))
     const took = Date.now() - started
     assert.ok(took < 10_000, `took ${took}ms`)
+  })
+})
+
+describe('Next.js Server Functions', () => {
+  // 官方文档：Server Functions 可被直接 POST 调用，须在每个函数内部鉴权。修复前完全不检查。
+  const ACTIONS = "'use server'\n"
+  const REMOVE = "await db.from('posts').delete().eq('id', id)"
+
+  test('an exported action writing with the admin client is reported by name', async () => {
+    const findings = await apiFindings({
+      'app/actions.ts': ACTIONS + ADMIN + `export async function deletePost(id: string) { ${REMOVE} }\n`,
+    })
+    assert.equal(findings.length, 1)
+    assert.equal(findings[0]!.ruleId, 'api/admin-db-access-without-auth')
+    assert.match(findings[0]!.title, /the server action deletePost/)
+  })
+
+  test('the documented example with an auth check is protected', async () => {
+    assert.deepEqual(await apiFindings({
+      'app/actions.ts': ACTIONS + "import { auth } from './lib'\nexport async function createUser(data) {\n  const session = await auth()\n" +
+        "  if (!session?.user) {\n    throw new Error('Unauthorized')\n  }\n  const user = await db.user.create({ data })\n  return { id: user.id }\n}\n",
+    }), [])
+  })
+
+  test('the documented example without the check is a write without sign-in', async () => {
+    const findings = await apiFindings({
+      'app/actions.ts': ACTIONS + 'export async function createUser(data) {\n  const user = await db.user.create({ data })\n  return { id: user.id }\n}\n',
+    })
+    assert.deepEqual(findings.map((f) => `${f.ruleId} ${f.confidence}`), ['api/db-write-without-auth likely'])
+    assert.match(findings[0]!.title, /^The server action createUser writes/)
+  })
+
+  test('an inline action in a page is checked', async () => {
+    const findings = await apiFindings({
+      'app/posts/page.tsx': ADMIN + `export default function Page() {\n  async function remove(id) {\n    'use server'\n    ${REMOVE}\n  }\n  return null\n}\n`,
+    })
+    assert.equal(findings.length, 1)
+    assert.match(findings[0]!.title, /the server action remove/)
+  })
+
+  test('exported arrow functions and export lists are actions', async () => {
+    const arrow = await apiFindings({
+      'lib/actions.ts': ACTIONS + ADMIN + `export const removePost = async (id: string): Promise<void> => {\n  ${REMOVE}\n}\n`,
+    })
+    assert.match(arrow[0]?.title ?? '', /the server action removePost/)
+    const listed = await apiFindings({
+      'lib/actions.ts': ACTIONS + ADMIN + `async function archive(id) { ${REMOVE} }\nexport { archive }\n`,
+    })
+    assert.match(listed[0]?.title ?? '', /the server action archive/)
+  })
+
+  test('an unexported helper is left to the exported action that calls it', async () => {
+    assert.deepEqual(await apiFindings({
+      'app/actions.ts': ACTIONS + ADMIN + `async function removeRow(id) { ${REMOVE} }\n` +
+        'export async function deletePost(id) { const s = await auth(); if (!s?.user) throw new Error("no"); await removeRow(id) }\n',
+    }), [])
+  })
+
+  test('each action is judged on its own', async () => {
+    const findings = await apiFindings({
+      'app/actions.ts': ACTIONS + ADMIN +
+        "export async function signUp(form) { await db.from('profiles').insert({ a: 1 }) }\n" +
+        `export async function deletePost(id) { ${REMOVE} }\n`,
+    })
+    assert.deepEqual(findings.map((f) => /server action (\w+)/.exec(f.title)?.[1]), ['deletePost'])
+  })
+
+  test('middleware does not protect a server action', async () => {
+    const findings = await apiFindings({
+      'middleware.ts': 'export function middleware(req){ if (!req.cookies.get("s")) return new Response(null,{status:401}) }\n',
+      'app/actions.ts': ACTIONS + ADMIN + `export async function deletePost(id) { ${REMOVE} }\n`,
+    })
+    assert.equal(findings.length, 1)
+  })
+
+  test('a file that only mentions the directive is not an action file', async () => {
+    assert.deepEqual(await apiFindings({
+      'lib/docs.ts': ADMIN + `// Add 'use server' at the top of the file.\nexport async function purge(id) { ${REMOVE} }\n`,
+    }), [])
+  })
+
+  test('a Prisma client named db is recognised in route handlers too', async () => {
+    const findings = await apiFindings({
+      'app/api/users/route.ts': 'export async function DELETE(req) { await db.user.delete({ where: { id: 1 } }); return new Response(null) }\n',
+    })
+    assert.deepEqual(findings.map((f) => f.ruleId), ['api/db-write-without-auth'])
+  })
+
+  test('many arrow functions in an action file are read in linear time', async () => {
+    const body = Array.from({ length: 20_000 }, (_, i) => `export const a${i} = async (x: string): Promise<void> => { return }\n`).join('')
+    const started = performance.now()
+    assert.deepEqual(await apiFindings({ 'app/actions.ts': ACTIONS + body }), [])
+    assert.ok(performance.now() - started < 10_000)
+  })
+
+  // 修复前每个 action 都重扫全文并重建行号索引：2 万个带写入的 action 约需 146 秒。
+  test('many actions that each write are analysed once per file', async () => {
+    const body = Array.from({ length: 20_000 }, (_, i) => `export async function a${i}(id) { await db.post.delete({ where: { id } }) }\n`).join('')
+    const started = performance.now()
+    const findings = await apiFindings({ 'app/actions.ts': ACTIONS + body })
+    assert.ok(findings.length > 0)
+    assert.ok(performance.now() - started < 10_000, `took ${Math.round(performance.now() - started)}ms`)
   })
 })

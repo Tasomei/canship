@@ -2,13 +2,142 @@
 
 import type { Finding, Rule, ScanContext, ScanFile } from '../types.js'
 import { basename } from 'node:path'
-import { noiseMaskedOf } from '../mask.js'
+import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { MAX_FINDINGS_PER_FILE } from './limits.js'
 
 /** 判断是否为 Firebase 规则文件。 */
 function isRulesFile(file: ScanFile): boolean {
   return basename(file.path).toLowerCase().endsWith('.rules')
+}
+
+/**
+ * Realtime Database 规则是 JSON，顶层为 rules 对象；官方示例带 // 与块注释，
+ * 因此按屏蔽注释后的文本判断，不依赖文件名（默认 database.rules.json，可在 firebase.json 中改名）。
+ */
+function isRealtimeRulesFile(file: ScanFile): boolean {
+  if (!file.path.toLowerCase().endsWith('.json')) return false
+  if (!/"\.(?:read|write)"/.test(file.content)) return false
+  return /^\s*\{\s*"rules"\s*:\s*\{/.test(commentsMaskedOf(file))
+}
+
+/** 条件为布尔 true 或字符串 "true" 时无条件放行。 */
+function grantsEveryone(value: string | undefined): boolean {
+  return value === 'true' || value === '"true"'
+}
+
+function deniesEveryone(value: string | undefined): boolean {
+  return value === 'false' || value === '"false"'
+}
+
+/** 解码 JSON 键；未闭合或转义错误的键按原文去掉引号处理。 */
+function decodeKey(token: string): string {
+  try {
+    return JSON.parse(token) as string
+  } catch {
+    return token.replace(/^"|"$/g, '')
+  }
+}
+
+interface RealtimeNode {
+  key: string
+  /** .read、.write 等规则键的原始值文本及位置。 */
+  rules: Map<string, { value: string; index: number }>
+}
+
+/**
+ * 一次遍历读取每个节点的 .read 与 .write，在节点闭合时判断，同级的显式拒绝写入可一并考虑。
+ * 规则自上而下级联：父节点放行后子节点无法撤销，因此开放节点覆盖其全部子路径。
+ */
+function checkRealtimeRules(file: ScanFile, ctx: ScanContext): Finding[] {
+  const text = commentsMaskedOf(file)
+  const lineStarts = lineStartsOf(text)
+  const findings: Finding[] = []
+  const stack: RealtimeNode[] = []
+  let pendingKey: { key: string; index: number } | null = null
+
+  const report = (node: RealtimeNode): void => {
+    const read = node.rules.get('.read')
+    const write = node.rules.get('.write')
+    const openRead = grantsEveryone(read?.value)
+    const openWrite = grantsEveryone(write?.value)
+    if (!openRead && !openWrite) return
+    // 公开读取且同级显式拒绝写入视为只读设计，与 Firestore 规则的处理一致。
+    if (!openWrite && deniesEveryone(write?.value)) return
+    if (findings.length >= MAX_FINDINGS_PER_FILE) {
+      ctx.reportIncomplete('firebase/open-rules',
+        `${file.path} holds more than ${MAX_FINDINGS_PER_FILE} open rules; the rest were not reported`)
+      return
+    }
+    // 路径取 rules 以下的键，根节点为 /。
+    const segments = stack.slice(2).map((entry) => entry.key).concat(stack.length >= 2 ? [node.key] : [])
+    const path = `/${segments.join('/')}`.replace(/\/{2,}/g, '/')
+    const at = (openWrite ? write! : read!).index
+    const line = lineNumberAt(lineStarts, at)
+    const ops = openRead && openWrite ? 'read and write' : openWrite ? 'write' : 'read'
+    findings.push({
+      ruleId: 'firebase/open-rules',
+      severity: 'P1',
+      confidence: openWrite ? 'certain' : 'likely',
+      title: openWrite
+        ? `Your Realtime Database rules let anyone ${ops} ${path === '/' ? 'your entire database' : path}`
+        : `Your Realtime Database rules make ${path === '/' ? 'your entire database' : path} publicly readable`,
+      file: file.path,
+      line,
+      excerpt: (file.lines[line - 1] ?? '').trim(),
+      why: [
+        `This rule grants ${ops} access to everyone, with no sign-in required. The Firebase client SDK talks to ` +
+          `your database straight from the browser, so these rules are the only access control that exists.`,
+        `Realtime Database rules cascade: access granted at ${path} also applies to everything beneath it, ` +
+          `and a stricter rule deeper down cannot take it back.`,
+        ...(openWrite ? [] : [
+          `If this data is meant to be public, add ".write": false next to it to make that intent explicit.`,
+        ]),
+      ],
+      fix: [
+        `Require sign-in and ownership instead, for example: ".read": "auth !== null && auth.uid === $uid" under a "$uid" node.`,
+        `Test the new rules with the Firebase emulator before deploying.`,
+        ...(openWrite ? [`If this database has been open for a while, assume the data has already been copied or changed.`] : []),
+      ],
+    })
+  }
+
+  let i = 0
+  while (i < text.length) {
+    const ch = text[i]!
+    if (ch === '"') {
+      // 读取字符串并判断其为键还是值。
+      let j = i + 1
+      while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1
+      const token = text.slice(i, j + 1)
+      let k = j + 1
+      while (k < text.length && /\s/.test(text[k]!)) k++
+      if (text[k] === ':' && pendingKey === null) pendingKey = { key: decodeKey(token), index: i }
+      else if (pendingKey !== null) {
+        stack[stack.length - 1]?.rules.set(pendingKey.key, { value: token, index: pendingKey.index })
+        pendingKey = null
+      }
+      i = j + 1
+      continue
+    }
+    if (ch === '{') {
+      stack.push({ key: pendingKey?.key ?? '', rules: new Map() })
+      pendingKey = null
+    } else if (ch === '}') {
+      const node = stack.pop()
+      if (node) report(node)
+    } else if (pendingKey !== null && /[A-Za-z0-9-]/.test(ch)) {
+      // true、false、null 与数字字面量。
+      let j = i
+      while (j < text.length && /[A-Za-z0-9.+-]/.test(text[j]!)) j++
+      stack[stack.length - 1]?.rules.set(pendingKey.key, { value: text.slice(i, j), index: pendingKey.index })
+      pendingKey = null
+      i = j
+      continue
+    }
+    i++
+  }
+  return findings.sort((a, b) => (a.line ?? 0) - (b.line ?? 0))
 }
 
 /** 根据文件路径确定规则产品名称。 */
@@ -115,10 +244,11 @@ export const firebaseRulesRule: Rule = {
 
   appliesTo(file: ScanFile): boolean {
     // 示例上下文由引擎降低置信度。
-    return isRulesFile(file)
+    return isRulesFile(file) || isRealtimeRulesFile(file)
   },
 
   check(file: ScanFile, ctx: ScanContext): Finding[] {
+    if (!isRulesFile(file)) return checkRealtimeRules(file, ctx)
     const findings: Finding[] = []
     const product = productOf(file.path)
     // 达到结果上限时记录扫描缺口。

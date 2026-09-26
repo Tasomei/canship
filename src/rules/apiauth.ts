@@ -14,8 +14,27 @@ import { JWT_SOURCE, SB_SECRET_SOURCE } from './patterns.js'
 const APP_ROUTER = /(?:^|\/)app\/api\/(?:.+\/)?route\.[mc]?[jt]sx?$/
 const PAGES_ROUTER = /(?:^|\/)pages\/api\/.+\.[mc]?[jt]sx?$/
 
+/**
+ * app 目录下任意位置的 route 文件都是处理函数，不限于 api。Remix 的文件夹路由同样叫 route，
+ * 因此 api 之外的须按 HTTP 方法导出，且不导出 loader 或 action。
+ */
+const APP_ROUTE_FILE = /(?:^|\/)app\/(?:.+\/)?route\.[mc]?[jt]sx?$/
+const NEXT_METHODS = 'GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS'
+const NEXT_METHOD_EXPORT = new RegExp(
+  String.raw`\bexport\s+(?:async\s+)?function\s+(?:${NEXT_METHODS})\b|\bexport\s+const\s+(?:${NEXT_METHODS})\b|` +
+  // export { handler as GET } 与 Auth.js 的 export const { GET, POST } = handlers；长度有界以免回溯。
+  String.raw`\bexport\s+(?:const\s*)?\{[^{}]{0,500}\b(?:${NEXT_METHODS})\b`,
+)
+
 /** SvelteKit 端点只能是 +server 文件，文件名本身即可确认框架。 */
 const SVELTEKIT_ENDPOINT = /^(.*?\/)?src\/routes\/(?:(.*)\/)?\+server\.[mc]?[jt]s$/
+
+/**
+ * SvelteKit 表单 actions 通过 POST 直接调用，与端点同样可被任何人请求。
+ * 只检查 actions 对象内的操作；load 为页面读取数据，公开页面读取数据属于正常设计。
+ */
+const SVELTEKIT_PAGE_SERVER = /^(.*?\/)?src\/routes\/(?:(.*)\/)?\+page\.server\.[mc]?[jt]s$/
+const SVELTEKIT_ACTIONS = /\bexport\s+const\s+actions\b\s*(?::[^=;{}]{0,200})?=\s*\{/
 
 /** Nuxt/Nitro 服务端路由。目录名在其他项目中也常见（如 tRPC 的 server/api/routers），须同时出现 h3 处理函数。 */
 const NUXT_ROUTE = /^(.*?\/)?server\/(api|routes)\/(.+)\.[mc]?[jt]s$/
@@ -46,7 +65,112 @@ interface Route {
   url: string
   /** 所属应用根目录（含末尾斜杠），用于别名解析及查找全局鉴权文件。 */
   scope: string
+  /** 仅此范围内的操作可被请求触发，如 SvelteKit 的 actions 对象；未设置时为整个文件。 */
+  reachable?: { start: number; end: number }
+  /** Next.js Server Function 的函数名；没有独立 URL，中间件不能证明其受保护。 */
+  action?: string
 }
+
+/**
+ * Next.js Server Functions（Server Actions）可被直接 POST 调用，官方要求在每个函数内部鉴权。
+ * 文件顶部的 'use server' 使全部导出函数成为 Server Function；函数体首行的 'use server' 只标记该函数。
+ * 只检查导出函数和内联标记的函数，未导出的辅助函数由调用方负责鉴权，不单独报告。
+ */
+function serverActionRoutes(file: ScanFile): Route[] {
+  if (!/use server/.test(file.content) || !/\.[mc]?[jt]sx?$/.test(file.path)) return []
+  const code = noiseMaskedOf(file)
+  const source = commentsMaskedOf(file)
+  const fileLevel = startsWithDirective(source, 0, 'use server')
+  const pairs = delimiterPairs(code)
+  // 右括号到左括号的反向索引，供箭头函数向前跳过参数列表。
+  const openers = new Map<number, number>()
+  for (const [open, close] of pairs) openers.set(close, open)
+  const exportedList = new Set<string>()
+  for (const m of code.matchAll(/\bexport\s*\{([^{}]{0,1000})\}/g)) {
+    for (const part of m[1]!.split(',')) {
+      const name = /^\s*([A-Za-z_$][\w$]*)/.exec(part)?.[1]
+      if (name) exportedList.add(name)
+    }
+  }
+  const scope = /^(.*?\/)?(?:src|app|lib|actions|server|utils)\//.exec(file.path)?.[1] ?? ''
+  const routes: Route[] = []
+  for (const body of functionBodies(code, pairs)) {
+    const inline = startsWithDirective(source, body.start + 1, 'use server')
+    const declared = declarationOf(code, body, openers)
+    const exported = fileLevel && declared !== null && (declared.exported || exportedList.has(declared.name))
+    if (!inline && !exported) continue
+    const name = declared?.name ?? 'anonymous'
+    routes.push({
+      file, framework: 'next', url: `the server action ${name}`, scope,
+      reachable: { start: body.start, end: body.end }, action: name,
+    })
+  }
+  return routes
+}
+
+/** 从指定位置起的首条语句是否为给定指令，跳过空白和已屏蔽的注释。 */
+function startsWithDirective(source: string, from: number, directive: string): boolean {
+  let i = from
+  while (i < source.length && /\s/.test(source[i]!)) i++
+  const quote = source[i]
+  if (quote !== "'" && quote !== '"') return false
+  return source.startsWith(directive, i + 1) && source[i + 1 + directive.length] === quote
+}
+
+/** 函数声明的名称及是否直接导出；无法识别时为空。 */
+function declarationOf(
+  code: string,
+  body: FunctionBody,
+  openers: Map<number, number>,
+): { name: string; exported: boolean } | null {
+  const named = /^function\s*\*?\s*([A-Za-z_$][\w$]*)/.exec(code.slice(body.declaration, body.declaration + 200))
+  if (named) {
+    const before = code.slice(Math.max(0, body.declaration - 40), body.declaration)
+    return { name: named[1]!, exported: /\bexport\s+(?:default\s+)?(?:async\s+)?$/.test(before) }
+  }
+  // 箭头函数：从 => 向前逐段读取，参数列表借助括号配对一步跳过，每个函数只读有限长度。
+  let i = body.declaration - 1
+  const skipSpace = (): void => { while (i >= 0 && /\s/.test(code[i]!)) i-- }
+  const readWord = (): string => {
+    const end = i + 1
+    while (i >= 0 && /[\w$]/.test(code[i]!)) i--
+    return code.slice(i + 1, end)
+  }
+  // 可选的返回类型标注，如 ): Promise<void> =>。
+  const window = code.slice(Math.max(0, body.declaration - 200), body.declaration)
+  const close = window.lastIndexOf(')')
+  if (close !== -1 && /^\s*(?::[^=;{()]*)?$/.test(window.slice(close + 1))) {
+    const open = openers.get(body.declaration - window.length + close)
+    if (open === undefined) return null
+    i = open - 1
+  } else {
+    skipSpace()
+    if (readWord() === '') return null
+  }
+  skipSpace()
+  const maybeAsync = i
+  if (readWord() !== 'async') i = maybeAsync
+  skipSpace()
+  if (code[i] !== '=' || code[i - 1] === '=' || code[i - 1] === '!') return null
+  i--
+  skipSpace()
+  let name = readWord()
+  skipSpace()
+  // 变量类型标注，如 const createPost: Action = ...。
+  if (code[i] === ':') {
+    i--
+    skipSpace()
+    name = readWord()
+    skipSpace()
+  }
+  if (name === '' || !/^(?:const|let|var)$/.test(readWord())) return null
+  skipSpace()
+  return { name, exported: readWord() === 'export' }
+}
+
+/** 登录、注册等入口本身面向未登录用户，与认证路由同样豁免。 */
+const AUTH_ACTION_NAMES =
+  /^(?:sign[_-]?(?:in|up|out)|log[_-]?(?:in|out)|register|reset[_-]?password|forgot[_-]?password|verify(?:[_-]?(?:email|otp))?|confirm(?:[_-]?email)?|send[_-]?magic[_-]?link)(?:action)?$/i
 
 /** 路由组仅用于组织目录，不构成 URL 路径。 */
 function routePathOf(path: string): string {
@@ -61,13 +185,32 @@ function routeOf(file: ScanFile): Route | null {
     const astro = ASTRO_ENDPOINT.exec(path)!
     return { file, framework: 'astro', url: `/${astro[2]!.replace(/(?:^|\/)index$/, '')}`, scope: astro[1] ?? '' }
   }
-  if (APP_ROUTER.test(path) || PAGES_ROUTER.test(file.path)) {
-    const scope = /^(.*?)(?:src\/)?(?:app|pages)\/api\//.exec(path)?.[1] ?? ''
+  if (PAGES_ROUTER.test(file.path)) {
+    const scope = /^(.*?)(?:src\/)?pages\/api\//.exec(path)?.[1] ?? ''
     return { file, framework: 'next', url: nextRouteUrl(path), scope }
+  }
+  if (APP_ROUTE_FILE.test(path)) {
+    const app = nextAppRoute(path)
+    const code = noiseMaskedOf(file)
+    const handler = APP_ROUTER.test(path) || (NEXT_METHOD_EXPORT.test(code) && !REMIX_EXPORT.test(code))
+    if (app && handler) return app.url === null ? null : { file, framework: 'next', url: app.url, scope: app.scope }
   }
 
   const svelte = SVELTEKIT_ENDPOINT.exec(path)
   if (svelte) return { file, framework: 'sveltekit', url: `/${svelte[2] ?? ''}`, scope: svelte[1] ?? '' }
+
+  const page = SVELTEKIT_PAGE_SERVER.exec(path)
+  if (page) {
+    const code = noiseMaskedOf(file)
+    const actions = SVELTEKIT_ACTIONS.exec(code)
+    if (!actions) return null
+    const open = actions.index + actions[0].length - 1
+    const close = closingDelimiter(code, open, '{', '}')
+    return {
+      file, framework: 'sveltekit', url: `/${page[2] ?? ''}`, scope: page[1] ?? '',
+      reachable: { start: open, end: close ?? code.length },
+    }
+  }
 
   const nuxt = NUXT_ROUTE.exec(path)
   if (nuxt && H3_HANDLER.test(noiseMaskedOf(file))) {
@@ -89,9 +232,24 @@ function routeOf(file: ScanFile): Route | null {
   return null
 }
 
-/** Next.js 文件路径转换为请求 URL。 */
+/**
+ * 定位 Next.js 的 app 目录并换算 URL。优先 src/app，否则取第一个 app 目录，
+ * 以免 packages/app/src/app 这类布局把外层目录当作应用目录。
+ * 下划线开头的私有文件夹及其子目录不参与路由，此时 url 为空；%5F 开头的段表示字面下划线。
+ */
+function nextAppRoute(path: string): { scope: string; url: string | null } | null {
+  const m = /^(.*?\/)?src\/app\/(.+)$/.exec(path) ?? /^(.*?\/)?app\/(.+)$/.exec(path)
+  if (!m) return null
+  const segments = m[2]!.split('/').slice(0, -1)
+  const url = segments.some((segment) => segment.startsWith('_'))
+    ? null
+    : `/${segments.map((segment) => segment.replace(/^%5F/i, '_')).join('/')}`
+  return { scope: m[1] ?? '', url }
+}
+
+/** Pages Router 文件路径转换为请求 URL。 */
 function nextRouteUrl(path: string): string {
-  const m = /(?:^|\/)(?:app|pages)\/(api\/.*)$/.exec(path)
+  const m = /(?:^|\/)pages\/(api\/.*)$/.exec(path)
   if (!m) return `/${path}`
   const url = m[1]!
     .replace(/\/route\.[mc]?[jt]sx?$/, '')
@@ -130,6 +288,7 @@ const PROVIDER_CALLBACK = /^(?:\/api)?\/(?:auth|oauth|login|sign-?in)\/[^/]+\/ca
 const OAUTH_HANDLER = /\bdefineOAuth\w*EventHandler\s*\(/
 
 function isAuthEndpoint(route: Route): boolean {
+  if (route.action !== undefined) return AUTH_ACTION_NAMES.test(route.action)
   // 不按任意捕获路径豁免，仅识别明确的认证处理方式。
   return AUTH_ENDPOINT_NAMES.test(route.url) || AUTH_CALLBACK.test(route.url) ||
     PROVIDER_CALLBACK.test(route.url) || OAUTH_HANDLER.test(noiseMaskedOf(route.file))
@@ -349,6 +508,44 @@ function statementEnd(code: string, start: number, limit: number, pairs: Map<num
 }
 
 /** 只认当前函数顶层、数据操作之前的检查，跳过未执行的函数和可选分支。 */
+/**
+ * 每个文件只分析一次：一个文件可含数以万计的 Server Action，逐路由重扫全文会使耗时与“路由数 × 文件长度”成正比。
+ * 每个操作的判断互不依赖，先对全部操作判断、再按路由范围筛选，与先筛选后判断的结果相同。
+ */
+const unguardedCache = new WeakMap<ScanFile, DataHit[]>()
+function unguardedOpsOf(file: ScanFile): DataHit[] {
+  let hit = unguardedCache.get(file)
+  if (hit === undefined) {
+    hit = unguardedOperations(file, findDataOps(file))
+    unguardedCache.set(file, hit)
+  }
+  return hit
+}
+
+/** 行号索引按文件缓存，同一文件的多个 Server Action 共用。 */
+const lineStartsCache = new WeakMap<ScanFile, number[]>()
+function lineStartsCached(file: ScanFile): number[] {
+  let hit = lineStartsCache.get(file)
+  if (hit === undefined) {
+    hit = lineStartsOf(file.content)
+    lineStartsCache.set(file, hit)
+  }
+  return hit
+}
+
+/** 按文件对象缓存布尔判断，生命周期随扫描结束。 */
+function cachedByFile(check: (file: ScanFile) => boolean): (file: ScanFile) => boolean {
+  const cache = new WeakMap<ScanFile, boolean>()
+  return (file) => {
+    let hit = cache.get(file)
+    if (hit === undefined) {
+      hit = check(file)
+      cache.set(file, hit)
+    }
+    return hit
+  }
+}
+
 function unguardedOperations(file: ScanFile, ops: DataHit[]): DataHit[] {
   if (ops.length === 0) return ops
   const code = noiseMaskedOf(file)
@@ -468,7 +665,8 @@ const NUXT_SUPABASE_ADMIN = /\bserverSupabaseServiceRole\s*(?:<[^()]{0,200}>\s*)
 const NUXT_SUPABASE_SESSION = /\bserverSupabaseClient\s*(?:<[^()]{0,200}>\s*)?\(/
 
 /** 同时存在客户端构造和管理员密钥引用时视为管理员客户端。 */
-function buildsAdminClient(file: ScanFile): boolean {
+const buildsAdminClient = cachedByFile(buildsAdminClientUncached)
+function buildsAdminClientUncached(file: ScanFile): boolean {
   const code = noiseMaskedOf(file)
   if (NUXT_SUPABASE_ADMIN.test(code)) return true
   if (!CLIENT_CONSTRUCTOR.test(code)) return false
@@ -484,7 +682,8 @@ function buildsAdminClient(file: ScanFile): boolean {
 }
 
 /** 识别绑定调用者会话的客户端，由数据库策略实施授权。 */
-function buildsSessionClient(file: ScanFile): boolean {
+const buildsSessionClient = cachedByFile(buildsSessionClientUncached)
+function buildsSessionClientUncached(file: ScanFile): boolean {
   const code = noiseMaskedOf(file)
   if (NUXT_SUPABASE_ADMIN.test(code)) return false
   if (NUXT_SUPABASE_SESSION.test(code)) return true
@@ -602,9 +801,23 @@ function importedModules(file: ScanFile, allFiles: ScanFile[], aliasScope: strin
 }
 
 /** 按访问集合遍历导入图并判断目标模块是否可达。 */
+/** 同一文件的多个 Server Action 共享导入图结果，按模块列表、文件和别名范围缓存。 */
+const importsCache = new WeakMap<ScanFile[], WeakMap<ScanFile, Map<string, boolean>>>()
+
 function importsAnyOf(route: Route, modules: ScanFile[], allFiles: ScanFile[]): boolean {
   if (modules.length === 0) return false
+  const byFile = importsCache.get(modules) ?? new WeakMap<ScanFile, Map<string, boolean>>()
+  importsCache.set(modules, byFile)
+  const byScope = byFile.get(route.file) ?? new Map<string, boolean>()
+  byFile.set(route.file, byScope)
+  const cached = byScope.get(route.scope)
+  if (cached !== undefined) return cached
+  const result = importsAnyOfUncached(route, modules, allFiles)
+  byScope.set(route.scope, result)
+  return result
+}
 
+function importsAnyOfUncached(route: Route, modules: ScanFile[], allFiles: ScanFile[]): boolean {
   const targetPaths = new Set(modules.map((file) => file.path))
   const visited = new Set<string>()
   const aliasScope = route.scope
@@ -635,9 +848,10 @@ const SUPABASE_TABLE = /\.from\(\s*['"`][^'"`]+['"`]\s*\)\s*\.?\s*(\w+)?/g
 const SUPABASE_ADMIN_API = /\bauth\s*\.\s*admin\s*\.\s*(\w+)\s*\(/g
 const SUPABASE_WRITES = new Set(['insert', 'update', 'upsert', 'delete'])
 
+/** Prisma 客户端常命名为 prisma 或 db，Next.js 官方示例即使用 db.user.create。 */
 const PRISMA_OP =
-  /\bprisma\s*\.\s*\$?(\w+)\s*\.\s*(findMany|findFirst|findUnique|findUniqueOrThrow|create|createMany|update|updateMany|upsert|delete|deleteMany)\s*\(/g
-const PRISMA_RAW = /\bprisma\s*\.\s*\$(queryRaw|executeRaw)/g
+  /\b(?:prisma|db)\s*\.\s*\$?(\w+)\s*\.\s*(findMany|findFirst|findUnique|findUniqueOrThrow|create|createMany|update|updateMany|upsert|delete|deleteMany)\s*\(/g
+const PRISMA_RAW = /\b(?:prisma|db)\s*\.\s*\$(queryRaw|executeRaw)/g
 const PRISMA_WRITES = /^(?:create|createMany|update|updateMany|upsert|delete|deleteMany)$/
 
 const DRIZZLE_OP = /\bdb\s*\.\s*(select|insert|update|delete)\s*\(/g
@@ -1102,7 +1316,10 @@ export const apiAuthRule: ProjectRule = {
 
   check(ctx: ScanContext): Finding[] {
     // 示例路由仍参与检查，由引擎降低置信度。
-    const routes = ctx.files.map(routeOf).filter((route): route is Route => route !== null)
+    const routes = ctx.files.flatMap((file) => {
+      const route = routeOf(file)
+      return route === null ? serverActionRoutes(file) : [route]
+    })
     if (routes.length === 0) return []
 
     // 每个中间件只校验一次匹配器。
@@ -1126,13 +1343,15 @@ export const apiAuthRule: ProjectRule = {
     const findings: Finding[] = []
 
     for (const route of routes) {
-      const ops = unguardedOperations(route.file, findDataOps(route.file))
+      const reachable = route.reachable
+      const ops = unguardedOpsOf(route.file).filter((op) =>
+        reachable === undefined || (op.index > reachable.start && op.index < reachable.end))
       if (ops.length === 0) continue
 
       const url = route.url
       if (isAuthEndpoint(route)) continue
       // Next.js 与 Astro 的中间件逐路由判断保护范围。
-      if ((route.framework === 'next' || route.framework === 'astro') &&
+      if ((route.framework === 'next' || route.framework === 'astro') && route.action === undefined &&
           middlewareCovers(ctx, route)) continue
       const globalGuard = globalGuardFor(ctx, route)
       const globalNote = globalGuard === null ? [] : [
@@ -1145,7 +1364,7 @@ export const apiAuthRule: ProjectRule = {
       // 存在写操作时优先用其作为证据。
       const hit = ops.find((o) => o.writes) ?? ops[0]!
       // 每个路由只构建一次行号索引。
-      const line = lineNumberAt(lineStartsOf(route.file.content), hit.index)
+      const line = lineNumberAt(lineStartsCached(route.file), hit.index)
       const excerpt = excerptFor(route.file, line)
 
       if (admin) {
@@ -1189,7 +1408,8 @@ export const apiAuthRule: ProjectRule = {
           severity: 'P1',
           // 公开写入可能是业务设计，保留疑似置信度。
           confidence: 'likely',
-          title: `${url} writes to your database with no sign-in check`,
+          // Server Action 的名称以小写开头，放在句首时首字母大写。
+          title: `${url.charAt(0).toUpperCase()}${url.slice(1)} writes to your database with no sign-in check`,
           file: route.file.path,
           line,
           excerpt,

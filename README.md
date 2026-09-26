@@ -21,11 +21,17 @@ Requires Node.js ≥18; no runtime dependencies. `npx` may download the package;
 | Supabase admin keys exposed to clients | P0 |
 | Credentials or suspected private values in Git-tracked and historical `.env` files | P0 |
 | Supabase tables without Row Level Security (RLS) in migrations | P1 |
-| Firebase unconditional access and date-based test rules | P1 |
-| Server route data operations without recognised authentication | P0 / P1 |
+| Supabase RLS policies whose condition is always true | P1 |
+| Public Supabase storage buckets whose contents can be listed | P2 |
+| Firebase unconditional access (Firestore, Storage, Realtime Database) and date-based test rules | P1 |
+| Server route and Server Action data operations without recognised authentication | P0 / P1 |
 | Credentialed CORS with reflected or wildcard origins | P1 / P2 |
 
-Supports OpenAI, Anthropic, AWS, Stripe, GitHub, npm, Slack, SendGrid, and other credential formats, plus common frontend public environment prefixes. API authentication checks cover server routes in Next.js (`/api` in the App and Pages Router), SvelteKit (`+server` endpoints), Nuxt (`server/api` and `server/routes`), Remix and React Router (modules in `app/routes` exporting `loader` or `action`), and Astro (endpoints in `src/pages`), including route groups and workspace applications. SvelteKit page loads and form actions are not checked. An authentication check in SvelteKit `hooks.server` or Nuxt `server/middleware` lowers confidence instead of suppressing findings, because the routes it covers are decided in code.
+Supports OpenAI, Anthropic, OpenRouter, Groq, Hugging Face, Replicate, xAI, Perplexity, AWS, Stripe, GitHub, npm, Slack, SendGrid, and other credential formats, plus common frontend public environment prefixes.
+
+API authentication checks cover Next.js (route handlers anywhere under `app/`, Pages Router `/api`, and Server Functions marked with `'use server'`), SvelteKit (`+server` endpoints and form actions in `+page.server`), Nuxt (`server/api` and `server/routes`), Remix and React Router (modules in `app/routes` exporting `loader` or `action`), and Astro (endpoints in `src/pages`), including route groups and workspace applications. SvelteKit page loads and remote functions are not checked. Next.js `middleware` or `proxy` and Astro middleware protect routes their matcher covers; Server Functions have no URL of their own and must check authentication inside each function, as Next.js documents. An authentication check in SvelteKit `hooks.server` or Nuxt `server/middleware` lowers confidence instead of suppressing findings, because the routes it covers are decided in code.
+
+Supabase policy checks follow Supabase's own advisor lints 0024 and 0025 and replay migrations in order: always-true `USING` or `WITH CHECK` conditions (`true`, `1=1`, `'a'='a'`), and public buckets paired with a `SELECT` policy that lets clients list them. Policies missing a `USING` or `WITH CHECK` clause, and anything changed only in the dashboard, are not visible to these checks.
 
 Confidence is `certain` or `likely`, describing static evidence rather than credential validity or deployed state. Only certain findings are shown by default; hidden likely findings still affect the exit code.
 

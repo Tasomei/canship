@@ -29,6 +29,8 @@ export const RULE_IDS: readonly string[] = [
   'firebase/test-mode-rules',
   'gitleak/env-in-history',
   'gitleak/env-tracked',
+  'supabase/permissive-policy',
+  'supabase/public-bucket-listing',
   'supabase/rls-not-enabled',
   // 凭据规则 ID 从共享格式表生成。
   ...SECRET_PATTERNS.map((p) => `secrets/hardcoded/${p.id}`),

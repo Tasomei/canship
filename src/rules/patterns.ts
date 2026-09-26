@@ -35,7 +35,8 @@ export const SECRET_PATTERNS: SecretPattern[] = [
   {
     id: 'openai',
     name: 'OpenAI API key',
-    pattern: /\bsk-(?!ant-)(?:proj-)?[A-Za-z0-9_-]{20,}\b/g,
+    // OpenRouter 密钥同样以 sk- 开头，由下方的专用格式识别。
+    pattern: /\bsk-(?!ant-|or-v1-)(?:proj-)?[A-Za-z0-9_-]{20,}\b/g,
     impact: 'Anyone with this key can spend your OpenAI credit. Leaked keys are typically abused within minutes of going public.',
     rotateAt: 'https://platform.openai.com/api-keys',
   },
@@ -45,6 +46,50 @@ export const SECRET_PATTERNS: SecretPattern[] = [
     pattern: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g,
     impact: 'Anyone with this key can spend your Anthropic credit.',
     rotateAt: 'https://console.anthropic.com/settings/keys',
+  },
+  // 以下前缀取自各服务官方文档；除 Replicate 外文档未给出长度，只设最小长度以排除示例占位符。
+  {
+    id: 'openrouter',
+    name: 'OpenRouter API key',
+    pattern: /\bsk-or-v1-[A-Za-z0-9]{32,}\b/g,
+    impact: 'Anyone with this key can spend your OpenRouter credit on any model it routes to, up to the key\'s limit.',
+    rotateAt: 'https://openrouter.ai/settings/keys',
+  },
+  {
+    id: 'groq',
+    name: 'Groq API key',
+    pattern: /\bgsk_[A-Za-z0-9]{40,}\b/g,
+    impact: 'Anyone with this key can run models on your Groq account and use up its rate limits and billing.',
+    rotateAt: 'https://console.groq.com/keys',
+  },
+  {
+    id: 'huggingface',
+    name: 'Hugging Face access token',
+    pattern: /\bhf_[A-Za-z0-9]{30,}\b/g,
+    impact: 'Depending on its scope, this token can read your private models and datasets, push to your repositories, and spend on paid inference.',
+    rotateAt: 'https://huggingface.co/settings/tokens',
+  },
+  {
+    id: 'replicate',
+    name: 'Replicate API token',
+    // 官方文档：共 40 个字符，始终以 r8_ 开头。
+    pattern: /\br8_[A-Za-z0-9]{37}\b/g,
+    impact: 'Anyone with this token can run paid predictions on your Replicate account and read your models and predictions.',
+    rotateAt: 'https://replicate.com/account/api-tokens',
+  },
+  {
+    id: 'xai',
+    name: 'xAI API key',
+    pattern: /\bxai-[A-Za-z0-9]{40,}\b/g,
+    impact: 'Anyone with this key can call Grok models on your xAI account and spend its credit.',
+    rotateAt: 'https://console.x.ai',
+  },
+  {
+    id: 'perplexity',
+    name: 'Perplexity API key',
+    pattern: /\bpplx-[A-Za-z0-9]{40,}\b/g,
+    impact: 'Anyone with this key can run Perplexity API requests billed to your account.',
+    rotateAt: 'https://console.perplexity.ai',
   },
   {
     id: 'aws-access-key-id',
@@ -185,7 +230,7 @@ export function isPlaceholder(secret: string): boolean {
   if (PLACEHOLDER_SHAPE.test(secret)) return true
 
   // 移除提供方前缀后，低字符多样性值视为模板。
-  const body = lower.replace(/^(sk-ant-|sk-proj-|sk-|rk_live_|sk_live_|akia|aiza|sg\.|gh[pousr]_)/, '')
+  const body = lower.replace(/^(sk-ant-|sk-proj-|sk-or-v1-|sk-|rk_live_|sk_live_|akia|aiza|sg\.|gh[pousr]_|gsk_|hf_|r8_|xai-|pplx-)/, '')
   if (body.length >= 8) {
     const distinct = new Set(body.replace(/[^a-z0-9]/g, '')).size
     if (distinct <= 3) return true
