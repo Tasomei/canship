@@ -16,18 +16,30 @@ function isRulesFile(file: ScanFile): boolean {
  * 因此按屏蔽注释后的文本判断，不依赖文件名（默认 database.rules.json，可在 firebase.json 中改名）。
  */
 function isRealtimeRulesFile(file: ScanFile): boolean {
-  if (!file.path.toLowerCase().endsWith('.json')) return false
+  if (!/\.(?:json|rules)$/i.test(file.path)) return false
   if (!/"\.(?:read|write)"/.test(file.content)) return false
   return /^\s*\{\s*"rules"\s*:\s*\{/.test(commentsMaskedOf(file))
 }
 
-/** 条件为布尔 true 或字符串 "true" 时无条件放行。 */
+/** 解码 JSON 值，仅识别带空白或成对括号的布尔常量。 */
+function booleanConstant(value: string | undefined): boolean | null {
+  if (value === undefined) return null
+  let decoded: unknown
+  try { decoded = JSON.parse(value) } catch { return null }
+  if (typeof decoded === 'boolean') return decoded
+  if (typeof decoded !== 'string') return null
+  const match = /^\s*(?:\(\s*)*(true|false)(?:\s*\))*\s*$/.exec(decoded)
+  if (!match || [...decoded.matchAll(/\(/g)].length !== [...decoded.matchAll(/\)/g)].length) return null
+  return match[1] === 'true'
+}
+
+/** 条件为布尔 true 或等价字符串常量时无条件放行。 */
 function grantsEveryone(value: string | undefined): boolean {
-  return value === 'true' || value === '"true"'
+  return booleanConstant(value) === true
 }
 
 function deniesEveryone(value: string | undefined): boolean {
-  return value === 'false' || value === '"false"'
+  return booleanConstant(value) === false
 }
 
 /** 解码 JSON 键；未闭合或转义错误的键按原文去掉引号处理。 */
@@ -51,6 +63,10 @@ interface RealtimeNode {
  */
 function checkRealtimeRules(file: ScanFile, ctx: ScanContext): Finding[] {
   const text = commentsMaskedOf(file)
+  try { JSON.parse(text) } catch {
+    ctx.reportIncomplete('firebase/open-rules', `${file.path} contains invalid Realtime Database rule JSON; rules were not evaluated`)
+    return []
+  }
   const lineStarts = lineStartsOf(text)
   const findings: Finding[] = []
   const stack: RealtimeNode[] = []
@@ -248,7 +264,7 @@ export const firebaseRulesRule: Rule = {
   },
 
   check(file: ScanFile, ctx: ScanContext): Finding[] {
-    if (!isRulesFile(file)) return checkRealtimeRules(file, ctx)
+    if (isRealtimeRulesFile(file)) return checkRealtimeRules(file, ctx)
     const findings: Finding[] = []
     const product = productOf(file.path)
     // 达到结果上限时记录扫描缺口。

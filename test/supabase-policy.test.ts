@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { scan } from '../src/engine.js'
 import type { Finding } from '../src/types.js'
-import { bucketOnlyCondition, isAlwaysTrue } from '../src/rules/sqlpolicy.js'
+import { bucketOnlyCondition, isAlwaysTrue, statementEnd } from '../src/rules/sqlpolicy.js'
 
 const roots: string[] = []
 after(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }) })
@@ -216,6 +216,24 @@ describe('public buckets that can be listed', () => {
 })
 
 describe('policy parsing stays linear', () => {
+  test('statement limits disclose truncation but accept an exact boundary', () => {
+    let gaps = 0
+    const incomplete = () => { gaps++ }
+    assert.equal(statementEnd('x'.repeat(4000) + ';', 0, incomplete), 4000)
+    assert.equal(gaps, 0)
+    assert.equal(statementEnd('x'.repeat(4001) + ';', 0, incomplete), 4000)
+    assert.equal(gaps, 1)
+  })
+  test('a long policy makes the project scan incomplete', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'canship-policy-limit-'))
+    roots.push(root)
+    mkdirSync(join(root, 'supabase', 'migrations'), { recursive: true })
+    writeFileSync(join(root, 'supabase', 'migrations', '1.sql'), TABLE +
+      'create policy wide on posts ' + ' '.repeat(4100) + 'for update using (true);')
+    const result = await scan(root)
+    assert.equal(result.partial, true)
+    assert.ok(result.errors.some(error => error.ruleId === 'supabase/policy-parse-limit'))
+  })
   test('many policies and table drops', async () => {
     const sql = Array.from({ length: 4000 }, (_, i) =>
       `create table t${i} (id int);\nalter table t${i} enable row level security;\ncreate policy p${i} on t${i} for select using (auth.uid() is not null);\n`).join('') +

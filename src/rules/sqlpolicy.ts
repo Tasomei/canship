@@ -7,9 +7,10 @@
 const MAX_STATEMENT = 4000
 
 /** 从起点读到分号为止的语句范围。 */
-export function statementEnd(masked: string, from: number): number {
+export function statementEnd(masked: string, from: number, onTruncated?: () => void): number {
   const limit = Math.min(masked.length, from + MAX_STATEMENT)
   const semicolon = masked.slice(from, limit).indexOf(';')
+  if (semicolon === -1 && limit < masked.length && masked[limit] !== ';') onTruncated?.()
   return semicolon === -1 ? limit : from + semicolon
 }
 
@@ -180,7 +181,7 @@ const INSERT_BUCKETS = /\binsert\s+into\s+storage\s*\.\s*buckets\s*\(([^()]{0,50
 const UPDATE_BUCKETS = /\bupdate\s+storage\s*\.\s*buckets\s+set\b/gi
 
 /** SQL 中创建或修改存储桶公开状态的语句，按出现顺序返回。 */
-export function bucketDeclarations(masked: string, source: string): BucketDeclaration[] {
+export function bucketDeclarations(masked: string, source: string, onTruncated?: () => void): BucketDeclaration[] {
   const found: BucketDeclaration[] = []
   let m: RegExpExecArray | null
 
@@ -189,7 +190,7 @@ export function bucketDeclarations(masked: string, source: string): BucketDeclar
     const columns = m[1]!.split(',').map((c) => unquoteIdent(c.trim()))
     const publicIndex = columns.indexOf('public')
     const idIndex = columns.indexOf('id') !== -1 ? columns.indexOf('id') : columns.indexOf('name')
-    const end = statementEnd(masked, m.index)
+    const end = statementEnd(masked, m.index, onTruncated)
     let at = m.index + m[0].length
     // values 后可有多组元组。
     while (at < end) {
@@ -209,7 +210,7 @@ export function bucketDeclarations(masked: string, source: string): BucketDeclar
 
   UPDATE_BUCKETS.lastIndex = 0
   while ((m = UPDATE_BUCKETS.exec(masked)) !== null) {
-    const end = statementEnd(masked, m.index)
+    const end = statementEnd(masked, m.index, onTruncated)
     const statement = masked.slice(m.index, end)
     const setPublic = /\bpublic\s*=\s*(true|false)\b/i.exec(statement)
     // 字符串已被屏蔽为空格，= 之后不能吞掉空白，否则会越过原文中的字面量。

@@ -165,6 +165,7 @@ Baseline format v2 fingerprints survive line moves but change when credentials c
 - Google/Firebase/Maps `AIza...` values are public identifiers, not evidence of a leak on their own.
 - Read limits: 2 MiB per file, 128 MiB and 10,000 files per scan, 16 directory levels. At most 100 findings per file across rules, prioritising severity and confidence.
 - Git history checks cover up to 100 relevant revisions per file, with a 30-second timeout per Git command. Exceeded limits and timeouts report coverage gaps.
+- Supabase policy and bucket statements have a 4,000-character parse limit; exceeding it marks the scan incomplete.
 - Symbolic links are not followed; scan nested repositories and submodules separately. Skipped paths within scope mark the scan incomplete; built-in build and dependency exclusions do not.
 
 ## Development

@@ -422,6 +422,24 @@ describe('Next.js Server Functions', () => {
   const ACTIONS = "'use server'\n"
   const REMOVE = "await db.from('posts').delete().eq('id', id)"
 
+  test('server directives after use strict and anonymous default exports are checked', async () => {
+    const found = await apiFindings({
+      'app/actions.ts': "'use strict';\n'use server';\n" + ADMIN +
+        `export default async function (id) { ${REMOVE} }`,
+    })
+    assert.equal(found.length, 1)
+    assert.equal(found[0]!.ruleId, 'api/admin-db-access-without-auth')
+  })
+
+  for (const suffix of [" + 'notes';", "\n+ 'notes';", '.trim();', "\n()", "\n[0]"]) {
+    test(`a string expression is not a directive: ${JSON.stringify(suffix)}`, async () => {
+      assert.deepEqual(await apiFindings({
+        'lib/not-actions.ts': "'use server'" + suffix + '\n' + ADMIN +
+          `export async function purge(id) { ${REMOVE} }`,
+      }), [])
+    })
+  }
+
   test('an exported action writing with the admin client is reported by name', async () => {
     const findings = await apiFindings({
       'app/actions.ts': ACTIONS + ADMIN + `export async function deletePost(id: string) { ${REMOVE} }\n`,

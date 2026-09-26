@@ -108,13 +108,33 @@ function serverActionRoutes(file: ScanFile): Route[] {
   return routes
 }
 
-/** 从指定位置起的首条语句是否为给定指令，跳过空白和已屏蔽的注释。 */
+/** 读取指令序列，拒绝字符串拼接、调用和属性访问等普通表达式。 */
 function startsWithDirective(source: string, from: number, directive: string): boolean {
   let i = from
-  while (i < source.length && /\s/.test(source[i]!)) i++
-  const quote = source[i]
-  if (quote !== "'" && quote !== '"') return false
-  return source.startsWith(directive, i + 1) && source[i + 1 + directive.length] === quote
+  while (i < source.length) {
+    while (i < source.length && /\s/.test(source[i]!)) i++
+    const quote = source[i++]
+    if (quote !== "'" && quote !== '"') return false
+    const start = i
+    while (i < source.length && source[i] !== quote && !/[\r\n]/.test(source[i]!)) {
+      if (source[i] === '\\') i++
+      i++
+    }
+    if (source[i] !== quote) return false
+    const value = source.slice(start, i++)
+    let newline = false
+    while (i < source.length && /\s/.test(source[i]!)) {
+      if (/[\r\n]/.test(source[i]!)) newline = true
+      i++
+    }
+    const next = source[i]
+    const terminated = next === ';' || next === '}' || next === undefined ||
+      (newline && !/[([.`+\-*/%?:,<>=!&|^]/.test(next))
+    if (!terminated) return false
+    if (value === directive) return true
+    if (next === ';') i++
+  }
+  return false
 }
 
 /** 函数声明的名称及是否直接导出；无法识别时为空。 */
@@ -123,6 +143,10 @@ function declarationOf(
   body: FunctionBody,
   openers: Map<number, number>,
 ): { name: string; exported: boolean } | null {
+  if (/^function\s*\(/.test(code.slice(body.declaration, body.declaration + 40)) &&
+      /\bexport\s+default\s+(?:async\s+)?$/.test(code.slice(Math.max(0, body.declaration - 80), body.declaration))) {
+    return { name: 'default', exported: true }
+  }
   const named = /^function\s*\*?\s*([A-Za-z_$][\w$]*)/.exec(code.slice(body.declaration, body.declaration + 200))
   if (named) {
     const before = code.slice(Math.max(0, body.declaration - 40), body.declaration)

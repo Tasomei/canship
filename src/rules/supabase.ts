@@ -337,6 +337,8 @@ export const supabaseRlsRule: ProjectRule = {
 
     for (const file of sqlFiles) {
       const sql = maskSqlNoise(file.content)
+      const truncatedStatement = (): void => ctx.reportIncomplete('supabase/policy-parse-limit',
+        `${file.path} contains a policy or bucket statement longer than the 4000-character parse limit`)
       const scope = replayScopeOf(file, projectScopeOf(file.path, projectScopes))
       // 每个文件只构建一次行号索引。
       const sqlLines = lineStartsOf(sql)
@@ -402,7 +404,7 @@ export const supabaseRlsRule: ProjectRule = {
       ] as const) {
         pattern.lastIndex = 0
         while ((m = pattern.exec(sql)) !== null) {
-          const end = statementEnd(sql, m.index)
+          const end = statementEnd(sql, m.index, truncatedStatement)
           events.push({
             kind,
             policy: identAt(file.content, m, 1)!,
@@ -417,7 +419,7 @@ export const supabaseRlsRule: ProjectRule = {
         }
       }
 
-      for (const bucket of bucketDeclarations(sql, file.content)) {
+      for (const bucket of bucketDeclarations(sql, file.content, truncatedStatement)) {
         events.push({
           kind: 'bucket', bucket: { id: bucket.id, public: bucket.public }, schema: 'storage', table: 'buckets',
           file: file.path, scope, at: bucket.at, line: lineNumberAt(sqlLines, bucket.at),

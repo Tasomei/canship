@@ -72,6 +72,21 @@ describe('Realtime Database rules', () => {
   test('a renamed rules file is still recognised by its contents', () => {
     assert.equal(check('{ "rules": { ".write": true } }', 'config/rtdb.json').length, 1)
   })
+  test('Realtime JSON in a .rules file is not parsed as Firestore syntax', () => {
+    assert.equal(check('{ "rules": { ".write": true } }', 'database.rules').length, 1)
+  })
+  for (const value of [' true ', '(true)', '(( true ))', 'tr\\u0075e']) {
+    test(`constant rule strings are decoded: ${value}`, () => {
+      assert.equal(check(`{ "rules": { ".write": "${value}" } }`).length, 1)
+    })
+  }
+  test('malformed rule JSON reports incomplete coverage without leaking parser input', () => {
+    const gaps: string[] = []
+    const target = file('{ "rules": { ".write": true, PRIVATE_SENTINEL } }')
+    firebaseRulesRule.check(target, { ...ctx, reportIncomplete: (_, message) => gaps.push(message) })
+    assert.equal(gaps.length, 1)
+    assert.doesNotMatch(gaps.join(' '), /PRIVATE_SENTINEL/)
+  })
 
   test('an unterminated key does not crash the rule', () => {
     assert.doesNotThrow(() => check('{ "rules": { "a\\'))
