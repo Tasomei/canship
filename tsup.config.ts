@@ -5,7 +5,8 @@ import { readFileSync } from 'node:fs'
 const { version } = JSON.parse(readFileSync('./package.json', 'utf8')) as { version: string }
 
 export default defineConfig({
-  entry: ['src/cli.ts'],
+  entry: ['src/cli.ts', 'src/index.ts'],
+  dts: { entry: 'src/index.ts' },
   format: ['esm'],
   target: 'node18',
   // 合并为单文件以减少下载及启动成本。

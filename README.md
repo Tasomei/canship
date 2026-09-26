@@ -2,7 +2,7 @@
 
 A local static scanner for JavaScript and TypeScript projects. Detects exposed credentials and access-control misconfigurations. Scans do not execute project code, upload files, or use the network.
 
-This documentation covers 0.3.x: use a matching [npm version](https://www.npmjs.com/package/canship) or local build.
+This branch includes unreleased changes. Published behaviour follows the matching [npm version](https://www.npmjs.com/package/canship); the programmatic API below currently requires a local build.
 
 ```powershell
 npx canship .
@@ -76,6 +76,24 @@ Finding exit codes take precedence over incompleteness; `--best-effort` does not
 JSON uses `schemaVersion: 1`, independent of the package version; the npm package includes its [schema](./schemas/scan-report-v1.schema.json). Accept additive fields and reject unsupported schema versions. `--list-rules --json` is a separate `kind: "rule-catalog"` document.
 
 `findings` contains results after suppressions and filtering; `hiddenLikely`, `baselineSuppressed`, and `baselineStale` provide related counts. Check coverage separately through `partial`, `errors`, `skipped`, and `filesScanned`. SARIF includes execution status and diagnostic notifications.
+
+## Programmatic API
+
+Node.js ESM entry point with TypeScript declarations and no runtime dependencies.
+
+```js
+import { scan, summarize, listRules } from 'canship'
+
+const result = await scan('./my-app', {
+  only: ['api', 'supabase', 'firebase'],
+  honorIgnoreMarkers: false,
+  noExcerpts: true,
+})
+const summary = summarize(result)
+console.log(summary, listRules().length)
+```
+
+`scan()` returns all confidence levels without loading project configuration, applying baselines, writing reports, or changing the process exit code. Options: `only`, `skip`, `honorIgnoreMarkers` (default `true`), `noExcerpts` (default `false`). Invalid arguments or root directories throw; coverage gaps remain in the result. `summarize()` returns finding, blocking and likely counts, coverage status, and the default CLI exit code; check `partial` separately. `listRules()` returns an independent catalog copy.
 
 ## GitHub Action
 

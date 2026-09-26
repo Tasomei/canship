@@ -2,7 +2,7 @@
 
 面向 JavaScript / TypeScript 项目的本地静态扫描器，检测凭据暴露与访问控制配置错误。扫描不执行项目代码、不上传文件、不联网。
 
-本文档对应 0.3.x，适用于匹配的 [npm 版本](https://www.npmjs.com/package/canship) 或本地构建。
+本分支包含未发布改动。已发布功能以对应的 [npm 版本](https://www.npmjs.com/package/canship) 为准；下述程序化 API 目前需本地构建。
 
 ```powershell
 npx canship .
@@ -76,6 +76,24 @@ Supabase 策略检查依据 Supabase 官方检查规则 0024 与 0025，并按�
 JSON 使用独立于包版本的 `schemaVersion: 1`，npm 包附带 [结构定义](./schemas/scan-report-v1.schema.json)。调用方应兼容新增字段、拒绝不支持的结构版本；`--list-rules --json` 为独立的 `kind: "rule-catalog"` 文档。
 
 `findings` 为抑制和筛选后的结果；`hiddenLikely`、`baselineSuppressed`、`baselineStale` 提供相关统计。完整性需另查 `partial`、`errors`、`skipped`、`filesScanned`；SARIF 提供执行状态与诊断通知。
+
+## 程序化 API
+
+提供 Node.js ESM 入口和 TypeScript 类型，不增加运行时依赖。
+
+```js
+import { scan, summarize, listRules } from 'canship'
+
+const result = await scan('./my-app', {
+  only: ['api', 'supabase', 'firebase'],
+  honorIgnoreMarkers: false,
+  noExcerpts: true,
+})
+const summary = summarize(result)
+console.log(summary, listRules().length)
+```
+
+`scan()` 返回全部置信度结果，不读取项目配置、不自动应用基线、不输出报告或修改进程退出码。支持 `only`、`skip`、`honorIgnoreMarkers`（默认 `true`）和 `noExcerpts`（默认 `false`）；无效参数或根目录会抛出异常，扫描缺口保留在结果中。`summarize()` 返回结果数、阻断数、疑似数、完整性及默认 CLI 退出码；需同时检查 `partial`。`listRules()` 返回独立的规则目录副本。
 
 ## GitHub Action
 

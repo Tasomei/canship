@@ -25,6 +25,17 @@
   "author": "Tasomei",
   "license": "MIT",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json",
+    "./schemas/scan-report-v1.schema.json": "./schemas/scan-report-v1.schema.json",
+    "./dist/cli.js": "./dist/cli.js"
+  },
   "bin": {
     "canship": "dist/cli.js"
   },

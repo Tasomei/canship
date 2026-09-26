@@ -19,7 +19,8 @@ function npm(args, cwd) {
 }
 try {
   const packed = JSON.parse(npm(['pack', '--ignore-scripts', '--json', '--pack-destination', root], repository))[0]
-  const expected = ['LICENSE', 'README-zh-CN.md', 'README.md', 'dist/cli.js', 'package.json', 'schemas/scan-report-v1.schema.json'].sort()
+  const expected = ['LICENSE', 'README-zh-CN.md', 'README.md', 'dist/cli.js', 'dist/index.js', 'dist/index.d.ts',
+    'package.json', 'schemas/scan-report-v1.schema.json'].sort()
   assert.deepEqual(packed.files.map(file => file.path).sort(), expected)
   const install = join(root, 'installed')
   mkdirSync(install)
@@ -49,6 +50,32 @@ try {
     return dir
   }
   const clean = sample('clean', { 'index.ts': 'export const value = 1;' })
+  // 从实际安装包按包名导入，验证入口无 CLI 副作用及声明文件可被消费。
+  const consumer = join(install, 'consumer.mjs')
+  writeFileSync(consumer, `import { scan, summarize, listRules } from 'canship';
+import assert from 'node:assert/strict';
+const result = await scan(process.argv[2], { noExcerpts: true });
+assert.equal(summarize(result).exitCode, 0);
+assert.ok(listRules().length > 10);
+console.log('API_OK');
+`)
+  const api = spawnSync(process.execPath, [consumer, clean], { cwd: install, encoding: 'utf8', timeout: 30_000, windowsHide: true })
+  assert.equal(api.status, 0, api.stderr)
+  assert.equal(api.stdout.trim(), 'API_OK')
+  writeFileSync(join(install, 'consumer.mts'), `import { scan, summarize, listRules } from 'canship';
+import type { ScanOptions, ScanResult } from 'canship';
+const options: ScanOptions = { only: ['firebase'], noExcerpts: true };
+const result: ScanResult = await scan('.', options);
+const code: 0 | 1 | 2 | 3 = summarize(result).exitCode;
+const id: string = listRules()[0]!.id;
+void code; void id;
+`)
+  writeFileSync(join(install, 'tsconfig.json'), JSON.stringify({ compilerOptions: {
+    target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext', strict: true, noEmit: true, types: [],
+  }, files: ['consumer.mts'] }))
+  const types = spawnSync(process.execPath, [join(repository, 'node_modules/typescript/bin/tsc'), '-p', install],
+    { cwd: install, encoding: 'utf8', timeout: 30_000, windowsHide: true })
+  assert.equal(types.status, 0, types.stdout + types.stderr)
   const cleanResult = cli([clean, '--json'])
   assert.equal(cleanResult.status, 0)
   assert.equal(JSON.parse(cleanResult.stdout).partial, false)
