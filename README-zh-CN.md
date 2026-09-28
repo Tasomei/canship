@@ -12,7 +12,7 @@ npx canship .
 
 要求 Node.js ≥18，无运行时依赖。安装软件包可能联网；Git 检查仅使用本地历史。仓库中无法调用 Git 时，扫描标记为未完成。
 
-> 本文对应 0.4.0，较早的 [npm 版本](https://www.npmjs.com/package/canship) 可能不包含下述全部功能。
+> 本分支包含 npm 0.4.0 之后尚未发布的改动。已发布版本的文档请查阅对应 Git 标签。
 
 ## 检测范围
 
@@ -156,6 +156,8 @@ jobs:
 
 输出：`exit-code`、`findings`、`blocking`、`partial`。统计包含基线与排除处理后的疑似结果。扫描不完整、工具错误或报告不兼容始终失败，`fail-on: none` 也不例外。
 
+当前 Action 源码另支持 `honor-ignore-markers`（默认 `true`）。扫描不可信项目时设为 `false`，禁用整文件及逐行忽略标记；要求扫描器 ≥0.3.1。上方固定提交不含此输入，需选用包含新版 Action 的已审阅提交。
+
 上传 SARIF 需 `security-events: write` 及 [代码扫描支持](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file)，Fork PR 可能权限不足。上传前需审阅报告。不可信 PR 使用 `pull_request`，不要使用 `pull_request_target`。Action 为后续步骤设置 Node.js 22；需要其他版本时使用独立扫描任务。
 
 ## 配置与基线
@@ -205,7 +207,7 @@ npx canship --baseline
 - 静态检查可能漏报或将预期配置报为问题，不验证线上行为，不覆盖限流、注入、依赖漏洞或业务授权。无结果不等于安全。
 - 脱敏仅覆盖已识别格式。未识别的敏感值可能保留在摘录中；`--no-excerpts` 移除摘录，并设置 JSON `excerptsOmitted`。路径、名称、说明和基线不匿名化。
 - Google/Firebase/Maps 的 `AIza...` 密钥按公开标识符处理，不单凭其值判定泄露。
-- 读取上限：单文件 2 MiB，单次 128 MiB、10,000 个文件，目录 16 层。每文件跨规则最多 100 条结果，优先保留高严重度、高置信度结果。
+- 读取上限包含文件探测：单文件 2 MiB，单次 128 MiB、10,000 个文件。目录遍历最多 50,000 个条目、16 层。每文件跨规则最多 100 条结果，优先保留高严重度、高置信度结果。
 - Git 历史每文件最多 100 个相关版本，单条命令超时 30 秒；Supabase 策略及存储桶语句最多解析 4,000 个字符。超限报告扫描未完成。
 - 不跟随符号链接；嵌套仓库、子模块需单独扫描。范围内跳过项使扫描未完成，内置排除的依赖和构建目录除外。
 

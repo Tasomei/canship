@@ -12,7 +12,7 @@ npx canship .
 
 Requires Node.js ≥18; no runtime dependencies. Package installation may use the network. Git checks use local history only; unavailable Git in a repository marks the scan incomplete.
 
-> Documentation for 0.4.0. Earlier [npm versions](https://www.npmjs.com/package/canship) may not include all features below.
+> This branch includes unpublished changes beyond npm 0.4.0. For a published version, use the README at its Git tag.
 
 ## Checks
 
@@ -156,6 +156,8 @@ The commit pins the Action wrapper; `version` selects the npm scanner, not repos
 
 Outputs: `exit-code`, `findings`, `blocking`, `partial`. Counts include likely findings after baselines and exclusions. Incomplete scans, tool errors, and incompatible reports always fail, even with `fail-on: none`.
 
+The current Action source also accepts `honor-ignore-markers` (default `true`). Set it to `false` for untrusted projects to disable file and line ignore comments; requires scanner ≥0.3.1. This input is not available in the pinned commit above; select a reviewed commit containing the updated Action.
+
 SARIF upload needs `security-events: write` and [code scanning support](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file); fork PR permissions may be insufficient. Review reports before upload. Use `pull_request`, not `pull_request_target`, for untrusted PRs. The Action sets Node.js 22 for subsequent steps; isolate the scan job if another version is required.
 
 ## Configuration and baselines
@@ -205,7 +207,7 @@ Format v2 fingerprints survive line moves but change with credentials. Missing, 
 - Static checks can miss issues or report intentional configurations. They do not verify deployed behaviour, rate limiting, injection, dependency vulnerabilities, or business authorisation. No findings does not prove security.
 - Redaction covers recognised formats only. Unknown secrets may remain in excerpts; `--no-excerpts` omits excerpts and sets JSON `excerptsOmitted`. Paths, names, descriptions, and baselines are not anonymised.
 - Google/Firebase/Maps `AIza...` keys are treated as public identifiers, not leak evidence on their own.
-- Read limits: 2 MiB per file, 128 MiB and 10,000 files per scan, 16 directory levels. At most 100 findings per file across rules, prioritising severity and confidence.
+- Read limits include file probes: 2 MiB per file, 128 MiB and 10,000 files per scan. Directory discovery stops at 50,000 entries or 16 levels. At most 100 findings per file across rules, prioritising severity and confidence.
 - Git history: up to 100 relevant revisions per file; 30-second timeout per Git command. Supabase policy and bucket statements: 4,000-character parse limit. Exceeded limits report incomplete coverage.
 - Symbolic links are not followed; nested repositories and submodules need separate scans. Skipped in-scope paths mark coverage incomplete; built-in dependency and build exclusions do not.
 
