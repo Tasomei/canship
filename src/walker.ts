@@ -1,6 +1,6 @@
 /** 发现项目文件，合并 Git 清单与凭据文件遍历结果。 */
 
-import { readdirSync, readFileSync, statSync, lstatSync, realpathSync, openSync, readSync, closeSync } from 'node:fs'
+import { opendirSync, readFileSync, statSync, lstatSync, realpathSync, openSync, readSync, closeSync } from 'node:fs'
 import { join, relative, isAbsolute, sep, extname, basename } from 'node:path'
 import type { GitStatus, ScanFile, SkippedFile } from './types.js'
 import { execGitSync, hasContainedGitMetadata, hasGitMetadataAbove, resolveGitExecutable } from './git.js'
@@ -9,6 +9,7 @@ import { execGitSync, hasContainedGitMetadata, hasGitMetadataAbove, resolveGitEx
 const MAX_FILE_BYTES = 2 * 1024 * 1024
 const MAX_SCAN_BYTES = 128 * 1024 * 1024
 const MAX_SCAN_FILES = 10_000
+const MAX_WALK_ENTRIES = 50_000
 
 /** 目录遍历深度上限。 */
 const MAX_WALK_DEPTH = 16
@@ -161,24 +162,24 @@ const BINARY_EXTENSIONS = new Set([
 ])
 
 type ProbeResult =
-  | { kind: 'text' }
-  | { kind: 'binary' }
+  | { kind: 'text'; bytes: number }
+  | { kind: 'binary'; bytes: number }
   | { kind: 'unreadable'; detail: string }
 
 /** 先识别 BOM，再判断未知文件是否为二进制。 */
-function probeFileType(absPath: string): ProbeResult {
+function probeFileType(absPath: string, limit: number): ProbeResult {
   let fd: number | null = null
   try {
     fd = openSync(absPath, 'r')
-    const buf = Buffer.alloc(PROBE_BYTES)
-    const read = readSync(fd, buf, 0, PROBE_BYTES, 0)
+    const buf = Buffer.alloc(limit)
+    const read = readSync(fd, buf, 0, limit, 0)
     const head = buf.subarray(0, read)
     const hasTextBom =
       (head.length >= 2 && head[0] === 0xff && head[1] === 0xfe) ||
       (head.length >= 2 && head[0] === 0xfe && head[1] === 0xff) ||
       (head.length >= 3 && head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf)
-    if (hasTextBom) return { kind: 'text' }
-    return head.includes(0) ? { kind: 'binary' } : { kind: 'text' }
+    if (hasTextBom) return { kind: 'text', bytes: read }
+    return { kind: head.includes(0) ? 'binary' : 'text', bytes: read }
   } catch (err) {
     return {
       kind: 'unreadable',
@@ -266,16 +267,19 @@ function listViaGit(root: string, gitExecutable: string | null): GitFileList | n
 interface WalkResult {
   /** 全部发现路径，相对根目录且使用斜杠。 */
   all: string[]
-  /** 通过内容探测识别的额外候选文件。 */
+  /** 不受 Git 忽略规则限制的凭据及未知类型候选文件。 */
   forced: string[]
 }
 
 /** 单次遍历同时收集文件清单和额外候选文件。 */
-function walkTree(root: string, skipped: SkippedFile[], wantAll: boolean): WalkResult {
+function walkTree(root: string, skipped: SkippedFile[], wantAll: boolean, maxEntries: number): WalkResult {
   const all: string[] = []
   const found: string[] = []
+  let visited = 0
+  let exhausted = false
 
   const walk = (dir: string, depth: number): void => {
+    if (exhausted) return
     if (depth > MAX_WALK_DEPTH) {
       // 达到深度上限时记录缺口，不静默跳过。
       skipped.push({
@@ -287,7 +291,7 @@ function walkTree(root: string, skipped: SkippedFile[], wantAll: boolean): WalkR
     }
     let entries
     try {
-      entries = readdirSync(dir, { withFileTypes: true })
+      entries = opendirSync(dir)
     } catch (err) {
       if (!isMissing(err)) {
         skipped.push({
@@ -299,41 +303,49 @@ function walkTree(root: string, skipped: SkippedFile[], wantAll: boolean): WalkR
       return
     }
 
-    for (const entry of entries) {
-      const full = join(dir, entry.name)
-      const rel = relative(root, full).split(sep).join('/')
-      if (entry.isSymbolicLink()) {
-        // 不跟随符号链接；已排除目录名保持相同排除语义。
-        if (!SKIP_DIRS.has(entry.name)) {
-          skipped.push({ path: rel, reason: 'symlink', detail: 'symbolic links are not followed' })
+    try {
+      while (!exhausted) {
+        const entry = entries.readSync()
+        if (entry === null) break
+        if (visited >= maxEntries) {
+          exhausted = true
+          skipped.push({ path: relative(root, dir).split(sep).join('/') || '.',
+            reason: 'directory-unreadable', detail: `directory entry budget exceeded (${maxEntries} entries)` })
+          break
         }
-        continue
-      }
-      if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name)) continue
-        walk(full, depth + 1)
-        continue
-      }
-      if (!entry.isFile()) continue
-
-      // Git 可提供清单时不重复构建完整路径数组。
-      if (wantAll) all.push(rel)
-
-      let isCandidate =
-        isEnvFile(entry.name) ||
-        CREDENTIAL_FILENAMES.has(entry.name) ||
-        CREDENTIAL_EXTENSIONS.has(extname(entry.name).toLowerCase())
-
-      // 名称无法判断时探测文件；读取失败必须报告。
-      if (!isCandidate && isWorthProbing(rel)) {
-        const probe = probeFileType(full)
-        if (probe.kind === 'text') isCandidate = true
-        else if (probe.kind === 'unreadable') {
-          skipped.push({ path: rel, reason: 'unreadable', detail: probe.detail })
+        visited++
+        const full = join(dir, entry.name)
+        const rel = relative(root, full).split(sep).join('/')
+        if (entry.isSymbolicLink()) {
+          // 不跟随符号链接；已排除目录名保持相同排除语义。
+          if (!SKIP_DIRS.has(entry.name)) {
+            skipped.push({ path: rel, reason: 'symlink', detail: 'symbolic links are not followed' })
+          }
+          continue
         }
-      }
+        if (entry.isDirectory()) {
+          if (SKIP_DIRS.has(entry.name)) continue
+          walk(full, depth + 1)
+          continue
+        }
+        if (!entry.isFile()) continue
 
-      if (isCandidate) found.push(rel)
+        // Git 可提供清单时不重复构建完整路径数组。
+        if (wantAll) all.push(rel)
+
+        const isCandidate =
+          isEnvFile(entry.name) ||
+          CREDENTIAL_FILENAMES.has(entry.name) ||
+          CREDENTIAL_EXTENSIONS.has(extname(entry.name).toLowerCase()) ||
+          isWorthProbing(rel)
+
+        if (isCandidate) found.push(rel)
+      }
+    } catch (err) {
+      if (!isMissing(err)) skipped.push({ path: relative(root, dir).split(sep).join('/') || '.',
+        reason: 'directory-unreadable', detail: String(err instanceof Error ? err.message : err) })
+    } finally {
+      entries.closeSync()
     }
   }
 
@@ -436,7 +448,7 @@ export function collectFiles(
   root: string,
   isGitRepo: boolean,
   gitExecutable: string | null = resolveGitExecutable(root),
-  limits: { maxBytes?: number; maxFiles?: number } = {},
+  limits: { maxBytes?: number; maxFiles?: number; maxEntries?: number } = {},
   honorIgnoreMarkers = true,
 ): CollectResult {
   root = realpathSync(root)
@@ -444,7 +456,7 @@ export function collectFiles(
   const ignored: string[] = []
   // 合并 Git 清单和单次目录遍历。
   const fromGit = isGitRepo ? listViaGit(root, gitExecutable) : null
-  const walked = walkTree(root, skipped, fromGit === null)
+  const walked = walkTree(root, skipped, fromGit === null, limits.maxEntries ?? MAX_WALK_ENTRIES)
   const listed = fromGit?.files ?? walked.all
 
   // 合并候选路径并统一排除第三方目录。
@@ -465,7 +477,7 @@ export function collectFiles(
     if (isVendored(path)) vendored++
     else candidates.add(path)
   }
-  // 内容探测选中的路径不再受扩展名筛选限制。
+  // 额外候选路径在预算内探测，不受常规扩展名筛选限制。
   const forced = new Set<string>()
   for (const hidden of walked.forced) {
     candidates.add(hidden)
@@ -485,7 +497,8 @@ export function collectFiles(
     try {
       if (!readablePath(root, absPath, skipped)) continue
       const size = statSync(absPath).size
-      if (size > MAX_FILE_BYTES) {
+      const needsProbe = isWorthProbing(relPath)
+      if (!needsProbe && size > MAX_FILE_BYTES) {
         skipped.push({
           path: relPath,
           reason: 'too-large',
@@ -493,15 +506,34 @@ export function collectFiles(
         })
         continue
       }
-      // 预算覆盖读取后被识别为二进制或主动忽略的文件。
-      if (filesRead >= maxFiles || bytesRead + size > maxBytes) {
+      // 探测与正文共用预算；二进制和忽略文件也计入读取量。
+      const initialBytes = needsProbe ? Math.min(size, PROBE_BYTES) : size
+      if (filesRead >= maxFiles || bytesRead + initialBytes > maxBytes) {
         skipped.push({ path: relPath, reason: 'too-large',
           detail: `scan read budget exceeded (${maxFiles} files, ${maxBytes} bytes); remaining candidates were not read` })
         break
       }
+      filesRead++
+      if (needsProbe) {
+        const probe = probeFileType(absPath, initialBytes)
+        if (probe.kind === 'unreadable') {
+          skipped.push({ path: relPath, reason: 'unreadable', detail: probe.detail })
+          continue
+        }
+        bytesRead += probe.bytes
+        if (probe.kind === 'binary') continue
+        if (size > MAX_FILE_BYTES) {
+          skipped.push({ path: relPath, reason: 'too-large',
+            detail: `${Math.round(size / 1024)} KB, cap is ${MAX_FILE_BYTES / 1024} KB` })
+          continue
+        }
+        if (bytesRead + size > maxBytes) {
+          skipped.push({ path: relPath, reason: 'too-large', detail: 'scan read budget exceeded after file probe' })
+          break
+        }
+      }
       const bytes = readFileSync(absPath)
       bytesRead += bytes.length
-      filesRead++
       if (bytesRead > maxBytes) {
         skipped.push({ path: relPath, reason: 'too-large', detail: 'scan read budget exceeded during file read' })
         break
