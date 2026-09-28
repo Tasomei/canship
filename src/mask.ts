@@ -60,10 +60,79 @@ function endOfString(src: string, start: number, quote: number): number {
   return length
 }
 
+interface RegexContext {
+  allowed: boolean
+  control: boolean
+  member: boolean
+  parentheses: boolean[]
+  failedUntil: number
+}
+
+const REGEX_PREFIX_WORDS = new Set(['return', 'throw', 'case', 'delete', 'void', 'typeof', 'instanceof', 'in', 'of', 'new', 'yield', 'await', 'else', 'do'])
+const CONTROL_WORDS = new Set(['if', 'while', 'for', 'with', 'switch', 'catch'])
+const regexContext = (): RegexContext => ({ allowed: true, control: false, member: false, parentheses: [], failedUntil: -1 })
+
+function valueEnded(context: RegexContext): void {
+  context.allowed = false
+  context.control = false
+  context.member = false
+}
+
+/** 只在表达式起点读取正则，字符类、转义及标志均不参与代码分析。 */
+function regexAt(src: string, start: number, context: RegexContext): { close: number; end: number } | null {
+  if (!context.allowed || start < context.failedUntil || src[start + 1] === '=') return null
+  let inClass = false
+  for (let i = start + 1; i < src.length; i++) {
+    const ch = src[i]
+    if (ch === '\n' || ch === '\r') { context.failedUntil = i; return null }
+    if (ch === '\\') { i++; continue }
+    if (ch === '[') inClass = true
+    else if (ch === ']') inClass = false
+    else if (ch === '/' && !inClass) {
+      let end = i + 1
+      while (end < src.length && /[A-Za-z]/.test(src[end]!)) end++
+      valueEnded(context)
+      return { close: i, end }
+    }
+  }
+  context.failedUntil = src.length
+  return null
+}
+
+/** 更新表达式上下文；控制语句的右括号与调用表达式区别处理。 */
+function advanceCode(src: string, at: number, context: RegexContext): number {
+  const ch = src[at]!
+  if (/\s/.test(ch)) return at + 1
+  if (/[A-Za-z_$\u0080-\uffff]/.test(ch)) {
+    let end = at + 1
+    while (end < src.length && /[\w$\u0080-\uffff]/.test(src[end]!)) end++
+    const word = src.slice(at, end)
+    context.control = !context.member && CONTROL_WORDS.has(word)
+    context.allowed = !context.member && REGEX_PREFIX_WORDS.has(word)
+    context.member = false
+    return end
+  }
+  if (ch === '(') { context.parentheses.push(context.control); context.allowed = true }
+  else if (ch === ')') context.allowed = context.parentheses.pop() ?? false
+  else if (ch === '.' || ch === '?' && src[at + 1] === '.') {
+    context.allowed = false
+    context.control = false
+    context.member = true
+    return at + (ch === '?' ? 2 : 1)
+  } else if ((ch === '+' || ch === '-') && src[at + 1] === ch) {
+    context.control = false
+    context.member = false
+    return at + 2
+  } else context.allowed = !/[\d\]}]/.test(ch)
+  context.control = false
+  context.member = false
+  return at + 1
+}
+
 /** 模板与插值状态分开入栈，避免深层嵌套耗尽调用栈。 */
 type TemplateFrame =
   | { kind: 'literal'; from: number }
-  | { kind: 'expression'; depth: number }
+  | { kind: 'expression'; depth: number; lexical: RegexContext }
 
 /** 遍历模板；两种模式都屏蔽插值注释，仅完整掩码屏蔽字符串内容。 */
 function maskTemplate(src: string, out: MaskBuffer, start: number, maskStrings = true): number {
@@ -82,12 +151,14 @@ function maskTemplate(src: string, out: MaskBuffer, start: number, maskStrings =
       if (ch === BACKTICK) {
         if (maskStrings) blank(out, frame.from, i)
         stack.pop()
+        const parent = stack[stack.length - 1]
+        if (parent?.kind === 'expression') valueEnded(parent.lexical)
         i++
         continue
       }
       if (ch === DOLLAR && src.charCodeAt(i + 1) === OPEN_BRACE) {
         if (maskStrings) blank(out, frame.from, i)
-        stack.push({ kind: 'expression', depth: 1 })
+        stack.push({ kind: 'expression', depth: 1, lexical: regexContext() })
         i += 2
         continue
       }
@@ -105,10 +176,17 @@ function maskTemplate(src: string, out: MaskBuffer, start: number, maskStrings =
         i = stop
         continue
       }
+      const regex = regexAt(src, i, frame.lexical)
+      if (regex) {
+        if (maskStrings) blank(out, i + 1, regex.close)
+        i = regex.end
+        continue
+      }
     }
     if (ch === DOUBLE_QUOTE || ch === SINGLE_QUOTE) {
       const stop = endOfString(src, i, ch)
       if (maskStrings) blank(out, i + 1, stop - 1)
+      valueEnded(frame.lexical)
       i = stop
       continue
     }
@@ -126,7 +204,7 @@ function maskTemplate(src: string, out: MaskBuffer, start: number, maskStrings =
         if (parent.kind === 'literal') parent.from = i + 1
       }
     }
-    i++
+    i = advanceCode(src, i, frame.lexical)
   }
 
   const last = stack[stack.length - 1]
@@ -139,6 +217,7 @@ export function maskJsComments(src: string): string {
   const length = src.length
   const out = codesOf(src)
   let i = 0
+  const lexical = regexContext()
   while (i < length) {
     const ch = src.charCodeAt(i)
 
@@ -159,16 +238,22 @@ export function maskJsComments(src: string): string {
         continue
       }
     }
+    if (ch === SLASH) {
+      const regex = regexAt(src, i, lexical)
+      if (regex) { i = regex.end; continue }
+    }
     // 跳过字符串，避免将 URL 中的斜杠误判为注释。
     if (ch === DOUBLE_QUOTE || ch === SINGLE_QUOTE) {
       i = endOfString(src, i, ch)
+      valueEnded(lexical)
       continue
     }
     if (ch === BACKTICK) {
       i = maskTemplate(src, out, i, false)
+      valueEnded(lexical)
       continue
     }
-    i++
+    i = advanceCode(src, i, lexical)
   }
   return stringOf(out)
 }
@@ -178,6 +263,7 @@ export function maskJsNoise(src: string): string {
   const length = src.length
   const out = codesOf(src)
   let i = 0
+  const lexical = regexContext()
 
   while (i < length) {
     const ch = src.charCodeAt(i)
@@ -200,20 +286,31 @@ export function maskJsNoise(src: string): string {
       }
     }
 
+    if (ch === SLASH) {
+      const regex = regexAt(src, i, lexical)
+      if (regex) {
+        blank(out, i + 1, regex.close)
+        i = regex.end
+        continue
+      }
+    }
+
     if (ch === DOUBLE_QUOTE || ch === SINGLE_QUOTE) {
       const stop = endOfString(src, i, ch)
       // 保留引号及原始偏移，只屏蔽字符串内容。
       blank(out, i + 1, stop - 1)
+      valueEnded(lexical)
       i = stop
       continue
     }
 
     if (ch === BACKTICK) {
       i = maskTemplate(src, out, i)
+      valueEnded(lexical)
       continue
     }
 
-    i++
+    i = advanceCode(src, i, lexical)
   }
 
   return stringOf(out)

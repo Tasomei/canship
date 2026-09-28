@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { maskJsComments, maskJsNoise } from '../src/mask.js'
 import { corsRule } from '../src/rules/cors.js'
+import { apiAuthRule } from '../src/rules/apiauth.js'
 
 const tick = String.fromCharCode(96)
 const interpolation = '${'
@@ -61,4 +62,53 @@ test('unterminated templates and comments end within bounds and keep line number
       assert.equal(result.split('\n').length, source.split('\n').length)
     }
   }
+})
+
+for (const prefix of [
+  'const pattern = /"/;',
+  "const pattern = /'/;",
+  'const pattern = /[\\/"\']/g;',
+  'const pattern = /https?:\\/\\//i;',
+  'if (enabled) /"/.test(value);',
+  'while (enabled) /"/.test(value);',
+  'const pattern = (() => /"/)();',
+  'const pattern = call(/"/);',
+  'const pattern = { test: /"/ };',
+  `const rendered = ${tick}value ${interpolation}/["']/g.test(value)}${tick};`,
+  'const ratio = numerator / denominator / other;',
+  'const ratio = (numerator + 1) / denominator;',
+  'const ratio = object.return / denominator / other;',
+  'const ratio = object.if(value) / denominator;',
+]) {
+  test(`regular expressions and division do not hide subsequent route operations: ${prefix}`, async () => {
+    const content = "import { admin } from '../../../lib/admin';\n" + prefix + '\n' +
+      'export async function GET() { return Response.json(await admin.from("records").select("*")); }'
+    const admin = "import { createClient } from '@supabase/supabase-js'; export const admin = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);"
+    const files = [{ path: 'app/api/records/route.ts', content }, { path: 'lib/admin.ts', content: admin }]
+      .map(file => ({ ...file, lines: file.content.split('\n'), isExampleContext: false }))
+    const findings = await apiAuthRule.check({ root: '.', files, git: 'not-a-repo', gitExecutable: null,
+      reportIncomplete() { assert.fail('unexpected incomplete scan') } })
+    assert.equal(findings.length, 1)
+    assert.equal(findings[0]!.ruleId, 'api/admin-db-access-without-auth')
+    assert.equal(findings[0]!.line, 3)
+  })
+}
+
+test('regex contents do not become auth or CORS code, and real comments remain masked', () => {
+  const source = 'const pattern = /requireAuth\\(\\)["\']/; // COMMENT_SENTINEL\n' + cors
+  const comments = maskJsComments(source)
+  const noise = maskJsNoise(source)
+  assert.equal(comments.length, source.length)
+  assert.equal(noise.length, source.length)
+  assert.ok(comments.includes('requireAuth'))
+  assert.ok(!comments.includes('COMMENT_SENTINEL'))
+  assert.ok(!noise.includes('requireAuth'))
+  assert.ok(noise.endsWith(cors))
+})
+
+test('unterminated regex character classes do not cause repeated suffix scans', () => {
+  const source = 'const pattern = /[' + '/['.repeat(100_000)
+  const started = performance.now()
+  assert.equal(maskJsNoise(source).length, source.length)
+  assert.ok(performance.now() - started < 5000)
 })
