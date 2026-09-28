@@ -741,8 +741,9 @@ function policyFindings(
           : []),
       ],
       fix: [
-        `Replace the condition with one that ties each row to its owner, e.g. USING ((select auth.uid()) = user_id)` +
-          `${p.command === 'insert' || p.command === 'update' || p.command === 'all' ? ' and WITH CHECK ((select auth.uid()) = user_id)' : ''}.`,
+        `Tie each row to its owner; adapt user_id to your schema. For ${p.command.toUpperCase()}, use ` +
+          (p.command === 'insert' ? 'WITH CHECK ((select auth.uid()) = user_id).' :
+            `USING ((select auth.uid()) = user_id)${p.command === 'update' || p.command === 'all' ? ' and WITH CHECK ((select auth.uid()) = user_id)' : ''}.`),
         `If a broad policy is needed as a base, add an AS RESTRICTIVE policy alongside it to limit which rows it reaches.`,
         `Keep the change in a migration, so the rule travels with your code.`,
       ],

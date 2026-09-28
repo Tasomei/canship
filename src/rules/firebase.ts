@@ -111,7 +111,8 @@ function checkRealtimeRules(file: ScanFile, ctx: ScanContext): Finding[] {
         ]),
       ],
       fix: [
-        `Require sign-in and ownership instead, for example: ".read": "auth !== null && auth.uid === $uid" under a "$uid" node.`,
+        `Require sign-in and ownership for ${[openRead ? '.read' : '', openWrite ? '.write' : ''].filter(Boolean).join(' and ')}. ` +
+          `For a per-user "$uid" node, use "auth !== null && auth.uid === $uid" for each of those rule values; adapt the path to your data model.`,
         `Test the new rules with the Firebase emulator before deploying.`,
         ...(openWrite ? [`If this database has been open for a while, assume the data has already been copied or changed.`] : []),
       ],
@@ -185,6 +186,20 @@ function parseOps(raw: string): string[] {
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean)
+}
+
+/** 按产品和操作区分现有数据与待写入数据，不扩展原有权限。 */
+function ownershipAdvice(product: string, rawOps: string): string {
+  const prefix = `Replace the open or date-based condition for ${rawOps.trim()} with authentication and ownership checks. `
+  if (product !== 'Firestore') {
+    return prefix + 'Bind request.auth.uid to the owner in the matched path or trusted metadata; use rules for your Firebase product and data model. Do not grant additional operations.'
+  }
+  const ops = new Set(parseOps(rawOps))
+  const checks: string[] = ['Require request.auth != null. Adapt userId to your ownership field.']
+  if (ops.has('create') || ops.has('write')) checks.push('For create, check request.resource.data.userId == request.auth.uid; no existing resource is available.')
+  if (ops.has('update') || ops.has('write')) checks.push('For update, check resource.data.userId == request.auth.uid and request.resource.data.userId == resource.data.userId to prevent ownership changes.')
+  if (['read', 'get', 'list', 'delete', 'write'].some(op => ops.has(op))) checks.push('For read or delete operations already allowed here, check resource.data.userId == request.auth.uid.')
+  return prefix + checks.join(' ') + ' Do not grant additional operations.'
 }
 
 /** 屏蔽路径通配符中的花括号，避免破坏代码块配对。 */
@@ -331,7 +346,7 @@ export const firebaseRulesRule: Rule = {
             ],
         fix: canWrite
           ? [
-              `Decide who should actually have access. For per-user data the usual rule is: allow read, write: if request.auth != null && request.auth.uid == resource.data.userId;`,
+              ownershipAdvice(product, rawOps),
               `For data that is genuinely public, restrict it to reads only: allow read: if true; allow write: if false;`,
               `Test your rules with the Firebase emulator before deploying, so you do not lock yourself out.`,
               `If this database has been open for a while, assume the data has already been copied.`,
@@ -382,7 +397,7 @@ export const firebaseRulesRule: Rule = {
               `Neither state is what you want in production.`,
             ],
         fix: [
-          `Replace the date check with a real authorisation rule. For per-user data: allow read, write: if request.auth != null && request.auth.uid == resource.data.userId;`,
+          ownershipAdvice(product, rawOps),
           `Test the new rules with the Firebase emulator before deploying.`,
           expired
             ? `Note that your app is currently denied access here, so fixing this also fixes whatever stopped working.`
