@@ -1,7 +1,7 @@
 /** 发现项目文件，合并 Git 清单与凭据文件遍历结果。 */
 
-import { readdirSync, readFileSync, statSync, lstatSync, openSync, readSync, closeSync } from 'node:fs'
-import { join, relative, sep, extname, basename } from 'node:path'
+import { readdirSync, readFileSync, statSync, lstatSync, realpathSync, openSync, readSync, closeSync } from 'node:fs'
+import { join, relative, isAbsolute, sep, extname, basename } from 'node:path'
 import type { GitStatus, ScanFile, SkippedFile } from './types.js'
 import { execGitSync, hasContainedGitMetadata, hasGitMetadataAbove, resolveGitExecutable } from './git.js'
 
@@ -400,6 +400,37 @@ export interface CollectResult {
   ignored: string[]
 }
 
+/** Git 候选路径仍须检查全部父目录，不能借目录链接越过扫描边界。 */
+function readablePath(root: string, path: string, skipped: SkippedFile[]): boolean {
+  const rel = relative(root, path)
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    skipped.push({ path: '.', reason: 'unreadable', detail: 'candidate path is outside the scan root' })
+    return false
+  }
+  let current = root
+  for (const segment of rel.split(sep)) {
+    current = join(current, segment)
+    const stat = lstatSync(current)
+    if (stat.isSymbolicLink()) {
+      const linked = relative(root, current).split(sep).join('/')
+      if (!skipped.some(item => item.path === linked && item.reason === 'symlink')) {
+        skipped.push({ path: linked, reason: 'symlink', detail: 'symbolic links are not followed' })
+      }
+      return false
+    }
+  }
+  const real = relative(root, realpathSync(path))
+  if (real === '..' || real.startsWith(`..${sep}`) || isAbsolute(real)) {
+    skipped.push({ path: rel.split(sep).join('/'), reason: 'unreadable', detail: 'resolved path is outside the scan root' })
+    return false
+  }
+  if (!lstatSync(path).isFile()) {
+    skipped.push({ path: rel.split(sep).join('/'), reason: 'unreadable', detail: 'not a regular file' })
+    return false
+  }
+  return true
+}
+
 /** 读取候选文件并记录未读取的路径。 */
 export function collectFiles(
   root: string,
@@ -408,6 +439,7 @@ export function collectFiles(
   limits: { maxBytes?: number; maxFiles?: number } = {},
   honorIgnoreMarkers = true,
 ): CollectResult {
+  root = realpathSync(root)
   const skipped: SkippedFile[] = []
   const ignored: string[] = []
   // 合并 Git 清单和单次目录遍历。
@@ -451,13 +483,7 @@ export function collectFiles(
     const absPath = join(root, relPath)
     let content: string
     try {
-      if (lstatSync(absPath).isSymbolicLink()) {
-        // Git 跟踪的链接也不能被读取，避免重复记录。
-        if (!skipped.some((entry) => entry.path === relPath && entry.reason === 'symlink')) {
-          skipped.push({ path: relPath, reason: 'symlink', detail: 'symbolic links are not followed' })
-        }
-        continue
-      }
+      if (!readablePath(root, absPath, skipped)) continue
       const size = statSync(absPath).size
       if (size > MAX_FILE_BYTES) {
         skipped.push({
