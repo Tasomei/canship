@@ -31,6 +31,9 @@ export const JWT_SOURCE = String.raw`eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A
 /** Supabase 服务端私密密钥格式。 */
 export const SB_SECRET_SOURCE = String.raw`sb_secret_[A-Za-z0-9_-]{8,}`
 
+/** PEM 私钥标头；检测与整块脱敏共用。 */
+export const PRIVATE_KEY_BEGIN_SOURCE = String.raw`-----BEGIN (?:(?:RSA|EC|DSA|OPENSSH|ENCRYPTED|PGP) )?PRIVATE KEY(?: BLOCK)?-----`
+
 export const SECRET_PATTERNS: SecretPattern[] = [
   {
     id: 'openai',
@@ -158,7 +161,7 @@ export const SECRET_PATTERNS: SecretPattern[] = [
     id: 'private-key',
     name: 'Private key file contents',
     rotateLabel: 'private key',
-    pattern: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/g,
+    pattern: new RegExp(PRIVATE_KEY_BEGIN_SOURCE, 'g'),
     impact: 'A private key in source code can be used to impersonate your server, decrypt traffic, or log into your machines.',
   },
   {
