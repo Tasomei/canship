@@ -22,6 +22,9 @@ inputs:
   use-config:
     description: Read canship.config.json from the scanned directory.
     default: 'false'
+  honor-ignore-markers:
+    description: Honor source ignore comments. Set false for untrusted projects; requires canship 0.3.1 or later.
+    default: 'true'
   upload-sarif:
     description: Upload SARIF to GitHub code scanning; requires security-events write permission.
     default: 'false'
@@ -60,6 +63,7 @@ runs:
         INPUT_SKIP: ${{ inputs.skip }}
         INPUT_BASELINE: ${{ inputs.baseline }}
         INPUT_USE_CONFIG: ${{ inputs.use-config }}
+        INPUT_HONOR_IGNORE_MARKERS: ${{ inputs.honor-ignore-markers }}
         INPUT_UPLOAD_SARIF: ${{ inputs.upload-sarif }}
         INPUT_CATEGORY: ${{ inputs.category }}
       run: node "$CANSHIP_ACTION_PATH/action/run.mjs"

@@ -193,6 +193,7 @@ test('the default install and report must both be 0.4.0; other report versions a
 test('config is ignored and upload is off by default; an explicit baseline stays inside the project', () => {
   const options = parseInputs(environment({ INPUT_BASELINE: 'baseline.json' }))
   assert.equal(options.useConfig, false)
+  assert.equal(options.honorIgnoreMarkers, true)
   assert.equal(options.uploadSarif, false)
   assert.equal(options.baseline, join(workspace, 'baseline.json'))
 })
@@ -208,6 +209,7 @@ for (const input of [
   { INPUT_PATH: '..' }, { INPUT_BASELINE: '../outside.json' },
   { INPUT_ONLY: 'api', INPUT_SKIP: 'firebase' }, { INPUT_ONLY: 'api; echo unsafe' },
   { INPUT_USE_CONFIG: 'yes' }, { INPUT_UPLOAD_SARIF: '1' }, { INPUT_FAIL_ON: 'unknown' },
+  { INPUT_HONOR_IGNORE_MARKERS: 'yes' },
   { INPUT_CATEGORY: 'x\n::error::injected' },
 ]) {
   test(`an invalid input is rejected: ${Object.keys(input)[0]}`, () => assert.throws(() => parseInputs(environment(input))))
@@ -251,6 +253,22 @@ test('a timeout, an abnormal exit or truncated JSON never produces a passing res
     assert.throws(() => runAction(env, { installScanner: () => 'cli.js', execute: () => execution }))
     assert.equal(existsSync(env.GITHUB_OUTPUT!), false)
   }
+})
+
+test('the Action can disable both file and line ignore markers', () => {
+  project('ignore-marker-app', {
+    'firestore.rules': '// canship-ignore-file\n' + openRules,
+    'storage.rules': '// canship-ignore-next-line\n' + openRules,
+    'index.ts': 'export {};',
+  })
+  const settings = { INPUT_PATH: 'ignore-marker-app', INPUT_VERSION: '0.0.0-dev' }
+  assert.equal(runAction(environment(settings), sourceDependencies).findings, 0)
+  const env = environment({ ...settings, INPUT_HONOR_IGNORE_MARKERS: 'false' })
+  const checked = runAction(env, sourceDependencies)
+  assert.equal(checked.findings, 2)
+  assert.equal(checked.blocking, 2)
+  assert.equal(checked.failed, true)
+  assert.match(readFileSync(env.GITHUB_STEP_SUMMARY!, 'utf8'), /Source ignore markers: disabled/)
 })
 test('the real CLI scans through the Action adapter without running project scripts, with config off by default', () => {
   const root = join(workspace, 'source-app')

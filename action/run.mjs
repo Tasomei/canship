@@ -84,6 +84,7 @@ export function parseInputs(env) {
     version, failOn, only, skip, category, workspace, root, baseline,
     temp: realpathSync(env.RUNNER_TEMP),
     useConfig: boolean(env.INPUT_USE_CONFIG),
+    honorIgnoreMarkers: boolean(env.INPUT_HONOR_IGNORE_MARKERS, 'true'),
     uploadSarif: boolean(env.INPUT_UPLOAD_SARIF),
   }
 }
@@ -191,7 +192,7 @@ function summary(report, assessment, options) {
     `| Errors / skipped paths | ${report.errors.length} / ${report.skipped.length} |`, '',
     `Coverage: **${assessment.partial ? 'incomplete' : 'complete within the selected scope'}**.`,
     `Rule selection: ${report.ruleSelection === null ? 'all rules' : 'restricted'}. Project configuration: ${options.useConfig ? 'enabled' : 'disabled'}.`,
-    'Source ignore markers and built-in exclusions still apply. No findings does not prove security.', '',
+    `Source ignore markers: ${options.honorIgnoreMarkers ? 'enabled' : 'disabled'}. Built-in exclusions still apply. No findings does not prove security.`, '',
   ].join('\n')
 }
 
@@ -207,6 +208,7 @@ export function runAction(env, dependencies = {}) {
   })
   const args = [entry, options.root, '--json', '--all']
   if (!options.useConfig) args.push('--no-config')
+  if (!options.honorIgnoreMarkers) args.push('--no-ignore-markers')
   if (options.only) args.push(`--only=${options.only}`)
   if (options.skip) args.push(`--skip=${options.skip}`)
   if (options.baseline) args.push(`--baseline=${options.baseline}`)
