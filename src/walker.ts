@@ -316,19 +316,28 @@ function walkTree(root: string, skipped: SkippedFile[], wantAll: boolean, maxEnt
         visited++
         const full = join(dir, entry.name)
         const rel = relative(root, full).split(sep).join('/')
-        if (entry.isSymbolicLink()) {
+        // 遍历前核对实际类型，避免目录条目漏报链接。
+        let metadata
+        try {
+          metadata = lstatSync(full)
+        } catch (err) {
+          if (!isMissing(err)) skipped.push({ path: rel, reason: 'unreadable',
+            detail: String(err instanceof Error ? err.message : err) })
+          continue
+        }
+        if (metadata.isSymbolicLink()) {
           // 不跟随符号链接；已排除目录名保持相同排除语义。
           if (!SKIP_DIRS.has(entry.name)) {
             skipped.push({ path: rel, reason: 'symlink', detail: 'symbolic links are not followed' })
           }
           continue
         }
-        if (entry.isDirectory()) {
+        if (metadata.isDirectory()) {
           if (SKIP_DIRS.has(entry.name)) continue
           walk(full, depth + 1)
           continue
         }
-        if (!entry.isFile()) continue
+        if (!metadata.isFile()) continue
 
         // Git 可提供清单时不重复构建完整路径数组。
         if (wantAll) all.push(rel)
