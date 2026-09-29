@@ -655,7 +655,8 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
         const prefix = code.slice(prefixStart, i).trim()
         // 换行不终止短路或三元表达式，不能借换行伪装成独立鉴权。
         if (/(?:&&|\|\||\?|:)\s*$/.test(code.slice(owner.start + 1, prefixStart))) continue
-        const awaited = /^(?:await|(?:const|let|var)\s+[\w${},:\s]+?=\s*await)(?:\s+[\w$.]+\.)?$/.test(prefix)
+        const awaited = /^(?:await|(?:const|let|var)\s+[\w${},:\s]+?=\s*await)(?:\s+[\w$.]+\.)?$/.test(prefix) ||
+          (requireThrow && /^return(?:\s+await)?$/.test(prefix))
         const synchronous = /^(?:assertAuth(?:enticated)?|constructEvent)\b/i.test(call[0]) &&
           /^(?:(?:const|let|var)\s+[\w$]+\s*=\s*)?(?:[\w$]+\.)*$/.test(prefix)
         if (!awaited && !synchronous) continue
@@ -961,21 +962,27 @@ function adminEvidence(route: Route, modules: ScanFile[], allFiles: ScanFile[], 
 
 // 识别导入的本地鉴权封装。
 
-interface GuardDefinition { file: ScanFile; line: number; wrapper: boolean }
-interface GuardDefinitions { locals: Map<string, GuardDefinition>; exports: Map<string, GuardDefinition> }
+interface GuardDefinition { file: ScanFile; line: number; wrapper: boolean; chain?: GuardDefinition[] }
+interface GuardCandidate { name: string; exported: string | null; definition: GuardDefinition; at: number; start: number }
+interface GuardDefinitions {
+  locals: Map<string, GuardDefinition>
+  exports: Map<string, GuardDefinition>
+  candidates: Map<string, GuardCandidate>
+  exportedCandidates: Map<string, GuardCandidate>
+}
 const definitionsCache = new WeakMap<ScanFile, GuardDefinitions>()
 
 /** 只分析模块级函数；函数体中的同名嵌套函数不作为可导出证据。 */
 function guardDefinitions(file: ScanFile): GuardDefinitions {
   const cached = definitionsCache.get(file)
   if (cached) return cached
-  const result: GuardDefinitions = { locals: new Map(), exports: new Map() }
+  const result: GuardDefinitions = { locals: new Map(), exports: new Map(), candidates: new Map(), exportedCandidates: new Map() }
   const code = noiseMaskedOf(file)
   const pairs = delimiterPairs(code)
   const openers = new Map([...pairs].map(([open, close]) => [close, open]))
   const bodies = functionBodies(code, pairs)
   const byDeclaration = new Map(bodies.map(body => [body.declaration, body]))
-  const candidates: { name: string; exported: string | null; definition: GuardDefinition; at: number }[] = []
+  const candidates: GuardCandidate[] = []
   let until = -1
   for (const body of bodies) {
     if (body.start < until) continue
@@ -999,7 +1006,10 @@ function guardDefinitions(file: ScanFile): GuardDefinitions {
           continue
         }
       }
-      if (code.startsWith('return', i) && !/[\w$]/.test(code[i - 1] ?? '') && !/[\w$]/.test(code[i + 6] ?? '')) { at = i; break }
+      if (code.startsWith('return', i) && !/[\w$]/.test(code[i - 1] ?? '') && !/[\w$]/.test(code[i + 6] ?? '')) {
+        at = Math.min(target.end, statementEnd(code, i, target.end, pairs))
+        break
+      }
       const close = pairs.get(i)
       if (close !== undefined) i = close
     }
@@ -1008,7 +1018,7 @@ function guardDefinitions(file: ScanFile): GuardDefinitions {
     const exported = !declaration.exported ? null
       : /\bexport\s+default\s+(?:async\s+)?$/.test(code.slice(Math.max(0, body.declaration - 80), body.declaration))
         ? 'default' : declaration.name
-    candidates.push({ name: declaration.name, exported, definition, at })
+    candidates.push({ name: declaration.name, exported, definition, at, start: target.start })
   }
   // 同一文件一次分析所有候选，避免按函数重扫全文。
   const unguarded = new Set<number>()
@@ -1018,6 +1028,8 @@ function guardDefinitions(file: ScanFile): GuardDefinitions {
     for (const hit of unguardedOperations(file, ops, undefined, !wrapper)) unguarded.add(hit.index)
   }
   for (const candidate of candidates) {
+    result.candidates.set(candidate.name, candidate)
+    if (candidate.exported) result.exportedCandidates.set(candidate.exported, candidate)
     if (unguarded.has(candidate.at)) continue
     result.locals.set(candidate.name, candidate.definition)
     if (candidate.exported) result.exports.set(candidate.exported, candidate.definition)
@@ -1037,23 +1049,28 @@ function bindingModule(spec: string, file: ScanFile, allFiles: ScanFile[], scope
 
 /** 有界解析本地导出、别名及重导出；未知模块和循环不视为鉴权成功。 */
 function exportedGuard(file: ScanFile, name: string, allFiles: ScanFile[], scope: string,
-  depth = 0, seen = new Set<string>()): GuardDefinition | null {
+  state: GuardResolution, depth = 0, seen = new Set<string>()): GuardDefinition | null {
   const key = `${file.path}\0${name}`
-  if (depth >= 8 || seen.has(key)) return null
-  seen.add(key)
+  if (seen.has(key)) return null
+  if (depth >= 8 || state.remaining-- <= 0) { state.truncated = true; return null }
+  seen = new Set(seen).add(key)
   const definitions = guardDefinitions(file)
   const direct = definitions.exports.get(name)
   if (direct) return direct
+  const candidate = definitions.exportedCandidates.get(name)
+  if (candidate) return delegatedGuard(file, candidate, allFiles, scope, state, depth, seen)
   const bindings = bindingsOf(file)
   const exported = bindings.exports.find(binding => binding.local === name)
   const follow = (spec: string, imported: string): GuardDefinition | null => {
     const target = bindingModule(spec, file, allFiles, scope)
-    return target ? exportedGuard(target, imported, allFiles, scope, depth + 1, seen) : null
+    return target ? exportedGuard(target, imported, allFiles, scope, state, depth + 1, seen) : null
   }
   if (exported) {
     if (exported.spec) return follow(exported.spec, exported.imported)
     const local = definitions.locals.get(exported.imported)
     if (local) return local
+    const candidate = definitions.candidates.get(exported.imported)
+    if (candidate) return delegatedGuard(file, candidate, allFiles, scope, state, depth, seen)
     const imported = bindings.imports.find(binding => binding.local === exported.imported)
     if (imported?.spec) return follow(imported.spec, imported.imported)
   }
@@ -1064,9 +1081,14 @@ function exportedGuard(file: ScanFile, name: string, allFiles: ScanFile[], scope
   return null
 }
 
-/** 仅为实际调用位置提供间接鉴权提示，不删除原始发现。 */
-function indirectGuardOperations(route: Route, allFiles: ScanFile[]): Map<number, GuardDefinition> {
-  const code = noiseMaskedOf(route.file)
+interface GuardResolution { remaining: number; truncated: boolean }
+const guardBindingCache = new WeakMap<ScanFile, { shadowed: Set<string>; declared: Set<string>; called: Set<string> }>()
+
+/** 缓存静态绑定，委托解析不逐层重复收集全文名称。 */
+function guardBindings(file: ScanFile) {
+  const cached = guardBindingCache.get(file)
+  if (cached) return cached
+  const code = noiseMaskedOf(file)
   // 导入列表本身不是局部遮蔽声明；保留偏移以免混淆后续代码。
   const declarations = code.replace(/\bimport\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{[^{}]{0,4000}\}/g, text => ' '.repeat(text.length))
   // 一次收集调用及遮蔽，避免为每个本地函数重复扫描全文。
@@ -1080,15 +1102,64 @@ function indirectGuardOperations(route: Route, allFiles: ScanFile[]): Map<number
   for (const match of code.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(/g)) {
     if (!/\bfunction\s*\*?\s*$/.test(code.slice(Math.max(0, match.index - 40), match.index))) called.add(match[1]!)
   }
-  const names = new Map([...guardDefinitions(route.file).locals].filter(([name]) => called.has(name) && !shadowed.has(name)))
-  for (const binding of bindingsOf(route.file).imports) {
-    if (!binding.spec) continue
-    // 明显的局部同名声明或参数遮蔽时，不借用导入的鉴权证据。
-    if (!called.has(binding.local) || declared.has(binding.local) || shadowed.has(binding.local)) continue
-    const target = bindingModule(binding.spec, route.file, allFiles, route.scope)
-    const definition = target ? exportedGuard(target, binding.imported, allFiles, route.scope) : null
-    if (definition) names.set(binding.local, definition)
+  const result = { shadowed, declared, called }
+  guardBindingCache.set(file, result)
+  return result
+}
+
+/** 解析一个未遮蔽的模块级本地调用；循环与预算耗尽都不能产生鉴权证据。 */
+function namedGuard(file: ScanFile, name: string, allFiles: ScanFile[], scope: string,
+  state: GuardResolution, depth: number, seen: Set<string>): GuardDefinition | null {
+  const bindings = guardBindings(file)
+  if (bindings.shadowed.has(name)) return null
+  const definitions = guardDefinitions(file)
+  const candidate = definitions.candidates.get(name)
+  if (candidate) {
+    const key = `${file.path}\0${name}`
+    if (seen.has(key)) return null
+    if (depth >= 8 || state.remaining-- <= 0) { state.truncated = true; return null }
+    return definitions.locals.get(name) ?? delegatedGuard(file, candidate, allFiles, scope, state, depth, new Set(seen).add(key))
   }
+  if (bindings.declared.has(name)) return null
+  const imported = bindingsOf(file).imports.find(binding => binding.local === name)
+  if (!imported?.spec) return null
+  const target = bindingModule(imported.spec, file, allFiles, scope)
+  return target ? exportedGuard(target, imported.imported, allFiles, scope, state, depth, seen) : null
+}
+
+/** 仅传播被当前函数实际等待或返回的拒绝；返回包装函数本身不等于执行鉴权。 */
+function delegatedGuard(file: ScanFile, candidate: GuardCandidate, allFiles: ScanFile[], scope: string,
+  state: GuardResolution, depth: number, seen: Set<string>): GuardDefinition | null {
+  const code = noiseMaskedOf(file)
+  const calls = new Set<string>()
+  for (const match of code.slice(candidate.start + 1, candidate.at).matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(/g)) calls.add(match[1]!)
+  const resolved = new Map<string, GuardDefinition>()
+  for (const name of calls) {
+    if (state.remaining <= 0) { state.truncated = true; break }
+    const guard = namedGuard(file, name, allFiles, scope, state, depth + 1, seen)
+    if (guard && !guard.wrapper) resolved.set(name, guard)
+  }
+  if (resolved.size === 0) return null
+  let selected: GuardDefinition | undefined
+  unguardedOperations(file, [{ index: candidate.at, writes: false }], {
+    guards: new Set(resolved.keys()), wrappers: new Set(),
+    onGuard: (_index, name) => { selected = resolved.get(name) },
+  }, !candidate.definition.wrapper)
+  return selected ? { ...candidate.definition, chain: [selected, ...(selected.chain ?? [])] } : null
+}
+
+/** 仅为实际调用位置提供间接鉴权提示，不删除原始发现。 */
+function indirectGuardOperations(route: Route, ctx: ScanContext): Map<number, GuardDefinition> {
+  const state: GuardResolution = { remaining: 128, truncated: false }
+  const { called } = guardBindings(route.file)
+  const names = new Map<string, GuardDefinition>()
+  for (const name of called) {
+    if (state.remaining <= 0) { state.truncated = true; break }
+    const definition = namedGuard(route.file, name, ctx.files, route.scope, state, 0, new Set())
+    if (definition) names.set(name, definition)
+  }
+  if (state.truncated) ctx.reportIncomplete('api/db-access-without-auth',
+    `${route.file.path} reached the authentication resolution limit (8 hops or 128 symbols); unresolved guards were not accepted`)
   const protectedOps = new Map<number, GuardDefinition>()
   if (names.size === 0) return protectedOps
   unguardedOperations(route.file, unguardedOpsOf(route.file), {
@@ -1614,7 +1685,7 @@ export const apiAuthRule: ProjectRule = {
       if (ops.length === 0) continue
       let indirectOps = indirectByFile.get(route.file)
       if (!indirectOps) {
-        indirectOps = indirectGuardOperations(route, ctx.files)
+        indirectOps = indirectGuardOperations(route, ctx)
         indirectByFile.set(route.file, indirectOps)
       }
       const unprotected = ops.filter(op => !indirectOps.has(op.index))
@@ -1639,17 +1710,20 @@ export const apiAuthRule: ProjectRule = {
       // 每个路由只构建一次行号索引。
       const line = lineNumberAt(lineStartsCached(route.file), hit.index)
       const excerpt = excerptFor(route.file, line)
-      const indirectEvidence: EvidenceStep[] = indirect ? [{ kind: 'auth-helper', file: indirect.file.path, line: indirect.line,
-        description: 'Local authentication helper recognized through imports; verify its runtime behaviour and caller coverage.' }] : []
+      const indirectEvidence: EvidenceStep[] = indirect ? [indirect, ...(indirect.chain ?? [])].map(guard => ({
+        kind: 'auth-helper', file: guard.file.path, line: guard.line,
+        description: 'Local authentication helper in the recognized delegation chain; verify runtime behaviour and caller coverage.' })) : []
       if (indirect) globalNote.push('A local authentication helper or wrapper was recognized before this operation. ' +
         'This finding is retained for review because indirect control flow is not a proof of authorization.')
 
       if (admin) {
         const trace = adminEvidence(route, adminModules, ctx.files, line)
+        const evidence = [...(trace.evidence ?? []), ...indirectEvidence]
         findings.push({
           ruleId: 'api/admin-db-access-without-auth',
           ...trace,
-          evidence: [...(trace.evidence ?? []), ...indirectEvidence],
+          evidence: evidence.slice(0, 24),
+          evidenceTruncated: trace.evidenceTruncated || evidence.length > 24,
           severity: 'P0',
           // 管理员客户端缺少鉴权时使用确定置信度；可能受全局鉴权覆盖时降为疑似。
           confidence: globalGuard === null && !indirect ? 'certain' : 'likely',

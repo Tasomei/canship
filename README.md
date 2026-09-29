@@ -49,7 +49,7 @@ Supabase checks replay local migrations and read supported bucket configuration.
 
 `certain` and `likely` describe static evidence, not credential validity or deployed state. Only `certain` findings are shown by default; hidden `likely` findings still affect exit status.
 
-Admin-client findings include operation, import, and client-construction locations. Supabase constructor aliases and local auth imports, re-exports, and function-returning wrappers are recognised within bounded patterns. Auth resolution follows up to eight hops; evidence chains contain at most 24 steps and disclose truncation. Indirect auth evidence retains the finding at lower confidence; import relationships do not prove runtime data flow.
+Admin-client findings include operation, import, client-construction, and auth-delegation locations. Supabase constructor aliases and local auth imports, re-exports, awaited/returned helper calls, and function-returning wrappers are recognised within bounded patterns. Auth resolution allows eight hops and 128 symbols per route file; exceeded limits mark coverage incomplete. Evidence chains contain at most 24 steps and disclose truncation. Indirect auth evidence retains the finding at lower confidence; import relationships do not prove runtime data flow.
 
 Local auth helpers are assessed by implementation, not exempted by name alone. Returning `null` or a `401 Response` from a helper does not terminate its caller. Unawaited calls, recovered errors, conditional calls, and evident shadowing do not establish indirect guard evidence. Recognised throwing checks and handler wrappers still require review; this is not complete control-flow analysis.
 
