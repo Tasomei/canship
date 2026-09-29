@@ -98,3 +98,39 @@ test('wide re-export graphs stop at the symbol budget', async () => {
   assert.equal(errors.length, 1)
   assert.match(errors[0]!, /128 symbols/)
 })
+
+for (const declaration of ['const', 'let']) {
+  for (const local of [false, true]) {
+    test(`an unmodified ${declaration} arrow guard provides evidence (local: ${local})`, async () => {
+      const guard = `${declaration} guard=async()=>{const user=await getUser();if(!user)throw new Error("denied");};`
+      const modules = local ? {
+        'app/api/items/route.ts': "import {db} from '../../../lib/db';" + guard +
+          "export async function DELETE(){await guard();await db.from('items').delete();}",
+      } : { 'lib/entry.ts': 'export ' + guard }
+      const { finding, errors } = await analyze(modules)
+      assert.equal(finding.confidence, 'likely')
+      assert.deepEqual(errors, [])
+    })
+  }
+}
+
+for (const source of [
+  base.replace('checkSession', 'guard') + ';guard=async()=>true;',
+  'export let guard=async()=>{const user=await getUser();if(!user)throw new Error("denied");};guard=async()=>true;',
+  base.replace('export async function checkSession', 'async function inner') + ';inner=async()=>true;export {inner as guard};',
+]) {
+  test(`a modified exported binding loses its earlier guard evidence: ${source.slice(0, 40)}`, async () => {
+    const { finding } = await analyze({ 'lib/entry.ts': source })
+    assert.equal(finding.confidence, 'certain')
+    assert.ok(!finding.evidence?.some(step => step.kind === 'auth-helper'))
+  })
+}
+
+test('a nested same-named declaration cannot use the outer arrow guard', async () => {
+  const { finding } = await analyze({
+    'app/api/items/route.ts': "import {db} from '../../../lib/db';" +
+      'const guard=async()=>{const user=await getUser();if(!user)throw new Error("denied");};' +
+      "export async function DELETE(){const guard=async()=>true;await guard();await db.from('items').delete();}",
+  })
+  assert.equal(finding.confidence, 'certain')
+})

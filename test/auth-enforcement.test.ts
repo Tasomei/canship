@@ -80,3 +80,12 @@ for (const local of [false, true]) {
 test('a reassigned local guard does not retain its original enforcement evidence', async () => {
   assert.equal((await check(throwing, 'requireUser=async()=>true; await requireUser();', { local: true })).confidence, 'certain')
 })
+
+test('external imports retain the existing enforcing-name heuristic', async () => {
+  const content = "import {requireAuth} from 'authentication-sdk';\n" + admin +
+    `export async function DELETE(){await requireAuth();${operation}}`
+  const findings = await apiAuthRule.check({ root: '.', git: 'not-a-repo', gitExecutable: null,
+    files: [{ path: 'app/api/items/route.ts', content, lines: content.split('\n'), isExampleContext: false }],
+    reportIncomplete() { assert.fail('unexpected incomplete scan') } })
+  assert.deepEqual(findings, [])
+})

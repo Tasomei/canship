@@ -587,11 +587,9 @@ function localAuthNames(file: ScanFile): Set<string> {
   const names = new Set(bindingsOf(file).imports
     .filter(binding => binding.spec && normalizeSpec(binding.spec, file.path))
     .map(binding => binding.local))
-  const code = noiseMaskedOf(file)
-  for (const match of code.matchAll(/\b(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)|[({,]\s*([A-Za-z_$][\w$]*)\s*[,}):=]|\b([A-Za-z_$][\w$]*)\s*=>/g)) {
-    const name = match[1] ?? match[2] ?? match[3]
-    if (name) names.add(name)
-  }
+  const { declared, shadowed } = guardBindings(file)
+  for (const name of declared) names.add(name)
+  for (const name of shadowed) names.add(name)
   localAuthNamesCache.set(file, names)
   return names
 }
@@ -646,7 +644,7 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
       const indirectCall = i > 0 && /[\w$.]/.test(code[i - 1]!) ? null : extraCalls?.exec(code.slice(i, i + 100))
       const call = indirectCall ?? AUTH_ENFORCING_CALL.exec(code.slice(i, i + 100))
       const callName = call?.[0].replace(/\s*\($/, '')
-      if (!indirectCall && callName && localNames.has(callName)) continue
+      if (!indirectCall && call?.index === 0 && callName && localNames.has(callName)) continue
       // 构造一个包装后的处理函数并不鉴权当前请求；只在包围操作时认它。
       if (call?.index === 0 && !/^(?:withAuth|NextAuth)\b/i.test(call[0]) &&
           !/\bfunction\s*$/.test(code.slice(Math.max(owner.start, i - 30), i))) {
@@ -1055,9 +1053,10 @@ function exportedGuard(file: ScanFile, name: string, allFiles: ScanFile[], scope
   if (depth >= 8 || state.remaining-- <= 0) { state.truncated = true; return null }
   seen = new Set(seen).add(key)
   const definitions = guardDefinitions(file)
+  const candidate = definitions.exportedCandidates.get(name)
+  if (candidate && guardBindings(file).shadowed.has(candidate.name)) return null
   const direct = definitions.exports.get(name)
   if (direct) return direct
-  const candidate = definitions.exportedCandidates.get(name)
   if (candidate) return delegatedGuard(file, candidate, allFiles, scope, state, depth, seen)
   const bindings = bindingsOf(file)
   const exported = bindings.exports.find(binding => binding.local === name)
@@ -1067,6 +1066,7 @@ function exportedGuard(file: ScanFile, name: string, allFiles: ScanFile[], scope
   }
   if (exported) {
     if (exported.spec) return follow(exported.spec, exported.imported)
+    if (guardBindings(file).shadowed.has(exported.imported)) return null
     const local = definitions.locals.get(exported.imported)
     if (local) return local
     const candidate = definitions.candidates.get(exported.imported)
@@ -1089,16 +1089,21 @@ function guardBindings(file: ScanFile) {
   const cached = guardBindingCache.get(file)
   if (cached) return cached
   const code = noiseMaskedOf(file)
-  // 导入列表本身不是局部遮蔽声明；保留偏移以免混淆后续代码。
-  const declarations = code.replace(/\bimport\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{[^{}]{0,4000}\}/g, text => ' '.repeat(text.length))
+  // 导入导出列表不是局部遮蔽声明；保留偏移以免混淆后续代码。
+  const declarations = code.replace(/\b(?:import|export)\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{[^{}]{0,4000}\}/g, text => ' '.repeat(text.length))
   // 一次收集调用及遮蔽，避免为每个本地函数重复扫描全文。
   const shadowed = new Set<string>()
   const declared = new Set<string>()
   const called = new Set<string>()
   for (const match of declarations.matchAll(/[({,]\s*([A-Za-z_$][\w$]*)\s*[,}):=]|(?<![\w$.])([A-Za-z_$][\w$]*)\s*=(?!=)|(?<![\w$])([A-Za-z_$][\w$]*)\s*=>/g)) {
+    // 声明时的初始化不是重新赋值；后续赋值仍使原有证据失效。
+    if (match[2] && /\b(?:const|let|var)\s*$/.test(declarations.slice(Math.max(0, match.index - 40), match.index))) continue
     shadowed.add((match[1] ?? match[2] ?? match[3])!)
   }
-  for (const match of declarations.matchAll(/\b(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g)) declared.add(match[1]!)
+  for (const match of declarations.matchAll(/\b(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g)) {
+    if (declared.has(match[1]!)) shadowed.add(match[1]!)
+    declared.add(match[1]!)
+  }
   for (const match of code.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(/g)) {
     if (!/\bfunction\s*\*?\s*$/.test(code.slice(Math.max(0, match.index - 40), match.index))) called.add(match[1]!)
   }
