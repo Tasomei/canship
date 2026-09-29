@@ -162,17 +162,17 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@dfc17be52684314c8631d665074c133bf1170888
+      - uses: Tasomei/canship@97c14d1f1e494a49adf716c455b597edf6ae1d88
         with:
           version: '0.5.0'
           honor-ignore-markers: false
 ```
 
-提交号固定 Action 实现；`version` 选择 npm 扫描器，不使用仓库源码。该固定实现默认安装 0.4.0。
+提交号固定 Action 实现；`version` 选择 npm 扫描器，不使用仓库源码。该固定实现默认安装 0.5.0。
 
 | 输入 | 默认值 | 说明 |
 |---|---|---|
-| `version` | `0.4.0` | 精确 npm 版本，不接受范围或标签 |
+| `version` | `0.5.0` | 精确 npm 版本，不接受范围或标签 |
 | `fail-on` | `blocking` | `blocking`：确定的 P0/P1；`any`：全部结果；`none`：仅报告 |
 | `use-config` | `false` | 启用项目配置 |
 | `honor-ignore-markers` | `true` | 遵从整文件及逐行忽略注释 |

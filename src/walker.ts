@@ -342,13 +342,7 @@ function walkTree(root: string, skipped: SkippedFile[], wantAll: boolean, maxEnt
         // Git 可提供清单时不重复构建完整路径数组。
         if (wantAll) all.push(rel)
 
-        const isCandidate =
-          isEnvFile(entry.name) ||
-          CREDENTIAL_FILENAMES.has(entry.name) ||
-          CREDENTIAL_EXTENSIONS.has(extname(entry.name).toLowerCase()) ||
-          isWorthProbing(rel)
-
-        if (isCandidate) found.push(rel)
+        if (isCredentialName(entry.name) || isWorthProbing(rel)) found.push(rel)
       }
     } catch (err) {
       if (!isMissing(err)) skipped.push({ path: relative(root, dir).split(sep).join('/') || '.',
@@ -419,6 +413,11 @@ export interface CollectResult {
   vendored: number
   /** 由整文件忽略标记排除的文件。 */
   ignored: string[]
+}
+
+/** 按文件名即可判定的凭据候选，不依赖内容探测。 */
+function isCredentialName(name: string): boolean {
+  return isEnvFile(name) || CREDENTIAL_FILENAMES.has(name) || CREDENTIAL_EXTENSIONS.has(extname(name).toLowerCase())
 }
 
 /** Git 候选路径仍须检查全部父目录，不能借目录链接越过扫描边界。 */
@@ -498,8 +497,17 @@ export function collectFiles(
   let filesRead = 0
   const maxBytes = limits.maxBytes ?? MAX_SCAN_BYTES
   const maxFiles = limits.maxFiles ?? MAX_SCAN_FILES
+  // 预算按价值分配：凭据文件优先，常规源码其次，需探测的未知类型最后；超限仍如实标记未完成。
+  const credentials: string[] = []
+  const sources: string[] = []
+  const probes: string[] = []
   for (const relPath of candidates) {
     if (!forced.has(relPath) && !shouldScan(relPath)) continue
+    if (isCredentialName(basename(relPath))) credentials.push(relPath)
+    else if (isWorthProbing(relPath)) probes.push(relPath)
+    else sources.push(relPath)
+  }
+  for (const relPath of [...credentials, ...sources, ...probes]) {
 
     const absPath = join(root, relPath)
     let content: string

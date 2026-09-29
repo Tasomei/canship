@@ -55,6 +55,22 @@ test('binary probes count toward the file budget', () => {
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
+test('a short budget reads credential files, then source, before unknown-type probes', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'canship-budget-order-'))
+  try {
+    // 名称按字母序会让未知类型排在前面，确保顺序来自优先级而不是遍历顺序。
+    for (const name of ['a.custom', 'b.custom']) fs.writeFileSync(join(root, name), 'text')
+    fs.writeFileSync(join(root, 'z.ts'), 'export {}')
+    fs.writeFileSync(join(root, '.env'), 'TOKEN=value')
+    for (const [maxFiles, expected] of [[1, ['.env']], [2, ['.env', 'z.ts']]] as const) {
+      const result = collectFiles(root, false, null, { maxFiles })
+      assert.deepEqual(result.files.map(file => file.path), expected)
+      assert.equal(result.skipped.length, 1)
+      assert.match(result.skipped[0]!.detail!, /scan read budget exceeded/)
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
 test('directory discovery accepts the exact entry limit and discloses truncation', () => {
   const root = fs.mkdtempSync(join(tmpdir(), 'canship-entry-budget-'))
   try {

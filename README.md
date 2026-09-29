@@ -162,17 +162,17 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@dfc17be52684314c8631d665074c133bf1170888
+      - uses: Tasomei/canship@97c14d1f1e494a49adf716c455b597edf6ae1d88
         with:
           version: '0.5.0'
           honor-ignore-markers: false
 ```
 
-The commit pins the wrapper; `version` selects the npm scanner, not repository source. This pinned wrapper defaults to 0.4.0.
+The commit pins the wrapper; `version` selects the npm scanner, not repository source. This pinned wrapper defaults to 0.5.0.
 
 | Input | Default | Meaning |
 |---|---|---|
-| `version` | `0.4.0` | Exact npm version; no ranges or tags |
+| `version` | `0.5.0` | Exact npm version; no ranges or tags |
 | `fail-on` | `blocking` | `blocking`: certain P0/P1; `any`: all findings; `none`: report only |
 | `use-config` | `false` | Enable project configuration |
 | `honor-ignore-markers` | `true` | Honour file/line ignore comments |

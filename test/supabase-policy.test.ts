@@ -172,6 +172,15 @@ describe('permissive policies', () => {
     assert.deepEqual(found.map(f => f.confidence), ['likely'])
     assert.doesNotMatch(found[0]!.title, /change every row/)
   })
+  test('an UPDATE check still explains that any existing row can be targeted', async () => {
+    const found = await policyFindings({ '1.sql': TABLE +
+      'create policy wide on posts for update using (true) with check (auth.uid() = user_id);\n' })
+    assert.match(found[0]!.title, /target any row of .*posts.* for updates; only the new values are checked/)
+    const why = found[0]!.why.join(' ')
+    assert.match(why, /does not limit which existing rows can be updated/)
+    assert.match(why, /SELECT policies/)
+    assert.doesNotMatch(why, /unrestricted updates are not established/)
+  })
 })
 
 describe('public buckets that can be listed', () => {

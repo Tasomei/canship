@@ -722,8 +722,10 @@ function policyFindings(
       ruleId: 'supabase/permissive-policy',
       severity: 'P1',
       confidence: modifiesAny && !needsReview ? 'certain' : 'likely',
-      title: needsReview
+      title: hasRestriction
         ? `Policy "${p.name}" has an unrestricted condition on ${table}; other conditions require review`
+        : limitedCheck
+        ? `Policy "${p.name}" lets ${audience} target any row of ${table} for updates; only the new values are checked`
         : opensRows
         ? `Policy "${p.name}" lets ${audience} ${verb} every row of ${table}`
         : `Policy "${p.name}" lets ${audience} write any values into ${table}`,
@@ -734,7 +736,10 @@ function policyFindings(
         `This policy contains an always-true condition. Permissive policies combine with OR, while applicable ` +
           `restrictive policies combine with AND. Database grants, SELECT policies and WITH CHECK conditions may further limit access.`,
         ...(hasRestriction ? ['A restrictive policy on this table may limit access; verify its command and role coverage.'] : []),
-        ...(limitedCheck ? ['The WITH CHECK condition is not known to be always true, so unrestricted updates are not established.'] : []),
+        // PostgreSQL：USING 决定可更新的已有行，WITH CHECK 只约束写回的新行；带条件的更新还需通过 SELECT 策略。
+        ...(limitedCheck ? ['USING is always true, so this policy does not limit which existing rows can be updated. WITH CHECK only ' +
+          'validates the values written back: a caller may overwrite other users\' rows, for example by setting the owner ' +
+          'column to their own ID. Updates that filter or return rows must also pass SELECT policies, which may prevent this.'] : []),
         ...(p.command === 'select' || p.command === 'insert'
           ? [`Public read-only tables and open forms can be intentional. If this one is, keep it and consider ` +
               `restricting the columns the API exposes.`]
