@@ -1,17 +1,43 @@
 /** 有界追踪函数内的简单身份赋值；不执行代码，也不推断业务授权。 */
 import type { ScanFile } from '../types.js'
-import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
+import { commentsMaskedOf, noiseMaskedOf, maskJsNoise } from '../mask.js'
 
 export interface FunctionSpan { declaration: number; start: number; end: number }
 export interface AuthValue {
   kind: 'identity' | 'envelope' | 'input' | 'literal' | 'promise' | 'secret' | 'parameter' | 'unknown' | 'opaque'
   parameters?: number[]
 }
-interface Assignment { at: number; expression: string; projection: boolean; overLimit: boolean }
+interface Assignment { at: number; expression: string; projection: string[] | null; overLimit: boolean }
 const limited = new WeakSet<ScanFile>()
 const cache = new WeakMap<ScanFile, Map<number, AuthValues>>()
 const reverseCache = new WeakMap<ScanFile, Map<number, number>>()
 export const identityFlowLimited = (file: ScanFile): boolean => limited.has(file)
+
+/** 读取简单对象解构；复杂模式保守记录为未知来源，不能退回名称启发式。 */
+function bindingNames(pattern: string, path: string[] = []): Array<{ name: string; path: string[] | null }> {
+  const text = pattern.trim()
+  if (path.length > 8) return (text.match(/[A-Za-z_$][\w$]*/g) ?? []).map(name => ({ name, path: null }))
+  if (/^[A-Za-z_$][\w$]*$/.test(text)) return [{ name: text, path }]
+  if (text.startsWith('{') && text.endsWith('}')) {
+    const parts: string[] = []
+    let from = 1, depth = 0
+    for (let i = 1; i < text.length - 1; i++) {
+      if ('{[('.includes(text[i]!)) depth++
+      else if ('}])'.includes(text[i]!)) depth--
+      else if (text[i] === ',' && depth === 0) { parts.push(text.slice(from, i)); from = i + 1 }
+    }
+    parts.push(text.slice(from, -1))
+    const result: Array<{ name: string; path: string[] | null }> = []
+    for (const part of parts) {
+      if (!part.trim()) continue
+      const property = /^\s*([A-Za-z_$][\w$]*)(?:\s*:\s*([^=]+))?\s*$/.exec(part)
+      if (property) result.push(...bindingNames(property[2] ?? property[1]!, [...path, property[1]!]))
+      else for (const name of part.match(/[A-Za-z_$][\w$]*/g) ?? []) result.push({ name, path: null })
+    }
+    return result
+  }
+  return (text.match(/[A-Za-z_$][\w$]*/g) ?? []).map(name => ({ name, path: null }))
+}
 
 /** 分隔实参，忽略调用、对象及数组内部的逗号。 */
 export function argumentExpressions(code: string, source: string, start: number, end: number, pairs: Map<number, number>): string[] {
@@ -67,12 +93,23 @@ class AuthValues {
     }
     const text = code.slice(body.start + 1, body.end)
     const endOf = (start: number): number => {
-      for (let i = start; i < body.end; i++) {
-        if (/[;\n}]/.test(code[i]!)) return i
+      const boundary = Math.min(body.end, start + 4001)
+      let previous = ''
+      for (let i = start; i < boundary; i++) {
+        if (code[i] === ';' || code[i] === '}') return i
+        if (code[i] === '\n') {
+          let next = i + 1
+          while (next < boundary && /\s/.test(code[next]!)) next++
+          if (next === boundary && boundary < body.end) return boundary
+          if (!/[.?+\-*/%&|^,:([`=]/.test(code[next] ?? '') && !/[=+\-*/%&|^?:,.]/.test(previous)) return i
+          i = next - 1
+          continue
+        }
+        if (!/\s/.test(code[i]!)) previous = code[i]!
         const close = pairs.get(i)
-        if (close !== undefined) i = close
+        if (close !== undefined) { i = close; previous = code[close]! }
       }
-      return body.end
+      return boundary
     }
     for (const match of text.matchAll(/\b(?:if|for|while|switch|catch)\s*\(/g)) {
       const close = pairs.get(body.start + 1 + match.index + match[0].length - 1)
@@ -88,21 +125,42 @@ class AuthValues {
     for (let i = low; i < bodies.length && bodies[i]!.declaration < body.end; i++) nested.push(bodies[i]!)
     let nestedIndex = 0
     let count = 0
-    const declarations = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*|\{[^;=\n]{1,200}\})\s*(?::[^=;\n]{1,120})?=\s*|(?<![\w$.])([A-Za-z_$][\w$]*)\s*=(?!=|>)/g
-    for (const match of text.matchAll(declarations)) {
+    const declarations = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*|[\[{])|(?<![\w$.])([A-Za-z_$][\w$]*)\s*=(?!=|>)/g
+    let match: RegExpExecArray | null
+    while ((match = declarations.exec(text)) !== null) {
+      if (this.exhausted) break
       const at = body.start + 1 + match.index
       while (nestedIndex < nested.length && nested[nestedIndex]!.end < at) nestedIndex++
       if (nested[nestedIndex] && at >= nested[nestedIndex]!.declaration && at < nested[nestedIndex]!.end) continue
       if (++count > 512) { this.exhausted = true; limited.add(file); break }
-      const binding = (match[1] ?? match[2])!
-      const projection = /^\{\s*data\s*:\s*\{\s*user(?:\s*:\s*([A-Za-z_$][\w$]*))?\s*\}\s*\}$/.exec(binding)
-      const name = projection ? projection[1] ?? 'user' : /^[A-Za-z_$][\w$]*$/.test(binding) ? binding : null
-      if (!name) continue
-      const from = at + match[0].length
+      let binding = (match[1] ?? match[2])!
+      let from = at + match[0].length
+      if (match[1]) {
+        if (binding === '{' || binding === '[') {
+          const start = from - 1
+          const close = pairs.get(start)
+          if (close === undefined) continue
+          if (close - start > 4000) { this.exhausted = true; limited.add(file); break }
+          binding = code.slice(start, close + 1)
+          from = close + 1
+        }
+        while (/\s/.test(code[from] ?? '')) from++
+        if (code[from] === ':') {
+          const type = /^:[^=;\n]{1,120}/.exec(code.slice(from, from + 121))
+          if (type) from += type[0].length
+        }
+        if (code[from] !== '=' || /[=>]/.test(code[from + 1] ?? '')) continue
+        from++
+      }
+      while (/\s/.test(code[from] ?? '')) from++
+      declarations.lastIndex = from - body.start - 1
       const end = endOf(from)
-      const list = this.assignments.get(name) ?? []
-      list.push({ at, expression: end - from <= 4000 ? source.slice(from, end).trim() : '', projection: !!projection, overLimit: end - from > 4000 })
-      this.assignments.set(name, list)
+      for (const { name, path } of bindingNames(binding)) {
+        if (!this.assignments.has(name) && this.assignments.size >= 512) { this.exhausted = true; limited.add(file); break }
+        const list = this.assignments.get(name) ?? []
+        list.push({ at, expression: end - from <= 4000 ? source.slice(from, end).trim() : '', projection: path, overLimit: end - from > 4000 })
+        this.assignments.set(name, list)
+      }
     }
   }
 
@@ -110,12 +168,21 @@ class AuthValues {
     if (depth >= 8) limited.add(this.file)
     if (this.exhausted || depth >= 8) return { kind: 'opaque' }
     const expr = expression.trim()
+    if (expr.length > 4000) { limited.add(this.file); return { kind: 'opaque' } }
     if (/^process\.env\.[A-Z_][A-Z0-9_]*$/.test(expr)) return { kind: 'secret' }
     if (/^(?:(?:true|false|null|undefined)\b|\d|['"`{\[])/.test(expr)) return { kind: 'literal' }
-    const callee = /^(?:await\s+)?((?:[A-Za-z_$][\w$]*\.)*(?:getUser|getUserSession|getSession|getServerSession|currentUser|verifyIdToken|auth))\s*\(/.exec(expr)?.[1]
+    const call = /^(?:await\s+)?((?:[A-Za-z_$][\w$]*\.)*(?:getUser|getUserSession|getSession|getServerSession|safeGetSession|currentUser|verifyIdToken|auth))\s*\(/.exec(expr)
+    const callee = call?.[1]
     const identityCall = callee && !/\.(?:body|query|headers|cookies)\b/.test(callee)
     if (identityCall) {
       if (!/^await\s+/.test(expr)) return { kind: 'promise' }
+      const masked = maskJsNoise(expr)
+      let depth = 1, end = call![0].length
+      for (; end < masked.length && depth > 0; end++) {
+        if (masked[end] === '(') depth++
+        else if (masked[end] === ')') depth--
+      }
+      if (depth !== 0 || masked.slice(end).trim() !== '') return { kind: 'opaque' }
       if (/\|\||&&|\?(?!\.)|\.then\s*\(/.test(expr) || /\.catch\s*\(/.test(expr)) return { kind: 'opaque' }
       return { kind: /\.auth\.getUser\s*\(/.test(expr) ? 'envelope' : 'identity' }
     }
@@ -132,7 +199,10 @@ class AuthValues {
       if (assignment.overLimit) { limited.add(this.file); return { kind: 'opaque' } }
       if (this.conditions.some(range => range.start <= assignment.at && assignment.at <= range.end && !(range.start <= at && at <= range.end))) return { kind: 'opaque' }
       value = this.value(assignment.expression, assignment.at, depth + 1)
-      if (assignment.projection) value = { kind: value.kind === 'envelope' ? 'identity' : 'opaque' }
+      if (assignment.projection === null) value = { kind: 'opaque' }
+      else if (assignment.projection.length && value.kind === 'envelope') value = {
+        kind: assignment.projection.join('.') === 'data.user' ? 'identity' : 'opaque',
+      }
     } else if (this.parameters.has(name)) value = { kind: 'parameter', parameters: [this.parameters.get(name)!] }
     else value = { kind: 'unknown' }
     if (value.kind === 'envelope') return { kind: /^\??\.data\??\.user$/.test(access[2]!) ? 'identity' : 'envelope' }

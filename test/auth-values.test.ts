@@ -17,7 +17,8 @@ async function analyze(body: string, helper?: string) {
 }
 
 for (const value of ['true', '{}', '"guest"', 'req.body.user', 'req.query.user', 'await req.json()', 'req.headers.get("authorization")',
-  'getUser()', 'supabase.auth.getUser()', 'await supabase.auth.getUser()']) {
+  'getUser()', 'supabase.auth.getUser()', 'await supabase.auth.getUser()',
+  'await getUser() === null', 'await getUser()\n || req.body.user', 'await getUser()\n ?? req.body.user']) {
   test(`an invalid identity origin does not suppress the finding: ${value}`, async () => {
     const findings = await analyze(`const user=${value};if(!user)return new Response(null,{status:401});`)
     assert.equal(findings.length, 1)
@@ -42,6 +43,28 @@ test('overwriting an identity with request input invalidates the check', async (
 
 test('a request-input alias remains untrusted', async () => {
   assert.equal((await analyze('const payload=await req.json();const user=payload.user;if(!user)return new Response(null,{status:401});')).length, 1)
+})
+
+for (const declaration of [
+  'const {user}=req.body;',
+  'const {user:account}=await req.json();const user=account;',
+  'const {user,token}=req.body;',
+  'const {data:{user}}=await req.json();',
+  'const {user={}}=req.body;',
+  'const {\n user\n}=await req.json();',
+  'const [user]=await req.json();',
+]) {
+  test(`destructuring does not turn request input into identity: ${declaration}`, async () => {
+    assert.equal((await analyze(declaration + 'if(!user)return new Response(null,{status:401});')).length, 1)
+  })
+}
+
+test('Supabase user destructuring remains recognised alongside other fields', async () => {
+  assert.deepEqual(await analyze('const {data:{user},error}=await supabase.auth.getUser();if(!user)throw new Error("denied");'), [])
+})
+
+test('semicolon-free destructuring stops at its own closing brace', async () => {
+  assert.deepEqual(await analyze('const {data:{user}}=await supabase.auth.getUser()\nif(!user)throw new Error("denied")\nconst {error}=await readMetadata()\n'), [])
 })
 
 test('a conditional identity assignment cannot authenticate the other branch', async () => {
@@ -100,3 +123,16 @@ for (const count of [511, 512]) {
     if (errors.length) assert.match(errors[0]!, /512 assignments/)
   })
 }
+
+test('long multiline identity expressions stop at the disclosed limit', async () => {
+  const content = `export async function DELETE(req){const user=await getUser()\n${'\n'.repeat(100_000)}||req.body.user;if(!user)throw new Error("denied");${write}}`
+  const errors: string[] = []
+  const start = performance.now()
+  const findings = await apiAuthRule.check({ root: '.', git: 'not-a-repo', gitExecutable: null,
+    files: [{ path: 'app/api/items/route.ts', content, lines: content.split('\n'), isExampleContext: false }],
+    reportIncomplete: (_id, message) => { errors.push(message) } })
+  assert.equal(findings.length, 1)
+  assert.equal(errors.length, 1)
+  assert.match(errors[0]!, /4000 expression characters/)
+  assert.ok(performance.now() - start < 5000)
+})
