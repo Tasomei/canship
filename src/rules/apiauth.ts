@@ -585,6 +585,7 @@ interface ExtraGuards {
 }
 
 const localAuthNamesCache = new WeakMap<ScanFile, Set<string>>()
+const controlFlowLimited = new WeakSet<ScanFile>()
 
 /** 本地绑定优先于名称启发式；遮蔽关系不明确时保守保留发现。 */
 function localAuthNames(file: ScanFile): Set<string> {
@@ -627,8 +628,47 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
     return { start: open, end: pairs.get(open) ?? open, name: match[1]! }
   })
 
+  const skipSpace = (at: number): number => { while (/\s/.test(code[at] ?? '')) at++; return at }
+  const blockAt = (at: number): Block | null => {
+    const start = skipSpace(at)
+    const end = pairs.get(start)
+    return code[start] === '{' && end !== undefined ? { start, end } : null
+  }
+  /** 只认可顶层拒绝；辅助函数的普通返回不能终止调用方。 */
+  const denies = (block: Block): boolean => {
+    for (let i = block.start + 1; i < block.end; i++) {
+      if (i > 0 && /[\w$]/.test(code[i - 1]!)) continue
+      const tail = code.slice(i, i + 400)
+      if (/^(?:if|for|while|switch|try)\b/.test(tail)) return false
+      if (/^(?:throw|redirect|notFound)\b|^error\s*\(\s*40[13]\b/.test(tail)) return true
+      if (/^return\b/.test(tail)) return !requireThrow && DENIED_STATUS.test(code.slice(i, statementEnd(code, i, block.end, pairs)))
+      const end = pairs.get(i)
+      if (end !== undefined) i = end
+    }
+    return false
+  }
+  const checkedEnd = (block: Block, fn: FunctionBody, depth: number): number => {
+    const cached = guardEnds.get(block.start)
+    if (cached !== undefined) return cached
+    const result = guardEnd(block, fn, depth)
+    guardEnds.set(block.start, result)
+    return result
+  }
+  const allProtected = (owner: Block, children: Block[], fn: FunctionBody, depth: number): boolean => {
+    const required = new Set<number>()
+    for (const child of children) {
+      if (!Number.isFinite(checkedEnd(child, fn, depth + 1)) && !denies(child)) return false
+      for (const argument of guardRequirements.get(child.start) ?? []) required.add(argument)
+    }
+    guardRequirements.set(owner.start, [...required])
+    const name = children.map(child => guardNames.get(child.start)).find(Boolean)
+    if (name) guardNames.set(owner.start, name)
+    return true
+  }
+
   // 每个函数最多扫描一次，不能对每个数据操作重新遍历整个函数前缀。
-  const guardEnd = (owner: Block, fn: FunctionBody): number => {
+  const guardEnd = (owner: Block, fn: FunctionBody, depth = 0): number => {
+    if (depth > 8) { controlFlowLimited.add(file); return Infinity }
     for (let i = owner.start + 1; i < owner.end; i++) {
       const nested = declarations.get(i)
       if (nested) { i = nested.end; continue }
@@ -637,6 +677,32 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
         continue
       }
       if (i > 0 && /[\w$]/.test(code[i - 1]!)) continue
+      if (/^try\s*\{/.test(code.slice(i, i + 32))) {
+        const attempted = blockAt(i + 3)
+        if (attempted) {
+          let cursor = skipSpace(attempted.end + 1)
+          const children = [attempted]
+          if (/^catch\b/.test(code.slice(cursor, cursor + 8))) {
+            cursor = skipSpace(cursor + 5)
+            if (code[cursor] === '(') cursor = skipSpace((pairs.get(cursor) ?? cursor) + 1)
+            const caught = blockAt(cursor)
+            if (!caught) { i = attempted.end; continue }
+            children.push(caught)
+            cursor = skipSpace(caught.end + 1)
+          }
+          let overrides = false
+          if (/^finally\b/.test(code.slice(cursor, cursor + 10))) {
+            const final = blockAt(cursor + 7)
+            if (final) {
+              overrides = /\breturn\b/.test(code.slice(final.start + 1, final.end))
+              cursor = final.end + 1
+            }
+          }
+          if (!overrides && allProtected(owner, children, fn, depth)) return cursor
+          i = cursor - 1
+          continue
+        }
+      }
       const conditional = /^if\s*\(/.exec(code.slice(i, i + 32))
       if (conditional) {
         const open = i + conditional[0].length - 1
@@ -658,6 +724,16 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
           return !observe && value.kind === 'unknown' && rejectsMissingIdentity(term, DENIED_STATUS.test(code.slice(i, end)))
         })
         if (end <= owner.end && accepted) { guardRequirements.set(owner.start, [...required]); return end }
+        const other = skipSpace(end)
+        if (/^else\b/.test(code.slice(other, other + 8))) {
+          const first = blockAt(start)
+          const second = blockAt(other + 4)
+          if (first && second) {
+            if (allProtected(owner, [first, second], fn, depth)) return second.end + 1
+            i = second.end
+            continue
+          }
+        }
         // 只在部分请求中执行的鉴权不能保护后续无条件操作。
         i = Math.min(end, owner.end) - 1
         continue
@@ -1842,6 +1918,8 @@ export const apiAuthRule: ProjectRule = {
 
     for (const file of ctx.files) if (identityFlowLimited(file)) ctx.reportIncomplete('api/db-access-without-auth',
       `${file.path} reached the identity flow limit (8 value hops, 4000 expression characters, or 512 assignments or branches per function)`)
+    for (const file of ctx.files) if (controlFlowLimited.has(file)) ctx.reportIncomplete('api/db-access-without-auth',
+      `${file.path} reached the control-flow proof limit (8 nested branch or exception regions)`)
     return findings
   },
 }

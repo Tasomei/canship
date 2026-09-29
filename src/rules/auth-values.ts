@@ -111,7 +111,7 @@ class AuthValues {
     if (this.exhausted || depth >= 8) return { kind: 'opaque' }
     const expr = expression.trim()
     if (/^process\.env\.[A-Z_][A-Z0-9_]*$/.test(expr)) return { kind: 'secret' }
-    if (/^(?:true|false|null|undefined|\d|['"`{\[])/.test(expr)) return { kind: 'literal' }
+    if (/^(?:(?:true|false|null|undefined)\b|\d|['"`{\[])/.test(expr)) return { kind: 'literal' }
     const callee = /^(?:await\s+)?((?:[A-Za-z_$][\w$]*\.)*(?:getUser|getUserSession|getSession|getServerSession|currentUser|verifyIdToken|auth))\s*\(/.exec(expr)?.[1]
     const identityCall = callee && !/\.(?:body|query|headers|cookies)\b/.test(callee)
     if (identityCall) {

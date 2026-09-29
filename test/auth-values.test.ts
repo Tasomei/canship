@@ -27,6 +27,7 @@ for (const value of ['true', '{}', '"guest"', 'req.body.user', 'req.query.user',
 
 for (const prefix of [
   'const user=await getUser();const account=user;',
+  'const trueUser=await getUser();const account=trueUser;',
   'const {data:{user:account}}=await supabase.auth.getUser();',
   'const result=await supabase.auth.getUser();const account=result.data.user;',
 ]) {

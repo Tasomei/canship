@@ -55,6 +55,8 @@ Local auth helpers are assessed by implementation, not exempted by name alone. R
 
 Identity checks track simple assignments, aliases, recognised identity getters, Supabase `data.user`, and helper argument requirements. Constants, raw request input, and unawaited promises do not establish identity. Limits: eight value-resolution hops, 4,000 characters per examined expression, and 512 assignments or conditional regions per function. Exceeding a limit marks coverage incomplete. Provider calls remain syntactic evidence, not verification of their runtime implementation.
 
+Braced `if/else` and `try/catch/finally` regions are checked up to eight nested levels. Every continuing branch must authenticate or reject the request. Swallowed exceptions and overriding `finally` returns do not supply guard evidence; operations inside `finally` are checked independently. Unsupported control flow is not assumed safe.
+
 ## CLI
 
 Omitting the path scans the current directory. Reports are in English.
