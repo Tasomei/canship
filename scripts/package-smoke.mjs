@@ -33,6 +33,9 @@ try {
   assert.equal(pkg.bin.canship, 'dist/cli.js')
   assert.equal(npm(['exec', '--offline', '--yes=false', '--', 'canship', '--version'], install).trim(), version)
   assert.match(readFileSync(join(packageRoot, 'README.md'), 'utf8'), /A local static scanner/)
+  for (const name of ['README.md', 'README-zh-CN.md']) {
+    assert.deepEqual(readFileSync(join(packageRoot, name)), readFileSync(join(repository, name)))
+  }
   const entry = join(packageRoot, 'dist/cli.js')
   function cli(args) {
     const result = spawnSync(process.execPath, [entry, ...args], { cwd: install, encoding: 'utf8',
@@ -46,7 +49,10 @@ try {
   function sample(name, files) {
     const dir = join(root, name)
     mkdirSync(dir)
-    for (const [file, content] of Object.entries(files)) writeFileSync(join(dir, file), content)
+    for (const [file, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, file)), { recursive: true })
+      writeFileSync(join(dir, file), content)
+    }
     return dir
   }
   const clean = sample('clean', { 'index.ts': 'export const value = 1;' })
@@ -79,6 +85,22 @@ void code; void id;
   const cleanResult = cli([clean, '--json'])
   assert.equal(cleanResult.status, 0)
   assert.equal(JSON.parse(cleanResult.stdout).partial, false)
+  // 从安装包验证身份实参及异常传播，避免只验证源码版本。
+  for (const verified of [false, true]) {
+    const target = sample(verified ? 'verified-identity' : 'raw-identity', {
+      'app/api/items/route.ts': "import {createClient} from '@supabase/supabase-js';" +
+        'const db=createClient(process.env.SUPABASE_URL,process.env.SUPABASE_SERVICE_ROLE_KEY);' +
+        'async function validate(user){if(!user)throw new Error("denied");}' +
+        `export async function DELETE(req){const user=${verified ? 'await getUser()' : 'req.body.user'};` +
+        'try{await validate(user);}catch{throw new Error("denied");}await db.from("items").delete();}',
+    })
+    const checked = cli([target, '--json', '--all'])
+    assert.equal(checked.status, verified ? 2 : 1)
+    const report = JSON.parse(checked.stdout)
+    assert.equal(report.partial, false)
+    assert.equal(report.findings.length, 1)
+    assert.equal(report.findings[0].confidence, verified ? 'likely' : 'certain')
+  }
   const open = sample('open', { 'firestore.rules': 'match /items/{id} { allow write: if true; }' })
   assert.equal(cli([open, '--json']).status, 1)
   const readOnly = sample('public-read', { 'firestore.rules': 'match /items/{id} { allow read: if true; }' })
