@@ -12,7 +12,7 @@ npx canship .
 
 Requires Node.js ≥18; no runtime dependencies. Package installation may use the network. Git checks use local history only; unavailable Git in a repository marks the scan incomplete.
 
-> This branch includes unpublished changes beyond npm 0.4.0. For a published version, use the README at its Git tag.
+> Unreleased 0.5.0 documentation. The examples selecting 0.5.0 require its npm publication. For published versions, use the README at the corresponding Git tag.
 
 ## Checks
 
@@ -142,27 +142,27 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@b4cbbfe6b5c4c88164b9388d121f7651032259a4
+      - uses: Tasomei/canship@dfc17be52684314c8631d665074c133bf1170888
         with:
-          version: '0.4.0'
+          version: '0.5.0'
+          honor-ignore-markers: false
 ```
 
-The commit pins the Action wrapper; `version` selects the npm scanner, not repository source. The pinned Action defaults to 0.3.2; this example explicitly selects 0.4.0.
+The commit pins the Action wrapper; `version` selects the npm scanner, not repository source. The pinned Action defaults to 0.4.0; this example explicitly selects 0.5.0 and disables source ignore markers.
 
 | Input | Default | Meaning |
 |---|---|---|
 | `path` | `.` | Scan directory within the checkout |
-| `version` | `0.3.2` | Exact npm version; no ranges or tags |
+| `version` | `0.4.0` | Exact npm version; no ranges or tags |
 | `fail-on` | `blocking` | `blocking`: certain P0/P1; `any`: all findings; `none`: report only |
 | `only` / `skip` | unset | Mutually exclusive rule selectors |
 | `baseline` | unset | Existing baseline relative to the scan directory |
 | `use-config` | `false` | Enable project configuration |
+| `honor-ignore-markers` | `true` | Honour file and line ignore comments; set `false` for untrusted projects |
 | `upload-sarif` | `false` | Upload to GitHub code scanning |
 | `category` | `canship` | SARIF category for the scan target |
 
 Outputs: `exit-code`, `findings`, `blocking`, `partial`. Counts include likely findings after baselines and exclusions. Incomplete scans, tool errors, and incompatible reports always fail, even with `fail-on: none`.
-
-The current Action source also accepts `honor-ignore-markers` (default `true`). Set it to `false` for untrusted projects to disable file and line ignore comments; requires scanner ≥0.3.1. This input is not available in the pinned commit above; select a reviewed commit containing the updated Action.
 
 SARIF upload needs `security-events: write` and [code scanning support](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file); fork PR permissions may be insufficient. Review reports before upload. Use `pull_request`, not `pull_request_target`, for untrusted PRs. The Action sets Node.js 22 for subsequent steps; isolate the scan job if another version is required.
 

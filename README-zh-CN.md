@@ -12,7 +12,7 @@ npx canship .
 
 要求 Node.js ≥18，无运行时依赖。安装软件包可能联网；Git 检查仅使用本地历史。仓库中无法调用 Git 时，扫描标记为未完成。
 
-> 本分支包含 npm 0.4.0 之后尚未发布的改动。已发布版本的文档请查阅对应 Git 标签。
+> 本文对应尚未发布的 0.5.0。指定 0.5.0 的示例须在 npm 发布后使用；已发布版本的文档请查阅对应 Git 标签。
 
 ## 检测范围
 
@@ -142,27 +142,27 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@b4cbbfe6b5c4c88164b9388d121f7651032259a4
+      - uses: Tasomei/canship@dfc17be52684314c8631d665074c133bf1170888
         with:
-          version: '0.4.0'
+          version: '0.5.0'
+          honor-ignore-markers: false
 ```
 
-提交号固定 Action 实现；`version` 选择 npm 扫描器，不使用仓库源码。该固定提交默认安装 0.3.2；示例显式选择 0.4.0。
+提交号固定 Action 实现；`version` 选择 npm 扫描器，不使用仓库源码。该固定提交默认安装 0.4.0；示例显式选择 0.5.0，并禁用源码忽略标记。
 
 | 输入 | 默认值 | 说明 |
 |---|---|---|
 | `path` | `.` | 检出目录内的扫描路径 |
-| `version` | `0.3.2` | 精确 npm 版本，不接受范围或标签 |
+| `version` | `0.4.0` | 精确 npm 版本，不接受范围或标签 |
 | `fail-on` | `blocking` | `blocking`：确定的 P0/P1；`any`：全部结果；`none`：仅报告 |
 | `only` / `skip` | 未设置 | 互斥的规则选择器 |
 | `baseline` | 未设置 | 相对扫描目录的已有基线 |
 | `use-config` | `false` | 启用项目配置 |
+| `honor-ignore-markers` | `true` | 遵从整文件及逐行忽略注释；不可信项目设为 `false` |
 | `upload-sarif` | `false` | 上传至 GitHub 代码扫描 |
 | `category` | `canship` | 扫描目标的 SARIF 分类 |
 
 输出：`exit-code`、`findings`、`blocking`、`partial`。统计包含基线与排除处理后的疑似结果。扫描不完整、工具错误或报告不兼容始终失败，`fail-on: none` 也不例外。
-
-当前 Action 源码另支持 `honor-ignore-markers`（默认 `true`）。扫描不可信项目时设为 `false`，禁用整文件及逐行忽略标记；要求扫描器 ≥0.3.1。上方固定提交不含此输入，需选用包含新版 Action 的已审阅提交。
 
 上传 SARIF 需 `security-events: write` 及 [代码扫描支持](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file)，Fork PR 可能权限不足。上传前需审阅报告。不可信 PR 使用 `pull_request`，不要使用 `pull_request_target`。Action 为后续步骤设置 Node.js 22；需要其他版本时使用独立扫描任务。
 

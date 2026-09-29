@@ -119,7 +119,7 @@ for (const version of ['latest', '^0.2.1', '0.2.1 & echo unsafe', 'file:../packa
   test(`a non-exact version is rejected: ${version}`, () => assert.throws(() => parseInputs(environment({ INPUT_VERSION: version }))))
 }
 test('current Action defaults and pinned README defaults are checked independently', () => {
-  const pinnedAction = { commit: 'b4cbbfe6b5c4c88164b9388d121f7651032259a4', version: '0.3.2' }
+  const pinnedAction = { commit: 'dfc17be52684314c8631d665074c133bf1170888', version: '0.4.0' }
   const packageVersion = JSON.parse(readFileSync(join(repository, 'package.json'), 'utf8')).version
   const version = parseInputs(environment()).version
   assert.equal(version, '0.4.0')
@@ -133,6 +133,7 @@ test('current Action defaults and pinned README defaults are checked independent
     const workflow = /^```yaml\r?\n([\s\S]*?)^```/m.exec(readme)?.[1]
     assert.ok(workflow, `${name} lacks a workflow example`)
     assert.ok(workflow.includes(`version: '${packageVersion}'`), `${name} example version differs`)
+    assert.match(workflow, /honor-ignore-markers: false/)
     assert.match(workflow, /^      - uses: Tasomei\/canship@[a-f0-9]{40}\r?$/m)
     assert.ok(workflow.includes(`Tasomei/canship@${pinnedAction.commit}`), `${name} pinned Action differs`)
     assert.ok(readme.includes(`| \`version\` | \`${pinnedAction.version}\` |`), `${name} pinned default version differs`)
