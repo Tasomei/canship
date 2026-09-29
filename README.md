@@ -12,7 +12,7 @@ npx canship .
 
 Requires Node.js ≥18; no runtime dependencies. Installation may use the network. Git checks read local history only; unavailable Git in a repository marks coverage incomplete.
 
-> This README covers unreleased 0.5.0. `npx canship` runs the published default; examples selecting 0.5.0 require its publication.
+> Documentation for 0.5.0. `npx canship` runs the npm default version; use the corresponding Git tag for other releases.
 
 ## Checks
 
