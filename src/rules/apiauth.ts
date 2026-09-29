@@ -378,7 +378,7 @@ function rejectsMissingIdentity(term: string, returnsDeniedStatus: boolean): boo
 }
 
 /** 只有拒绝未认证请求的条件分支才能提供保护。 */
-function hasConditionalAuthGuard(code: string): boolean {
+function hasConditionalAuthGuard(code: string, requireThrow = false): boolean {
   const starts = /\bif\s*\(/g
   let match: RegExpExecArray | null
   while ((match = starts.exec(code)) !== null) {
@@ -395,7 +395,8 @@ function hasConditionalAuthGuard(code: string): boolean {
     for (let i = 0; i < body.length; i++) {
       if (STOPS_REQUEST.test(body.slice(i, i + 16)) &&
           (i === 0 || !/[\w$]/.test(body[i - 1]!))) {
-        stopsRequest = true
+        // 辅助函数返回拒绝值并不会终止调用方；不可借用 return 后的死代码。
+        stopsRequest = !requireThrow || !/^return\b/.test(body.slice(i, i + 16))
         break
       }
       if (/^if\s*\(/.test(body.slice(i, i + 16))) break
@@ -577,13 +578,32 @@ interface ExtraGuards {
   onGuard(index: number, name: string): void
 }
 
-function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards): DataHit[] {
+const localAuthNamesCache = new WeakMap<ScanFile, Set<string>>()
+
+/** 本地绑定优先于名称启发式；遮蔽关系不明确时保守保留发现。 */
+function localAuthNames(file: ScanFile): Set<string> {
+  const cached = localAuthNamesCache.get(file)
+  if (cached) return cached
+  const names = new Set(bindingsOf(file).imports
+    .filter(binding => binding.spec && normalizeSpec(binding.spec, file.path))
+    .map(binding => binding.local))
+  const code = noiseMaskedOf(file)
+  for (const match of code.matchAll(/\b(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)|[({,]\s*([A-Za-z_$][\w$]*)\s*[,}):=]|\b([A-Za-z_$][\w$]*)\s*=>/g)) {
+    const name = match[1] ?? match[2] ?? match[3]
+    if (name) names.add(name)
+  }
+  localAuthNamesCache.set(file, names)
+  return names
+}
+
+function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards, requireThrow = false): DataHit[] {
   if (ops.length === 0) return ops
   const code = noiseMaskedOf(file)
   const pairs = delimiterPairs(code)
   const bodies = functionBodies(code, pairs)
   const declarations = new Map(bodies.map(body => [body.declaration, body]))
   const functionStarts = new Set(bodies.map(body => body.start))
+  const localNames = localAuthNames(file)
   const guardEnds = new Map<number, number>()
   const guardNames = new Map<number, string>()
   const extraCalls = extra?.guards.size ? new RegExp(`^(${namePattern(extra.guards)})\\s*\\(`) : null
@@ -594,7 +614,7 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
   let blockIndex = 0
   const wrapperPattern = extra?.wrappers.size
     ? new RegExp(`(?<![\\w$.])(${namePattern(extra.wrappers)})\\s*\\(`, 'g') : null
-  const wrappers = [...code.matchAll(/\b(withAuth|NextAuth)\s*\(/g),
+  const wrappers = [...[...code.matchAll(/\b(withAuth|NextAuth)\s*\(/g)].filter(match => !localNames.has(match[1]!)),
     ...(wrapperPattern ? code.matchAll(wrapperPattern) : [])].map(match => {
     const open = match.index + match[0].length - 1
     return { start: open, end: pairs.get(open) ?? open, name: match[1]! }
@@ -618,13 +638,15 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
         let start = close + 1
         while (/\s/.test(code[start] ?? '')) start++
         const end = statementEnd(code, start, owner.end, pairs)
-        if (end <= owner.end && hasConditionalAuthGuard(code.slice(i, end))) return end
+        if (end <= owner.end && hasConditionalAuthGuard(code.slice(i, end), requireThrow)) return end
         // 只在部分请求中执行的鉴权不能保护后续无条件操作。
         i = Math.min(end, owner.end) - 1
         continue
       }
       const indirectCall = i > 0 && /[\w$.]/.test(code[i - 1]!) ? null : extraCalls?.exec(code.slice(i, i + 100))
       const call = indirectCall ?? AUTH_ENFORCING_CALL.exec(code.slice(i, i + 100))
+      const callName = call?.[0].replace(/\s*\($/, '')
+      if (!indirectCall && callName && localNames.has(callName)) continue
       // 构造一个包装后的处理函数并不鉴权当前请求；只在包围操作时认它。
       if (call?.index === 0 && !/^(?:withAuth|NextAuth)\b/i.test(call[0]) &&
           !/\bfunction\s*$/.test(code.slice(Math.max(owner.start, i - 30), i))) {
@@ -639,6 +661,8 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
         if (!awaited && !synchronous) continue
         const close = pairs.get(i + call[0].length - 1)
         if (close !== undefined && close < owner.end) {
+          // catch 或 then 等链式处理可能恢复拒绝结果，不能推定异常传播。
+          if (/^\s*(?:\.|\?\.)/.test(code.slice(close + 1, close + 100))) continue
           if (indirectCall) guardNames.set(owner.start, indirectCall[1]!)
           return close + 1
         }
@@ -965,6 +989,16 @@ function guardDefinitions(file: ScanFile): GuardDefinitions {
     // 取首次顶层 return 之前的证据，不能借用未调用嵌套函数或不可达代码。
     let at = target.end
     for (let i = target.start + 1; i < target.end; i++) {
+      const conditional = /^if\s*\(/.exec(code.slice(i, i + 32))
+      if (conditional && (i === 0 || !/[\w$]/.test(code[i - 1]!))) {
+        const close = pairs.get(i + conditional[0].length - 1)
+        if (close !== undefined) {
+          let start = close + 1
+          while (/\s/.test(code[start] ?? '')) start++
+          i = statementEnd(code, start, target.end, pairs) - 1
+          continue
+        }
+      }
       if (code.startsWith('return', i) && !/[\w$]/.test(code[i - 1] ?? '') && !/[\w$]/.test(code[i + 6] ?? '')) { at = i; break }
       const close = pairs.get(i)
       if (close !== undefined) i = close
@@ -977,8 +1011,12 @@ function guardDefinitions(file: ScanFile): GuardDefinitions {
     candidates.push({ name: declaration.name, exported, definition, at })
   }
   // 同一文件一次分析所有候选，避免按函数重扫全文。
-  const unguarded = new Set(unguardedOperations(file,
-    candidates.map(candidate => ({ index: candidate.at, writes: false })).sort((a, b) => a.index - b.index)).map(hit => hit.index))
+  const unguarded = new Set<number>()
+  for (const wrapper of [false, true]) {
+    const ops = candidates.filter(candidate => candidate.definition.wrapper === wrapper)
+      .map(candidate => ({ index: candidate.at, writes: false })).sort((a, b) => a.index - b.index)
+    for (const hit of unguardedOperations(file, ops, undefined, !wrapper)) unguarded.add(hit.index)
+  }
   for (const candidate of candidates) {
     if (unguarded.has(candidate.at)) continue
     result.locals.set(candidate.name, candidate.definition)
@@ -1028,13 +1066,25 @@ function exportedGuard(file: ScanFile, name: string, allFiles: ScanFile[], scope
 
 /** 仅为实际调用位置提供间接鉴权提示，不删除原始发现。 */
 function indirectGuardOperations(route: Route, allFiles: ScanFile[]): Map<number, GuardDefinition> {
-  const names = new Map<string, GuardDefinition>()
   const code = noiseMaskedOf(route.file)
+  // 导入列表本身不是局部遮蔽声明；保留偏移以免混淆后续代码。
+  const declarations = code.replace(/\bimport\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{[^{}]{0,4000}\}/g, text => ' '.repeat(text.length))
+  // 一次收集调用及遮蔽，避免为每个本地函数重复扫描全文。
+  const shadowed = new Set<string>()
+  const declared = new Set<string>()
+  const called = new Set<string>()
+  for (const match of declarations.matchAll(/[({,]\s*([A-Za-z_$][\w$]*)\s*[,}):=]|(?<![\w$.])([A-Za-z_$][\w$]*)\s*=(?!=)|(?<![\w$])([A-Za-z_$][\w$]*)\s*=>/g)) {
+    shadowed.add((match[1] ?? match[2] ?? match[3])!)
+  }
+  for (const match of declarations.matchAll(/\b(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g)) declared.add(match[1]!)
+  for (const match of code.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(/g)) {
+    if (!/\bfunction\s*\*?\s*$/.test(code.slice(Math.max(0, match.index - 40), match.index))) called.add(match[1]!)
+  }
+  const names = new Map([...guardDefinitions(route.file).locals].filter(([name]) => called.has(name) && !shadowed.has(name)))
   for (const binding of bindingsOf(route.file).imports) {
     if (!binding.spec) continue
-    const name = namePattern([binding.local])
     // 明显的局部同名声明或参数遮蔽时，不借用导入的鉴权证据。
-    if (new RegExp(`\\b(?:const|let|var|function|class)\\s+${name}(?![\\w$])|[({,]\\s*${name}\\s*[,}):=]|(?<![\\w$])${name}\\s*=>`).test(code)) continue
+    if (!called.has(binding.local) || declared.has(binding.local) || shadowed.has(binding.local)) continue
     const target = bindingModule(binding.spec, route.file, allFiles, route.scope)
     const definition = target ? exportedGuard(target, binding.imported, allFiles, route.scope) : null
     if (definition) names.set(binding.local, definition)

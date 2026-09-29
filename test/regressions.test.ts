@@ -691,7 +691,7 @@ describe('reading a value is not checking it', () => {
     assert.ok(result.findings.some((f) => f.ruleId.startsWith('api/')))
   })
 
-  test('calling an imported enforcing helper still exempts the route', async () => {
+  test('calling a local auth import with no available implementation does not exempt the route', async () => {
     const route = [...ADMIN_ROUTE]
     route.splice(1, 0, 'import { requireUser } from "@/lib/auth"')
     route.splice(4, 0, '  await requireUser()')
@@ -699,7 +699,10 @@ describe('reading a value is not checking it', () => {
       '.env.local': 'SUPABASE_URL=https://x.supabase.co\n',
       'app/api/dump/route.ts': `${route.join('\n')}\n`,
     })
-    assert.deepEqual(result.findings.filter((f) => f.ruleId.startsWith('api/')), [])
+    const findings = result.findings.filter((f) => f.ruleId.startsWith('api/'))
+    assert.equal(findings.length, 1)
+    assert.equal(findings[0]!.ruleId, 'api/admin-db-access-without-auth')
+    assert.equal(findings[0]!.confidence, 'certain')
   })
 
   test('a matcher holding a bracket is read, not discarded', async () => {
