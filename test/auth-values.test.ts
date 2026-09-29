@@ -37,6 +37,61 @@ for (const prefix of [
   })
 }
 
+// Supabase 官方示例常见写法：先解构 data，再读取 user 或 claims。
+for (const prefix of [
+  'const {data}=await supabase.auth.getUser();const account=data.user;',
+  'const {data,error}=await supabase.auth.getUser();const account=data?.user;',
+  'const {data}=await supabase.auth.getClaims();const account=data?.claims;',
+  'const {data:{claims:account}}=await supabase.auth.getClaims();',
+  'const {data:claimsData}=await supabase.auth.getClaims();const account=claimsData?.claims?.sub;',
+]) {
+  test(`Supabase data envelopes protect direct handlers: ${prefix}`, async () => {
+    assert.deepEqual(await analyze(prefix + 'if(!account)throw new Error("denied");'), [])
+  })
+}
+
+test('the official getClaims guard with an error check protects the handler', async () => {
+  assert.deepEqual(await analyze('const {data,error}=await supabase.auth.getClaims();if(error||!data?.claims){return new Response(null,{status:401});}'), [])
+})
+
+for (const prefix of [
+  'const {data}=await supabase.auth.getUser();const account=data.session;',
+  'const {data}=await supabase.auth.getClaims();const account=data.user;',
+  'const {error:account}=await supabase.auth.getUser();',
+  'const {data}=supabase.auth.getClaims();const account=data?.claims;',
+  'const {data}=await req.json();const account=data?.claims;',
+]) {
+  test(`other Supabase result fields are not identities: ${prefix}`, async () => {
+    const findings = await analyze(prefix + 'if(!account)return new Response(null,{status:401});')
+    assert.equal(findings.length, 1)
+    assert.equal(findings[0]!.confidence, 'certain')
+  })
+}
+
+// Vercel Cron 官方写法：https://vercel.com/docs/cron-jobs/manage-cron-jobs
+for (const guard of [
+  "const authHeader=req.headers.get('authorization');const cronSecret=process.env.CRON_SECRET;if(!cronSecret||authHeader!==`Bearer ${cronSecret}`){return new Response('Unauthorized',{status:401});}",
+  "if(req.headers.get('authorization')!==`Bearer ${process.env.CRON_SECRET}`)return new Response(null,{status:401});",
+  "if(req.headers.get('x-api-key')!==process.env.API_KEY)return new Response(null,{status:401});",
+]) {
+  test(`a comparison with a server secret protects the handler: ${guard.slice(0, 60)}`, async () => {
+    assert.deepEqual(await analyze(guard), [])
+  })
+}
+
+for (const guard of [
+  "const authHeader=req.headers.get('authorization');if(authHeader!==`Bearer ${req.headers.get('x')}`)return new Response(null,{status:401});",
+  "if(req.headers.get('authorization')!==`Bearer ${'known'}`)return new Response(null,{status:401});",
+  "if(req.headers.get('authorization')!=='Bearer known')return new Response(null,{status:401});",
+  "if(req.headers.get('a')!==req.headers.get('b'))return new Response(null,{status:401});",
+]) {
+  test(`a comparison without a server secret does not protect the handler: ${guard.slice(0, 60)}`, async () => {
+    const findings = await analyze(guard)
+    assert.equal(findings.length, 1)
+    assert.equal(findings[0]!.confidence, 'certain')
+  })
+}
+
 test('overwriting an identity with request input invalidates the check', async () => {
   assert.equal((await analyze('let user=await getUser();user=req.body.user;if(!user)return new Response(null,{status:401});')).length, 1)
 })

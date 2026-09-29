@@ -4,8 +4,21 @@ import { commentsMaskedOf, noiseMaskedOf, maskJsNoise } from '../mask.js'
 
 export interface FunctionSpan { declaration: number; start: number; end: number }
 export interface AuthValue {
-  kind: 'identity' | 'envelope' | 'input' | 'literal' | 'promise' | 'secret' | 'parameter' | 'unknown' | 'opaque'
+  kind: 'identity' | 'envelope' | 'data' | 'input' | 'literal' | 'promise' | 'secret' | 'parameter' | 'unknown' | 'opaque'
   parameters?: number[]
+  /** Supabase 结果中承载身份的字段：getUser 为 user，getClaims 为 claims。 */
+  field?: 'user' | 'claims'
+}
+
+/** 按属性路径读取 Supabase 结果；只有 data 下的身份字段成为身份，其余字段不可信。 */
+function project(value: AuthValue, path: string[]): AuthValue {
+  let current = value
+  for (const property of path) {
+    if (current.kind === 'envelope') current = property === 'data' ? { kind: 'data', field: current.field! } : { kind: 'opaque' }
+    else if (current.kind === 'data') current = property === current.field ? { kind: 'identity' } : { kind: 'opaque' }
+    else break
+  }
+  return current
 }
 interface Assignment { at: number; expression: string; projection: string[] | null; overLimit: boolean }
 const limited = new WeakSet<ScanFile>()
@@ -170,8 +183,11 @@ class AuthValues {
     const expr = expression.trim()
     if (expr.length > 4000) { limited.add(this.file); return { kind: 'opaque' } }
     if (/^process\.env\.[A-Z_][A-Z0-9_]*$/.test(expr)) return { kind: 'secret' }
+    // 仅插入一个服务器密钥的模板（如 `Bearer ${process.env.CRON_SECRET}`）仍按密钥比较处理。
+    const template = /^`[^`$]*\$\{([^{}`]{1,200})\}[^`$]*`$/.exec(expr)
+    if (template) return this.value(template[1]!, at, depth + 1).kind === 'secret' ? { kind: 'secret' } : { kind: 'literal' }
     if (/^(?:(?:true|false|null|undefined)\b|\d|['"`{\[])/.test(expr)) return { kind: 'literal' }
-    const call = /^(?:await\s+)?((?:[A-Za-z_$][\w$]*\.)*(?:getUser|getUserSession|getSession|getServerSession|safeGetSession|currentUser|verifyIdToken|auth))\s*\(/.exec(expr)
+    const call = /^(?:await\s+)?((?:[A-Za-z_$][\w$]*\.)*(?:getUser|getClaims|getUserSession|getSession|getServerSession|safeGetSession|currentUser|verifyIdToken|auth))\s*\(/.exec(expr)
     const callee = call?.[1]
     const identityCall = callee && !/\.(?:body|query|headers|cookies)\b/.test(callee)
     if (identityCall) {
@@ -184,7 +200,10 @@ class AuthValues {
       }
       if (depth !== 0 || masked.slice(end).trim() !== '') return { kind: 'opaque' }
       if (/\|\||&&|\?(?!\.)|\.then\s*\(/.test(expr) || /\.catch\s*\(/.test(expr)) return { kind: 'opaque' }
-      return { kind: /\.auth\.getUser\s*\(/.test(expr) ? 'envelope' : 'identity' }
+      // Supabase 返回 { data: { user } } 或 { data: { claims } }，只有对应字段才是已验证身份。
+      const envelope = /\.auth\.(getUser|getClaims)\s*\($/.exec(call![0])?.[1]
+      if (envelope) return { kind: 'envelope', field: envelope === 'getUser' ? 'user' : 'claims' }
+      return { kind: 'identity' }
     }
     if (/\.(?:body|query|headers|cookies|searchParams)\b|\.(?:json|text|formData)\s*\(/.test(expr)) return { kind: 'input' }
     const access = /^([A-Za-z_$][\w$]*)((?:\??\.[A-Za-z_$][\w$]*)*)$/.exec(expr)
@@ -199,14 +218,10 @@ class AuthValues {
       if (assignment.overLimit) { limited.add(this.file); return { kind: 'opaque' } }
       if (this.conditions.some(range => range.start <= assignment.at && assignment.at <= range.end && !(range.start <= at && at <= range.end))) return { kind: 'opaque' }
       value = this.value(assignment.expression, assignment.at, depth + 1)
-      if (assignment.projection === null) value = { kind: 'opaque' }
-      else if (assignment.projection.length && value.kind === 'envelope') value = {
-        kind: assignment.projection.join('.') === 'data.user' ? 'identity' : 'opaque',
-      }
+      value = assignment.projection === null ? { kind: 'opaque' } : project(value, assignment.projection)
     } else if (this.parameters.has(name)) value = { kind: 'parameter', parameters: [this.parameters.get(name)!] }
     else value = { kind: 'unknown' }
-    if (value.kind === 'envelope') return { kind: /^\??\.data\??\.user$/.test(access[2]!) ? 'identity' : 'envelope' }
-    return value
+    return project(value, access[2]!.split(/\??\./).filter(Boolean))
   }
 }
 

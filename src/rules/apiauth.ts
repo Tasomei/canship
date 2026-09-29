@@ -337,6 +337,12 @@ const NEGATED_IDENTITY = new RegExp(`^!\\s*${ACCESS_CHAIN}(?:\\s*\\([^=]*\\))?$`
 const IDENTITY_IS_EMPTY = new RegExp(`^${ACCESS_CHAIN}\\s*={2,3}\\s*(?:null|undefined|false)$`)
 const IDENTITY_MISMATCH =
   new RegExp(`^${ACCESS_CHAIN}\\s*!={1,2}\\s*(?!(?:null|undefined|false)\\b)${ACCESS_CHAIN}$`)
+/**
+ * 请求值与服务器密钥比较，如 Vercel Cron 的 authHeader !== `Bearer ${cronSecret}`；
+ * 仅作预筛，是否为密钥由值追踪判断，普通字面量或请求输入不会通过。
+ */
+const COMPARED_VALUE = String.raw`(?!(?:null|undefined|true|false)\b)(?:${ACCESS_CHAIN}(?:\s*\([^()]{0,200}\))?|\`[^\`]{0,300}\`)`
+const SECRET_MISMATCH = new RegExp(`^${COMPARED_VALUE}\\s*!={1,2}\\s*${COMPARED_VALUE}$`)
 
 /** 终止请求的语句；SvelteKit 2 的 error(401) 无需 throw 即会中止。 */
 const STOPS_REQUEST = /^(?:(?:return|throw|redirect|notFound)\b|error\s*\(\s*40[13]\b)/
@@ -414,7 +420,8 @@ function hasConditionalAuthGuard(code: string, requireThrow = false, accept?: (t
     const negative = !/&&|\?(?!\.)/.test(condition) &&
       condition.split('||').some(part => {
         const term = part.trim()
-        return accept ? (NEGATED_IDENTITY.test(term) || IDENTITY_IS_EMPTY.test(term) || IDENTITY_MISMATCH.test(term)) && accept(term)
+        return accept ? (NEGATED_IDENTITY.test(term) || IDENTITY_IS_EMPTY.test(term) || IDENTITY_MISMATCH.test(term) ||
+          SECRET_MISMATCH.test(term)) && accept(term)
           : rejectsMissingIdentity(term, returnsDeniedStatus)
       })
     if (negative) return true
