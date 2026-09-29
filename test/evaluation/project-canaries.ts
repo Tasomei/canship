@@ -21,7 +21,7 @@ export interface ProjectCanary {
 
 /** 每个固定项目配一个开放样本和一个受限样本，预期差异只在新增文件。 */
 export function projectCanaries(project: string): ProjectCanary[] {
-  return [false, true].map(guarded => {
+  const canaries: ProjectCanary[] = [false, true].map(guarded => {
     let file: string
     let content: string
     let rule: string
@@ -54,6 +54,25 @@ export function projectCanaries(project: string): ProjectCanary[] {
     return { id: guarded ? 'guarded-canary' : 'open-canary', file, content,
       expected: guarded ? [] : [{ rule, severity, confidence: 'certain', file, line }] }
   })
+  if (project === 'nextjs-with-supabase') {
+    const file = 'app/api/canship-identity/route.ts'
+    const prefix = "import {createClient} from '@supabase/supabase-js';\n" +
+      'const db=createClient(process.env.SUPABASE_URL,process.env.SUPABASE_SERVICE_ROLE_KEY);\n'
+    for (const verified of [false, true]) {
+      canaries.push({ id: verified ? 'identity-verified' : 'identity-input', file,
+        content: prefix + 'async function check(user){if(!user)throw new Error("denied");}\n' +
+          'async function guard(value){await check(value);}\n' +
+          `export async function DELETE(req){const user=${verified ? 'await getUser()' : 'req.body.user'};await guard(user);await db.from('canship_canary').delete();}\n`,
+        expected: [{ rule: 'api/admin-db-access-without-auth', severity: 'P0', confidence: verified ? 'likely' : 'certain', file, line: 5 }] })
+    }
+    for (const guarded of [false, true]) {
+      const check = 'if(!user)throw new Error("denied");'
+      canaries.push({ id: guarded ? 'branches-guarded' : 'branches-open', file,
+        content: prefix + `export async function DELETE(req){const user=await getUser();if(req.admin){${check}}else{${guarded ? check : 'log();'}}await db.from('canship_canary').delete();}\n`,
+        expected: guarded ? [] : [{ rule: 'api/admin-db-access-without-auth', severity: 'P0', confidence: 'certain', file, line: 3 }] })
+    }
+  }
+  return canaries
 }
 
 /** 副本位置由系统临时目录生成；拒绝路径越界和覆盖已有样本。 */
