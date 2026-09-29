@@ -75,6 +75,8 @@ for (const prefix of [
   'const pattern = call(/"/);',
   'const pattern = { test: /"/ };',
   `const rendered = ${tick}value ${interpolation}/["']/g.test(value)}${tick};`,
+  'const parts = cookie.split(/=/); const url = "http://x/y";',
+  'const padded = value.replace(/=+$/, ""); const quote = "\'";',
   'const ratio = numerator / denominator / other;',
   'const ratio = (numerator + 1) / denominator;',
   'const ratio = object.return / denominator / other;',
