@@ -553,6 +553,20 @@ function unguardedOpsOf(file: ScanFile): DataHit[] {
   return hit
 }
 
+/** 操作已按位置排序；按函数范围二分定位，避免多 Action 文件反复筛选全文。 */
+function operationsInRange(ops: DataHit[], start: number, end: number): DataHit[] {
+  const lowerBound = (value: number): number => {
+    let low = 0, high = ops.length
+    while (low < high) {
+      const middle = (low + high) >>> 1
+      if (ops[middle]!.index < value) low = middle + 1
+      else high = middle
+    }
+    return low
+  }
+  return ops.slice(lowerBound(start + 1), lowerBound(end))
+}
+
 /** 行号索引按文件缓存，同一文件的多个 Server Action 共用。 */
 const lineStartsCache = new WeakMap<ScanFile, number[]>()
 function lineStartsCached(file: ScanFile): number[] {
@@ -1804,8 +1818,8 @@ export const apiAuthRule: ProjectRule = {
 
     for (const route of routes) {
       const reachable = route.reachable
-      let ops = unguardedOpsOf(route.file).filter((op) =>
-        reachable === undefined || (op.index > reachable.start && op.index < reachable.end))
+      const unguarded = unguardedOpsOf(route.file)
+      let ops = reachable === undefined ? unguarded : operationsInRange(unguarded, reachable.start, reachable.end)
       if (ops.length === 0) continue
       let indirectOps = indirectByFile.get(route.file)
       if (!indirectOps) {
