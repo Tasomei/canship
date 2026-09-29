@@ -2420,7 +2420,7 @@ describe('a third review — checks that went quiet instead of failing', () => {
     )
   })
 
-  test('a session that is actually consulted still silences the rule', async () => {
+  test('verified sessions suppress findings but raw token presence does not', async () => {
     // 收紧鉴权判断时仍需保留合法保护方式。
     const guards = [
       'const { data: { session } } = await a.auth.getSession(); if (!session) return new Response("no", { status: 401 });',
@@ -2430,8 +2430,9 @@ describe('a third review — checks that went quiet instead of failing', () => {
     for (const guard of guards) {
       assert.deepEqual(
         await ids({ 'app/api/u/route.ts': ADMIN_ROUTE.replace('{ const', `{ ${guard} const`) }, 'api/'),
-        [],
-        `a real check was not recognised: ${guard}`,
+        // 请求头存在不等于凭据已经验证；保留该反例并要求检出。
+        guard.includes('req.headers') ? ['api/admin-db-access-without-auth'] : [],
+        `authentication evidence was classified incorrectly: ${guard}`,
       )
     }
   })

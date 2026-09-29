@@ -8,6 +8,7 @@ import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { JWT_SOURCE, SB_SECRET_SOURCE } from './patterns.js'
 import { bindingsOf, namePattern } from './bindings.js'
+import { authValuesOf, argumentExpressions, identityRequirement, identityFlowLimited } from './auth-values.js'
 
 // 识别各框架可被直接请求的服务端路由。
 
@@ -378,7 +379,7 @@ function rejectsMissingIdentity(term: string, returnsDeniedStatus: boolean): boo
 }
 
 /** 只有拒绝未认证请求的条件分支才能提供保护。 */
-function hasConditionalAuthGuard(code: string, requireThrow = false): boolean {
+function hasConditionalAuthGuard(code: string, requireThrow = false, accept?: (term: string) => boolean): boolean {
   const starts = /\bif\s*\(/g
   let match: RegExpExecArray | null
   while ((match = starts.exec(code)) !== null) {
@@ -411,7 +412,11 @@ function hasConditionalAuthGuard(code: string, requireThrow = false): boolean {
     const returnsDeniedStatus = DENIED_STATUS.test(statement)
     // 正向身份判断、短路合取及三元条件不能证明未认证请求必然退出；可选链 ?. 不是三元条件。
     const negative = !/&&|\?(?!\.)/.test(condition) &&
-      condition.split('||').some(part => rejectsMissingIdentity(part.trim(), returnsDeniedStatus))
+      condition.split('||').some(part => {
+        const term = part.trim()
+        return accept ? (NEGATED_IDENTITY.test(term) || IDENTITY_IS_EMPTY.test(term) || IDENTITY_MISMATCH.test(term)) && accept(term)
+          : rejectsMissingIdentity(term, returnsDeniedStatus)
+      })
     if (negative) return true
   }
   return false
@@ -575,6 +580,7 @@ function cachedByFile(check: (file: ScanFile) => boolean): (file: ScanFile) => b
 interface ExtraGuards {
   guards: Set<string>
   wrappers: Set<string>
+  requirements?: Map<string, number[]>
   onGuard(index: number, name: string): void
 }
 
@@ -594,16 +600,19 @@ function localAuthNames(file: ScanFile): Set<string> {
   return names
 }
 
-function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards, requireThrow = false): DataHit[] {
+function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards, requireThrow = false,
+  observe?: (index: number, required: number[]) => void): DataHit[] {
   if (ops.length === 0) return ops
   const code = noiseMaskedOf(file)
   const pairs = delimiterPairs(code)
   const bodies = functionBodies(code, pairs)
   const declarations = new Map(bodies.map(body => [body.declaration, body]))
   const functionStarts = new Set(bodies.map(body => body.start))
+  const bodiesByStart = new Map(bodies.map(body => [body.start, body]))
   const localNames = localAuthNames(file)
   const guardEnds = new Map<number, number>()
   const guardNames = new Map<number, string>()
+  const guardRequirements = new Map<number, number[]>()
   const extraCalls = extra?.guards.size ? new RegExp(`^(${namePattern(extra.guards)})\\s*\\(`) : null
   type Block = Pick<FunctionBody, 'start' | 'end'>
   const blocks: Block[] = [...pairs].filter(([start]) => code[start] === '{')
@@ -619,7 +628,7 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
   })
 
   // 每个函数最多扫描一次，不能对每个数据操作重新遍历整个函数前缀。
-  const guardEnd = (owner: Block): number => {
+  const guardEnd = (owner: Block, fn: FunctionBody): number => {
     for (let i = owner.start + 1; i < owner.end; i++) {
       const nested = declarations.get(i)
       if (nested) { i = nested.end; continue }
@@ -636,7 +645,19 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
         let start = close + 1
         while (/\s/.test(code[start] ?? '')) start++
         const end = statementEnd(code, start, owner.end, pairs)
-        if (end <= owner.end && hasConditionalAuthGuard(code.slice(i, end), requireThrow)) return end
+        const required = new Set<number>()
+        const values = authValuesOf(file, fn, bodies, pairs)
+        const accepted = hasConditionalAuthGuard(code.slice(i, end), requireThrow, term => {
+          const mismatch = /^(.*?)\s*!={1,2}\s*(.*?)$/.exec(term)
+          if (mismatch && (values.value(mismatch[1]!, i).kind === 'secret' || values.value(mismatch[2]!, i).kind === 'secret')) return true
+          const subject = term.replace(/^!\s*/, '').split(/\s*(?:={2,3}|!={1,2})\s*/)[0]!
+          const value = values.value(subject, i)
+          const dependencies = identityRequirement(value, !!observe)
+          if (dependencies) { dependencies.forEach(index => required.add(index)); return true }
+          // 未绑定的框架上下文沿用原有模式；已知不可信来源不能借名称通过。
+          return !observe && value.kind === 'unknown' && rejectsMissingIdentity(term, DENIED_STATUS.test(code.slice(i, end)))
+        })
+        if (end <= owner.end && accepted) { guardRequirements.set(owner.start, [...required]); return end }
         // 只在部分请求中执行的鉴权不能保护后续无条件操作。
         i = Math.min(end, owner.end) - 1
         continue
@@ -662,6 +683,18 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
         if (close !== undefined && close < owner.end) {
           // catch 或 then 等链式处理可能恢复拒绝结果，不能推定异常传播。
           if (/^\s*(?:\.|\?\.)/.test(code.slice(close + 1, close + 100))) continue
+          const required = new Set<number>()
+          const requirements = indirectCall ? extra?.requirements?.get(indirectCall[1]!) ?? [] : []
+          const argumentsOfCall = requirements.length ? argumentExpressions(code, commentsMaskedOf(file), i + call[0].length, close, pairs) : []
+          let valid = true
+          for (const argument of requirements) {
+            const origin = authValuesOf(file, fn, bodies, pairs).value(argumentsOfCall[argument] ?? 'undefined', i)
+            const dependencies = identityRequirement(origin, !!observe)
+            if (!dependencies) { valid = false; break }
+            dependencies.forEach(index => required.add(index))
+          }
+          if (!valid) continue
+          guardRequirements.set(owner.start, [...required])
           if (indirectCall) guardNames.set(owner.start, indirectCall[1]!)
           return close + 1
         }
@@ -682,6 +715,8 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
     while (active.length && active[active.length - 1]!.end < op.index) active.pop()
     const wrapper = wrappers.find(w => w.start < op.index && w.end > op.index)
     if (wrapper) {
+      if (extra?.requirements?.get(wrapper.name)?.length) return true
+      observe?.(op.index, [])
       if (extra?.wrappers.has(wrapper.name)) extra.onGuard(op.index, wrapper.name)
       return false
     }
@@ -694,10 +729,11 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
       const block = active[index]!
       let end = guardEnds.get(block.start)
       if (end === undefined) {
-        end = guardEnd(block)
+        end = guardEnd(block, bodiesByStart.get(active[ownerIndex]!.start)!)
         guardEnds.set(block.start, end)
       }
       if (end <= op.index) {
+        observe?.(op.index, guardRequirements.get(block.start) ?? [])
         const name = guardNames.get(block.start)
         if (name) extra?.onGuard(op.index, name)
         return false
@@ -960,7 +996,7 @@ function adminEvidence(route: Route, modules: ScanFile[], allFiles: ScanFile[], 
 
 // 识别导入的本地鉴权封装。
 
-interface GuardDefinition { file: ScanFile; line: number; wrapper: boolean; chain?: GuardDefinition[] }
+interface GuardDefinition { file: ScanFile; line: number; wrapper: boolean; chain?: GuardDefinition[]; requiredArgs?: number[] }
 interface GuardCandidate { name: string; exported: string | null; definition: GuardDefinition; at: number; start: number }
 interface GuardDefinitions {
   locals: Map<string, GuardDefinition>
@@ -1020,15 +1056,19 @@ function guardDefinitions(file: ScanFile): GuardDefinitions {
   }
   // 同一文件一次分析所有候选，避免按函数重扫全文。
   const unguarded = new Set<number>()
+  const requirements = new Map<number, number[]>()
   for (const wrapper of [false, true]) {
     const ops = candidates.filter(candidate => candidate.definition.wrapper === wrapper)
       .map(candidate => ({ index: candidate.at, writes: false })).sort((a, b) => a.index - b.index)
-    for (const hit of unguardedOperations(file, ops, undefined, !wrapper)) unguarded.add(hit.index)
+    for (const hit of unguardedOperations(file, ops, undefined, !wrapper,
+      (index, required) => requirements.set(index, required))) unguarded.add(hit.index)
   }
   for (const candidate of candidates) {
     result.candidates.set(candidate.name, candidate)
     if (candidate.exported) result.exportedCandidates.set(candidate.exported, candidate)
     if (unguarded.has(candidate.at)) continue
+    candidate.definition.requiredArgs = requirements.get(candidate.at) ?? []
+    if (candidate.definition.wrapper && candidate.definition.requiredArgs.length) continue
     result.locals.set(candidate.name, candidate.definition)
     if (candidate.exported) result.exports.set(candidate.exported, candidate.definition)
   }
@@ -1146,11 +1186,13 @@ function delegatedGuard(file: ScanFile, candidate: GuardCandidate, allFiles: Sca
   }
   if (resolved.size === 0) return null
   let selected: GuardDefinition | undefined
+  let requiredArgs: number[] = []
   unguardedOperations(file, [{ index: candidate.at, writes: false }], {
     guards: new Set(resolved.keys()), wrappers: new Set(),
+    requirements: new Map([...resolved].map(([name, guard]) => [name, guard.requiredArgs ?? []])),
     onGuard: (_index, name) => { selected = resolved.get(name) },
-  }, !candidate.definition.wrapper)
-  return selected ? { ...candidate.definition, chain: [selected, ...(selected.chain ?? [])] } : null
+  }, !candidate.definition.wrapper, (_index, required) => { requiredArgs = required })
+  return selected ? { ...candidate.definition, requiredArgs, chain: [selected, ...(selected.chain ?? [])] } : null
 }
 
 /** 仅为实际调用位置提供间接鉴权提示，不删除原始发现。 */
@@ -1170,6 +1212,7 @@ function indirectGuardOperations(route: Route, ctx: ScanContext): Map<number, Gu
   unguardedOperations(route.file, unguardedOpsOf(route.file), {
     guards: new Set([...names].filter(([, definition]) => !definition.wrapper).map(([name]) => name)),
     wrappers: new Set([...names].filter(([, definition]) => definition.wrapper).map(([name]) => name)),
+    requirements: new Map([...names].map(([name, guard]) => [name, guard.requiredArgs ?? []])),
     onGuard: (index, name) => { const definition = names.get(name); if (definition) protectedOps.set(index, definition) },
   })
   return protectedOps
@@ -1797,6 +1840,8 @@ export const apiAuthRule: ProjectRule = {
       }
     }
 
+    for (const file of ctx.files) if (identityFlowLimited(file)) ctx.reportIncomplete('api/db-access-without-auth',
+      `${file.path} reached the identity flow limit (8 value hops, 4000 expression characters, or 512 assignments or branches per function)`)
     return findings
   },
 }
