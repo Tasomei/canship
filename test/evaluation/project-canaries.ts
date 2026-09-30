@@ -50,6 +50,15 @@ export function projectCanaries(project: string): ProjectCanary[] {
       file = 'canship-canary.rules'
       content = `match /canary/{id} { allow write: if ${guarded ? 'request.auth != null' : 'true'}; }\n`
       rule = 'firebase/open-rules'
+    } else if (project === 'nextlearn-dashboard') {
+      // 两者都先鉴权，差别只在 SQL 写法：postgres.js 的 sql.unsafe 拼接与带标签模板。
+      file = 'app/lib/canship-evaluation-actions.ts'
+      content = "'use server';\nimport postgres from 'postgres';\n" +
+        "const sql = postgres(process.env.POSTGRES_URL!, { ssl: 'require' });\n" +
+        'export async function removeCanary(id: string) {\n  await requireAuth();\n' +
+        `  await ${guarded ? 'sql`DELETE FROM invoices WHERE id = ${id}`' : "sql.unsafe(`DELETE FROM invoices WHERE id = '${id}'`)"};\n}\n`
+      rule = 'injection/sql'
+      line = 6
     } else throw new Error('Unknown evaluation project.')
     return { id: guarded ? 'guarded-canary' : 'open-canary', file, content,
       expected: guarded ? [] : [{ rule, severity, confidence: 'certain', file, line }] }

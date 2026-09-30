@@ -73,6 +73,21 @@
         }
       ],
       "note": "Two intentional public-read rules require review; no unconditional writes."
+    },
+    {
+      "id": "nextlearn-dashboard",
+      "repository": "vercel/next-learn",
+      "revision": "bb2558441a6673ab76c89914c25018bffa27a2ba",
+      "path": "dashboard/final-example",
+      "tree": "917c5918e344576b2d58cd4b087257cc17cccb8a",
+      "license": "MIT",
+      "sourceFiles": 63,
+      "expectedFindings": [
+        { "rule": "api/db-write-without-auth", "severity": "P1", "confidence": "likely", "file": "app/lib/actions.ts", "line": 61 },
+        { "rule": "api/db-write-without-auth", "severity": "P1", "confidence": "likely", "file": "app/lib/actions.ts", "line": 99 },
+        { "rule": "api/db-write-without-auth", "severity": "P1", "confidence": "likely", "file": "app/lib/actions.ts", "line": 113 }
+      ],
+      "note": "Server Functions pass form values and ids into tagged sql templates, which are parameterised, so no injection finding is expected. The invoice create, update, and delete functions rely on the Proxy (proxy.ts) instead of a check inside each function; Next.js asks for Server Actions to be treated as public endpoints and says Proxy should not be the only line of defence, so they are reported for review."
     }
   ]
 }

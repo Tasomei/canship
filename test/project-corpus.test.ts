@@ -35,10 +35,10 @@ test('project canaries reject traversal and existing files', async () => {
     assert.equal(readFileSync(join(target, 'keep.ts'), 'utf8'), 'keep')
   } finally { rmSync(target, { recursive: true, force: true }) }
 })
-test('all five pinned projects have a complete source and scope statement', () => {
-  assert.equal(manifest.projects.length, 5)
+test('all six pinned projects have a complete source and scope statement', () => {
+  assert.equal(manifest.projects.length, 6)
   assert.match(manifest.scope, /history/)
-  assert.equal(new Set(manifest.projects.map((p: { id: string }) => p.id)).size, 5)
+  assert.equal(new Set(manifest.projects.map((p: { id: string }) => p.id)).size, 6)
   for (const project of manifest.projects) {
     assert.match(project.id, /^[a-z0-9-]+$/)
     assert.match(project.revision, /^[a-f0-9]{40}$/)
