@@ -41,6 +41,10 @@ const sqlRoute = (args: string) => "import { prisma } from '@/lib/db';\n" +
   'export async function GET(request: Request) {\n' +
   "  const name = new URL(request.url).searchParams.get('name');\n" +
   `  return Response.json(await prisma.$queryRawUnsafe(${args}));\n}\n`
+const redirectRoute = (target: string) => "import { redirect } from 'next/navigation';\n" +
+  'export async function GET(request: Request) {\n' +
+  "  const next = new URL(request.url).searchParams.get('next') ?? '/';\n" +
+  `  redirect(${target});\n}\n`
 const finding = (ruleId: string, file: string, severity: Severity = 'P1', confidence: Confidence = 'certain'): ExpectedFinding =>
   ({ ruleId, file, severity, confidence })
 
@@ -144,6 +148,15 @@ export const evaluationCases: readonly EvaluationCase[] = [
   {
     id: 'nextjs-sql-parameterised', origin: 'synthetic',
     files: { 'app/api/items/route.ts': sqlRoute("'SELECT * FROM items WHERE name = $1', name") }, expected: [],
+  },
+  {
+    id: 'nextjs-redirect-from-query', origin: 'synthetic',
+    files: { 'app/auth/confirm/route.ts': redirectRoute('next') },
+    expected: [finding('redirect/open', 'app/auth/confirm/route.ts', 'P2')],
+  },
+  {
+    id: 'nextjs-redirect-fixed-path', origin: 'synthetic',
+    files: { 'app/auth/confirm/route.ts': redirectRoute('`/posts/${next}`') }, expected: [],
   },
   {
     id: 'incomplete-with-finding', origin: 'synthetic',

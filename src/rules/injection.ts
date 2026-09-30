@@ -3,12 +3,12 @@
  * 只追踪同一函数内的赋值和拼接；参数化查询与带标签的模板不报告。
  */
 import type { Finding, ProjectRule, ScanContext, ScanFile } from '../types.js'
-import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
-import { lineNumberAt, lineStartsOf } from './offsets.js'
+import { commentsMaskedOf } from '../mask.js'
+import { lineNumberAt } from './offsets.js'
 import { bindingsOf, namePattern } from './bindings.js'
 import { argumentExpressions } from './auth-values.js'
-import { delimiterPairs, functionBodies, routeOf, serverActionRoutes, type FunctionBody, type Route } from './apiauth.js'
-import { InputFlow, hasInput, paramRoles, parametersOf, type Taint } from './request-input.js'
+import type { Route } from './apiauth.js'
+import { InputFlow, handlerFileOf, reportInputLimit, type Taint } from './request-input.js'
 
 type SinkKind = 'sql' | 'command'
 
@@ -127,24 +127,6 @@ function hitOf(sink: Sink, code: string, source: string, pairs: Map<number, numb
   return { taint: stringTaint }
 }
 
-/** 路由中接收请求的函数及其参数角色。 */
-function handlersOf(route: Route, code: string, source: string, bodies: FunctionBody[],
-  pairs: Map<number, number>, openers: Map<number, number>): Array<{ body: FunctionBody; flow: InputFlow }> {
-  const handlers: Array<{ body: FunctionBody; flow: InputFlow }> = []
-  const reachable = route.reachable
-  for (const body of bodies) {
-    if (reachable && (body.start < reachable.start || body.end > reachable.end)) continue
-    // Server Function 只有自身参数来自客户端；其中的嵌套函数按普通处理函数判断。
-    const action = route.action !== undefined && reachable !== undefined && body.start === reachable.start
-    const params = parametersOf(code, body, pairs, openers)
-    if (!params) continue
-    const roles = paramRoles(source.slice(params.start, params.end), params.start, action)
-    if (!hasInput(roles)) continue
-    handlers.push({ body, flow: new InputFlow(code, source, { start: body.start, end: body.end }, pairs, roles) })
-  }
-  return handlers
-}
-
 function capitalised(text: string): string {
   return `${text.charAt(0).toUpperCase()}${text.slice(1)}`
 }
@@ -196,39 +178,24 @@ export const injectionRule: ProjectRule = {
   check(ctx: ScanContext): Finding[] {
     const findings: Finding[] = []
     for (const file of ctx.files) {
-      if (!/\.[mc]?[jt]sx?$/.test(file.path)) continue
-      const route = routeOf(file)
-      const routes = route === null ? serverActionRoutes(file) : [route]
-      if (routes.length === 0) continue
-
-      const code = noiseMaskedOf(file)
-      const source = commentsMaskedOf(file)
-      const pairs = delimiterPairs(code)
-      const openers = new Map<number, number>()
-      for (const [open, close] of pairs) openers.set(close, open)
-      const bodies = functionBodies(code, pairs)
+      const analysed = handlerFileOf(file)
+      if (!analysed || analysed.handlers.length === 0) continue
+      const { code, source, pairs, lineStarts } = analysed
       const sinks = sinksIn(code, pairs, commandCallees(file))
       if (sinks.length === 0) continue
-      const lineStarts = lineStartsOf(file.content)
       const reported = new Set<number>()
-      let limited = false
-
-      for (const r of routes) {
-        for (const { body, flow } of handlersOf(r, code, source, bodies, pairs, openers)) {
-          limited ||= flow.limited
-          for (const sink of sinks) {
-            if (sink.at <= body.start || sink.close >= body.end || reported.has(sink.at)) continue
-            const hit = hitOf(sink, code, source, pairs, flow)
-            if (!hit) continue
-            reported.add(sink.at)
-            const certain = hit.taint.level === 'direct' && !flow.validatedBefore(hit.taint.names, sink.at)
-            findings.push(findingFor(sink.kind, r, file, lineNumberAt(lineStarts, sink.at),
-              lineNumberAt(lineStarts, hit.taint.origin), certain))
-          }
+      for (const { route, body, flow } of analysed.handlers) {
+        for (const sink of sinks) {
+          if (sink.at <= body.start || sink.close >= body.end || reported.has(sink.at)) continue
+          const hit = hitOf(sink, code, source, pairs, flow)
+          if (!hit) continue
+          reported.add(sink.at)
+          const certain = hit.taint.level === 'direct' && !flow.validatedBefore(hit.taint.names, sink.at)
+          findings.push(findingFor(sink.kind, route, file, lineNumberAt(lineStarts, sink.at),
+            lineNumberAt(lineStarts, hit.taint.origin), certain))
         }
       }
-      if (limited) ctx.reportIncomplete('injection/request-input',
-        `${file.path} reached the request-input tracking limit (8 propagation passes, 512 assignments or 4000 expression characters per function)`)
+      reportInputLimit(ctx, file, analysed)
     }
     return findings
   },

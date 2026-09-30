@@ -205,7 +205,7 @@ describe('RULE_IDS covers every id a scan can produce', () => {
 
   test('every hand-written id is one a rule can actually emit', () => {
     // 所有显式注册 ID 也必须对应实际实现。
-    const sources = ['apiauth', 'cors', 'exposure', 'firebase', 'gitleak', 'injection', 'supabase']
+    const sources = ['apiauth', 'cors', 'exposure', 'firebase', 'gitleak', 'injection', 'outbound', 'supabase']
       .map((name) => readFileSync(join(here, '..', 'src', 'rules', `${name}.ts`), 'utf8'))
       .join('\n')
     for (const id of RULE_IDS) {

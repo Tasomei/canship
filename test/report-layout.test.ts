@@ -32,6 +32,8 @@ test('rule namespaces map to report categories, with unknown namespaces kept vis
   assert.equal(categoryOf('cors/wildcard-with-credentials'), 'CORS')
   assert.equal(categoryOf('injection/sql'), 'Code')
   assert.equal(categoryOf('injection/command'), 'Code')
+  assert.equal(categoryOf('ssrf/request-url'), 'Code')
+  assert.equal(categoryOf('redirect/open'), 'Code')
   assert.equal(categoryOf('future/unknown-rule'), 'Other')
   const rows = categoryCounts([finding({}), finding({ ruleId: 'injection/sql', severity: 'P2' }),
     finding({ ruleId: 'future/unknown-rule', severity: 'P2' })])

@@ -28,6 +28,8 @@ npx canship .
 | 服务端数据操作未识别到鉴权 | P0 / P1 |
 | 携带凭据的 CORS 来源回显或通配符配置 | P1 / P2 |
 | 服务端路由中由请求输入拼接的 SQL 查询和 shell 命令 | P1 |
+| 由调用方决定目标主机的服务端请求（SSRF） | P1 |
+| 由调用方决定目标站点的重定向 | P2 |
 
 识别 OpenAI、Anthropic、AWS、Stripe、GitHub、npm 等凭据格式。Firebase 检查覆盖 Firestore、Storage、Realtime Database。规则 ID 与范围见 `--list-rules`。
 

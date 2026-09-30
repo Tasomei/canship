@@ -28,6 +28,8 @@ Requires Node.js ≥18; no runtime dependencies. Installation may use the networ
 | Server-side data operations without recognised authentication | P0 / P1 |
 | Credentialed CORS with reflected or wildcard origins | P1 / P2 |
 | SQL queries and shell commands built from request input in server routes | P1 |
+| Server requests to caller-chosen hosts (SSRF) | P1 |
+| Redirects to caller-chosen sites | P2 |
 
 Recognises OpenAI, Anthropic, AWS, Stripe, GitHub, npm, and other credential formats. Firebase checks cover Firestore, Storage, and Realtime Database. Use `--list-rules` for rule IDs and scope.
 

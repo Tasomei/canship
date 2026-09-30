@@ -2,8 +2,11 @@
  * 有界追踪路由函数内的请求输入：只识别同一函数内的简单赋值、解构与字符串拼接，不跨函数，不执行代码。
  * 所有文本均为屏蔽注释和字符串内容后的代码，偏移与原文一致。
  */
+import type { ScanContext, ScanFile } from '../types.js'
+import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
 import { namePattern } from './bindings.js'
-import type { FunctionBody } from './apiauth.js'
+import { lineStartsOf } from './offsets.js'
+import { delimiterPairs, functionBodies, routeOf, serverActionRoutes, type FunctionBody, type Route } from './apiauth.js'
 
 /** direct：请求值经赋值、解构或字符串拼接原样到达；derived：中途经过其他调用，无法确认是否已校验。 */
 export type InputLevel = 'direct' | 'derived'
@@ -14,6 +17,11 @@ export interface Taint {
   origin: number
   /** 表达式引用的已追踪变量，用于检查使用前是否校验过。 */
   names: Set<string>
+  /**
+   * 值只是请求自身的 URL（request.url、nextUrl 及其副本）：主机固定为本站，只有其中的查询、路径可控。
+   * 注入仍按输入处理；判断请求能否改变外部请求或跳转的目标主机时不算。
+   */
+  ownUrl: boolean
 }
 
 /** 处理函数参数的角色：请求对象、URL 对象、Cookie 对象，或本身即为调用方可控的值。 */
@@ -57,7 +65,7 @@ const H3_READERS = 'readBody|readFormData|readMultipartFormData|readRawBody|read
 const LITERAL = String.raw`(?:'[^']*'|"[^"]*"|\x60[^\x60$]*\x60|-?\d+(?:\.\d+)?|null|undefined|true|false)`
 const CLEAN_EXPRESSION = [
   /^(?:await\s+)?(?:Number|parseInt|parseFloat|Boolean|BigInt|isNaN|Math\s*\.\s*\w+|Number\s*\.\s*\w+)\s*\(/,
-  /^(?:await\s+)?(?:[\w$]+\s*\.\s*)*(?:escape\w*|quote\w*|sanitiz\w*)\s*\(/i,
+  /^(?:await\s+)?(?:[\w$]+\s*\.\s*)*(?:[Ee]scape\w*|[Qq]uote\w*|[Ss]anitiz\w*|safe[A-Z_]\w*)\s*\(/,
   /\.\s*length\s*$/,
   /^(?:!|typeof\b)/,
   /\.\s*(?:includes|test|has|startsWith|endsWith|some|every)\s*\([^?]*\)\s*$/,
@@ -66,6 +74,12 @@ const CLEAN_EXPRESSION = [
   // 带标签的模板由标签函数处理插值（Prisma.sql、sql、html），String.raw 除外。
   /^(?:await\s+)?(?!String\s*\.\s*raw\b)[\w$]+(?:\s*\.\s*[\w$]+)*\s*\x60/,
 ]
+
+/** 请求自身 URL 中调用方可控的部分；主机、协议等部分由本站决定。 */
+const URL_INPUT_ACCESS = /\??\.\s*(?:searchParams|pathname|search|hash)\b/
+const URL_INPUT_KEYS = new Set(['searchParams', 'pathname', 'search', 'hash'])
+const URL_ORIGIN_ACCESS = /^\s*\??\.\s*(?:origin|host|hostname|protocol|port)\b/
+const URL_ORIGIN_KEYS = new Set(['origin', 'host', 'hostname', 'protocol', 'port'])
 
 /** 顶层比较运算，排除箭头函数与三元条件中的比较。 */
 function isComparison(expr: string): boolean {
@@ -87,7 +101,7 @@ function parameterList(text: string): string[] {
 }
 
 /** 对象解构的键到本地名称，如 { request: req, params } → request→req、params→params。 */
-function destructuredKeys(pattern: string): Array<{ key: string; local: string }> {
+export function destructuredKeys(pattern: string): Array<{ key: string; local: string }> {
   const inner = pattern.slice(1, pattern.lastIndexOf('}'))
   const result: Array<{ key: string; local: string }> = []
   for (const part of parameterList(inner)) {
@@ -187,7 +201,7 @@ function expressionEnd(code: string, from: number, limit: number, pairs: Map<num
   return stop
 }
 
-interface Assignment { at: number; names: string[]; expr: string; exprAt: number; iterate: boolean }
+interface Assignment { at: number; pattern: string; names: string[]; expr: string; exprAt: number; iterate: boolean; append: boolean }
 
 /** 一个处理函数内请求输入的流向。 */
 export class InputFlow {
@@ -197,6 +211,7 @@ export class InputFlow {
   limited = false
   /** 每个变量全部赋值的原文，判断拼接出的字符串是否像 SQL 时包括不含输入的部分。 */
   private readonly assigned = new Map<string, string[]>()
+  private readonly assignmentList = new Map<string, Assignment[]>()
   private sourcePattern: RegExp | null
   private namePatternCache: { key: string; regex: RegExp | null } = { key: '', regex: null }
 
@@ -207,7 +222,7 @@ export class InputFlow {
     private readonly pairs: Map<number, number>,
     roles: ParamRoles,
   ) {
-    for (const [name, at] of roles.values) this.names.set(name, { level: 'direct', origin: at, names: new Set([name]) })
+    for (const [name, at] of roles.values) this.names.set(name, { level: 'direct', origin: at, names: new Set([name]), ownUrl: false })
     this.sourcePattern = sourceRegex(roles)
     this.propagate()
   }
@@ -219,22 +234,32 @@ export class InputFlow {
     let found: Taint | null = null
     if (this.sourcePattern) {
       this.sourcePattern.lastIndex = 0
-      const m = this.sourcePattern.exec(expr)
-      if (m) found = mergeTaint(found, { level: 'direct', origin: exprAt + m.index, names: new Set() })
+      for (const m of expr.matchAll(this.sourcePattern)) {
+        const after = expr.slice(m.index + m[0].length)
+        const ownUrl = m[1] === 'url' || m[1] === 'nextUrl'
+        if (ownUrl && URL_ORIGIN_ACCESS.test(after)) continue
+        found = mergeTaint(found, { level: 'direct', origin: exprAt + m.index, names: new Set(),
+          ownUrl: ownUrl && !URL_INPUT_ACCESS.test(after.slice(0, 40)) })
+      }
     }
     const refs = this.nameRegex()
     if (refs) {
       refs.lastIndex = 0
       for (const m of expr.matchAll(refs)) {
         const before = expr.slice(0, m.index).trimEnd()
-        const after = expr.slice(m.index + m[0].length).trimStart()
+        const after = expr.slice(m.index + m[0].length)
         // 对象字面量的键不是引用。
-        if (/^:(?!:)/.test(after) && /[{,]$/.test(before)) continue
+        if (/^\s*:(?!:)/.test(after) && /[{,]$/.test(before)) continue
         const t = this.names.get(m[0])
-        if (t) found = mergeTaint(found, t)
+        if (!t) continue
+        // 本站 URL 的 origin、host 等不可控；取其查询或路径部分则成为可控输入。
+        if (t.ownUrl && URL_ORIGIN_ACCESS.test(after)) continue
+        found = mergeTaint(found, t.ownUrl && URL_INPUT_ACCESS.test(after.slice(0, 40)) ? { ...t, ownUrl: false } : t)
       }
     }
     if (!found) return null
+    // new URL(request.url).searchParams.get(…) 之类在调用结果上取查询部分。
+    if (found.ownUrl && URL_INPUT_ACCESS.test(text)) found.ownUrl = false
     // JSON.parse 只改变形式；schema.parse 等校验调用使结果降为 derived。
     const calls = [...text.replace(/\bJSON\s*\.\s*parse\s*\(/g, '(').matchAll(/([\w$]+)\s*\(/g)].map(m => m[1]!)
     if (calls.some(name => !TRANSPARENT_CALLS.has(name))) found.level = 'derived'
@@ -260,6 +285,16 @@ export class InputFlow {
 
   assignedText(name: string): string {
     return (this.assigned.get(name) ?? []).join('\n')
+  }
+
+  /** 变量的全部赋值，用于判断拼接结果的开头是否由输入决定。 */
+  assignmentsFor(name: string): ReadonlyArray<{ expr: string; exprAt: number; append: boolean }> {
+    return this.assignmentList.get(name) ?? []
+  }
+
+  /** 顶层 + 拼接的各操作数；括号与模板插值内部的 + 不拆分。 */
+  operandsOf(expr: string, exprAt: number): Array<{ text: string; at: number }> {
+    return this.topLevelOperands(expr, exprAt)
   }
 
   /** 使用前是否检查过内容：条件中除存在性判断外的引用，或作为校验函数实参。 */
@@ -331,6 +366,11 @@ export class InputFlow {
       const list = this.assigned.get(name) ?? []
       if (list.length < 16) list.push(this.source.slice(a.exprAt, a.exprAt + a.expr.length))
       this.assigned.set(name, list)
+      if (a.names.length === 1 && !a.iterate) {
+        const own = this.assignmentList.get(name) ?? []
+        if (own.length < 16) own.push(a)
+        this.assignmentList.set(name, own)
+      }
     }
     for (let pass = 0; pass < MAX_PASSES; pass++) {
       let changed = false
@@ -338,17 +378,17 @@ export class InputFlow {
         const built = a.iterate ? null : this.builtOf(a.expr, a.exprAt)
         const taint = built ?? this.taintOf(a.expr, a.exprAt)
         if (!taint) continue
-        for (const name of a.names) {
+        for (const [name, own] of this.targetsOf(a, taint)) {
           const previous = this.names.get(name)
-          if (!previous || (previous.level === 'derived' && taint.level === 'direct')) {
-            this.names.set(name, { level: taint.level, origin: taint.origin, names: new Set([name, ...taint.names]) })
+          if (!previous || (previous.level === 'derived' && taint.level === 'direct') || (previous.ownUrl && !own)) {
+            this.names.set(name, { level: taint.level, origin: taint.origin, names: new Set([name, ...taint.names]), ownUrl: own })
             changed = true
           }
           const text = this.source.slice(a.exprAt, a.exprAt + a.expr.length)
           const existing = this.built.get(name)
           if (built && a.names.length === 1) {
             if (!existing) {
-              this.built.set(name, { level: built.level, origin: built.origin, names: new Set([name, ...built.names]), text })
+              this.built.set(name, { level: built.level, origin: built.origin, names: new Set([name, ...built.names]), ownUrl: built.ownUrl, text })
               changed = true
             } else if (!existing.text.includes(text)) {
               existing.text += `\n${text}`
@@ -359,6 +399,20 @@ export class InputFlow {
       if (!changed) return
       if (pass === MAX_PASSES - 1) this.limited = true
     }
+  }
+
+  /**
+   * 赋值目标及其是否仍只是本站 URL。从本站 URL 解构时按键区分：
+   * searchParams、pathname 等为可控输入，origin、host 等不可控，其余保持本站 URL。
+   */
+  private targetsOf(a: Assignment, taint: Taint): Array<[string, boolean]> {
+    if (!taint.ownUrl || !a.pattern.trim().startsWith('{')) return a.names.map(name => [name, taint.ownUrl])
+    const targets: Array<[string, boolean]> = []
+    for (const { key, local } of destructuredKeys(a.pattern.trim())) {
+      if (URL_ORIGIN_KEYS.has(key)) continue
+      targets.push([local, !URL_INPUT_KEYS.has(key)])
+    }
+    return targets
   }
 
   private assignments(): Assignment[] {
@@ -390,14 +444,14 @@ export class InputFlow {
         if (forOf) {
           const exprAt = patternEnd + forOf[0].length
           const end = expressionEnd(code, exprAt, span.end, pairs)
-          push({ at, names: patternNames(pattern), expr: code.slice(exprAt, end), exprAt, iterate: true })
+          push({ at, pattern, names: patternNames(pattern), expr: code.slice(exprAt, end), exprAt, iterate: true, append: false })
           break
         }
         const eq = /^\s*(?::[^=;]{0,200}?)?=(?![=>])/.exec(rest)
         if (!eq) break
         const exprAt = patternEnd + eq[0].length
         const end = expressionEnd(code, exprAt, span.end, pairs)
-        push({ at, names: patternNames(pattern), expr: code.slice(exprAt, end), exprAt, iterate: false })
+        push({ at, pattern, names: patternNames(pattern), expr: code.slice(exprAt, end), exprAt, iterate: false, append: false })
         if (code[end] !== ',') break
         at = end + 1
         while (/\s/.test(code[at] ?? '')) at++
@@ -409,7 +463,7 @@ export class InputFlow {
       if (/\b(?:const|let|var)\s+$/.test(before)) continue
       const exprAt = span.start + m.index + m[0].length
       const end = expressionEnd(code, exprAt, span.end, pairs)
-      push({ at: span.start + m.index, names: [m[1]!], expr: code.slice(exprAt, end), exprAt, iterate: false })
+      push({ at: span.start + m.index, pattern: m[1]!, names: [m[1]!], expr: code.slice(exprAt, end), exprAt, iterate: false, append: m[2] === '+=' })
     }
     return found
   }
@@ -421,13 +475,13 @@ function sourceRegex(roles: ParamRoles): RegExp | null {
   if (roles.objects.size > 0) {
     const objects = namePattern(roles.objects.keys())
     parts.push(
-      String.raw`(?<![\w$.])(?:${objects})(?:\s*\??\.\s*(?:request|event))?\s*\??\.\s*(?:json|formData|text|arrayBuffer|blob|body|query|params|url|nextUrl|headers|cookies|searchParams)\b`,
+      String.raw`(?<![\w$.])(?:${objects})(?:\s*\??\.\s*(?:request|event))?\s*\??\.\s*(json|formData|text|arrayBuffer|blob|body|query|params|url|nextUrl|headers|cookies|searchParams)\b`,
       String.raw`(?<![\w$.])(?:${objects})\s*\??\.\s*context\s*\??\.\s*params\b`,
       String.raw`\b(?:${H3_READERS})\s*(?:<[^()]{0,200}>\s*)?\(\s*(?:${objects})\b`,
     )
   }
   if (roles.urls.size > 0) {
-    parts.push(String.raw`(?<![\w$.])(?:${namePattern(roles.urls.keys())})\s*\??\.\s*(?:searchParams|pathname|search|href|hash)\b`)
+    parts.push(String.raw`(?<![\w$.])(?:${namePattern(roles.urls.keys())})\s*\??\.\s*(?:searchParams|pathname|search|hash)\b`)
   }
   if (roles.cookies.size > 0) {
     parts.push(String.raw`(?<![\w$.])(?:${namePattern(roles.cookies.keys())})\s*\??\.\s*get(?:All)?\s*\(`)
@@ -437,8 +491,10 @@ function sourceRegex(roles: ParamRoles): RegExp | null {
 
 /** 合并两处来源：任一处经过其他调用即整体降为 derived。 */
 function mergeTaint(found: Taint | null, t: Taint): Taint {
-  if (!found) return { level: t.level, origin: t.origin, names: new Set(t.names) }
+  if (!found) return { level: t.level, origin: t.origin, names: new Set(t.names), ownUrl: t.ownUrl }
   if (t.level === 'derived') found.level = 'derived'
+  // 任一部分是可控输入，合并结果即为可控输入；来源位置取可控的那一处。
+  if (found.ownUrl && !t.ownUrl) { found.ownUrl = false; found.origin = t.origin }
   for (const n of t.names) found.names.add(n)
   return found
 }
@@ -446,4 +502,61 @@ function mergeTaint(found: Taint | null, t: Taint): Taint {
 /** 参数角色是否包含任何请求来源。 */
 export function hasInput(roles: ParamRoles): boolean {
   return roles.objects.size + roles.urls.size + roles.cookies.size + roles.values.size > 0
+}
+
+/** 路由中接收请求的函数及其输入流向。 */
+export interface RouteHandler { route: Route; body: FunctionBody; flow: InputFlow }
+
+/** 一个路由文件的共享分析结果，供注入、SSRF 与重定向规则共用。 */
+export interface HandlerFile {
+  code: string
+  source: string
+  pairs: Map<number, number>
+  lineStarts: number[]
+  handlers: RouteHandler[]
+  limited: boolean
+}
+
+const handlerCache = new WeakMap<ScanFile, HandlerFile | null>()
+
+/** 路由文件中接收请求的函数；不是路由的文件返回空值。结果按文件对象缓存，生命周期随扫描结束。 */
+export function handlerFileOf(file: ScanFile): HandlerFile | null {
+  const cached = handlerCache.get(file)
+  if (cached !== undefined) return cached
+  let result: HandlerFile | null = null
+  if (/\.[mc]?[jt]sx?$/.test(file.path)) {
+    const route = routeOf(file)
+    const routes = route === null ? serverActionRoutes(file) : [route]
+    if (routes.length > 0) {
+      const code = noiseMaskedOf(file)
+      const source = commentsMaskedOf(file)
+      const pairs = delimiterPairs(code)
+      const openers = new Map<number, number>()
+      for (const [open, close] of pairs) openers.set(close, open)
+      const bodies = functionBodies(code, pairs)
+      const handlers: RouteHandler[] = []
+      for (const r of routes) {
+        const reachable = r.reachable
+        for (const body of bodies) {
+          if (reachable && (body.start < reachable.start || body.end > reachable.end)) continue
+          // Server Function 只有自身参数来自客户端；其中的嵌套函数按普通处理函数判断。
+          const action = r.action !== undefined && reachable !== undefined && body.start === reachable.start
+          const params = parametersOf(code, body, pairs, openers)
+          if (!params) continue
+          const roles = paramRoles(source.slice(params.start, params.end), params.start, action)
+          if (!hasInput(roles)) continue
+          handlers.push({ route: r, body, flow: new InputFlow(code, source, { start: body.start, end: body.end }, pairs, roles) })
+        }
+      }
+      result = { code, source, pairs, lineStarts: lineStartsOf(file.content), handlers,
+        limited: handlers.some(h => h.flow.limited) }
+    }
+  }
+  handlerCache.set(file, result)
+  return result
+}
+/** 追踪达到上限时记录一次扫描缺口；三条规则共用同一条记录，由引擎按规则与消息去重。 */
+export function reportInputLimit(ctx: ScanContext, file: ScanFile, analysed: HandlerFile): void {
+  if (analysed.limited) ctx.reportIncomplete('request-input/tracking',
+    `${file.path} reached the request-input tracking limit (8 propagation passes, 512 assignments or 4000 expression characters per function)`)
 }

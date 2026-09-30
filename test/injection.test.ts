@@ -269,7 +269,7 @@ ${lines.slice(1).join('\n')}
   return Response.json(await pool.query(\`SELECT * FROM t WHERE a = \${v2999}\`))
 }`))
     assert.ok(Date.now() - started < 10_000, 'the scan took too long')
-    assert.ok(result.errors.some(e => e.ruleId === 'injection/request-input' && e.kind === 'incomplete'))
+    assert.ok(result.errors.some(e => e.ruleId === 'request-input/tracking' && e.kind === 'incomplete'))
     assert.equal(result.partial, true)
   })
 })

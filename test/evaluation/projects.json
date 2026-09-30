@@ -10,8 +10,10 @@
       "tree": "b8c008d1ce18e38a6dce3d8049a17d5d00b35cb0",
       "license": "MIT",
       "sourceFiles": 54,
-      "expectedFindings": [],
-      "note": "No findings expected within the scanner's supported static checks."
+      "expectedFindings": [
+        { "rule": "redirect/open", "severity": "P2", "confidence": "certain", "file": "app/auth/confirm/route.ts", "line": 21 }
+      ],
+      "note": "The email confirmation route passes the next query parameter to redirect() without checking it, and redirect() accepts absolute URLs. A link built from the sender's own valid token_hash can therefore send the reader to another site after confirmation."
     },
     {
       "id": "supabase-nextjs-user-management",

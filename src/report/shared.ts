@@ -70,7 +70,7 @@ export function categoryOf(ruleId: string): Category {
   if (namespace === 'api') return 'API access'
   if (namespace === 'supabase' || namespace === 'firebase') return 'Database rules'
   if (namespace === 'cors') return 'CORS'
-  if (namespace === 'injection') return 'Code'
+  if (namespace === 'injection' || namespace === 'ssrf' || namespace === 'redirect') return 'Code'
   return 'Other'
 }
 
