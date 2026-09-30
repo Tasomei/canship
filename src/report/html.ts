@@ -1,66 +1,22 @@
-/** 生成自包含的离线 HTML 报告，不加载外部资源。 */
+/**
+ * 生成自包含的离线 HTML 报告。内容全部静态写入页面，脚本只负责筛选、分组、复制与打印展开；
+ * 内容安全策略禁止加载任何外部资源，内联脚本按哈希放行。
+ */
 
+import { createHash } from 'node:crypto'
 import type { Finding, ScanResult } from '../types.js'
-import { changeViewNotice, locationOf, plural, skipPhrase, verdictOf } from './shared.js'
-
-/** 转义插入 HTML 的文本。 */
-function esc(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-/** 逐段渲染并保留段落结构。 */
-function paragraphs(parts: string[]): string {
-  return parts.map((p) => `<p>${esc(p.trim())}</p>`).join('')
-}
-
-/** 将文本中的 URL 转为可点击链接。 */
-function linkify(html: string): string {
-  return html.replace(
-    /https?:\/\/[^\s<>"')]+/g,
-    (url) => `<a href="${url}" target="_blank" rel="noreferrer noopener">${url}</a>`,
-  )
-}
-
-function renderFinding(f: Finding, index: number): string {
-  const location = locationOf(f)
-  const cls = f.confidence === 'certain' ? 'certain' : 'likely'
-
-  const fixList =
-    f.fix.length > 0
-      ? `<h4>How to fix</h4><ol>${f.fix.map((s) => `<li>${linkify(esc(s))}</li>`).join('')}</ol>`
-      : ''
-
-  const humanList =
-    f.humanOnly && f.humanOnly.length > 0
-      ? `<div class="human"><h4>Only you can do this</h4><ul>${f.humanOnly
-          .map((s) => `<li>${linkify(esc(s))}</li>`)
-          .join('')}</ul></div>`
-      : ''
-
-  return `
-<article class="finding ${cls}">
-  <header>
-    <span class="num">${index}</span>
-    <h3>${esc(f.title)}</h3>
-  </header>
-  <div class="loc">${esc(location)}${f.confidence === 'likely' ? ' <span class="tag">lower confidence</span>' : ''}</div>
-  ${f.excerpt ? `<pre><code>${esc(f.excerpt)}</code></pre>` : ''}
-  ${f.evidence?.length ? `<h4>Evidence (static relationships)</h4><ol>${f.evidence.map(step =>
-    `<li><code>${esc(locationOf(step))}</code> — ${esc(step.description)}</li>`).join('')}</ol>${f.evidenceTruncated ? '<p>Additional dependency steps omitted.</p>' : ''}` : ''}
-  <div class="why">${linkify(paragraphs(f.why))}</div>
-  ${fixList}
-  ${humanList}
-</article>`
-}
+import { renderFixPrompt } from './prompt.js'
+import {
+  categoryCounts, categoryOf, CATEGORIES, changeViewNotice, groupByFile, locationOf, manualSteps, plural, SEVERITIES,
+  skipPhrase, verdictOf,
+} from './shared.js'
 
 export interface HtmlOptions {
   root: string
   /** 报告生成时间。 */
   generatedAt: string
+  /** 页眉显示的扫描器版本。 */
+  version?: string
   /** 默认视图隐藏的疑似结果数。 */
   hiddenLikely?: number
   /** 基线抑制数量；独立报告必须披露这一信息。 */
@@ -71,238 +27,406 @@ export interface HtmlOptions {
   baselinePath?: string | null
 }
 
+/** 转义插入 HTML 的文本；所有来自被扫描仓库的内容都必须经过这里。 */
+function esc(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+/** 逐段渲染并保留段落结构。 */
+function paragraphs(parts: string[]): string {
+  return parts.map((p) => `<p>${linkify(esc(p.trim()))}</p>`).join('')
+}
+
+/** 将已转义文本中的 URL 转为链接。 */
+function linkify(html: string): string {
+  return html.replace(
+    /https?:\/\/[^\s<>"')]+/g,
+    (url) => `<a href="${url}" target="_blank" rel="noreferrer noopener">${url}</a>`,
+  )
+}
+
+/** 嵌入数据块时转义可提前结束脚本元素的字符。 */
+function jsonForScript(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(new RegExp(String.fromCharCode(0x2028), 'g'), '\\u2028')
+    .replace(new RegExp(String.fromCharCode(0x2029), 'g'), '\\u2029')
+}
+
+/** ISO 时间转为分钟精度的 UTC；无法解析时原样显示。 */
+function displayTime(iso: string): string {
+  const date = new Date(iso)
+  if (!iso || Number.isNaN(date.getTime())) return iso
+  return `${date.toISOString().slice(0, 16).replace('T', ' ')} UTC`
+}
+
+const EVIDENCE_LABEL: Record<NonNullable<Finding['evidence']>[number]['kind'], string> = {
+  operation: 'operation',
+  import: 'imports',
+  'admin-client': 'admin client',
+  'auth-helper': 'auth helper',
+}
+
+function renderFinding(f: Finding, index: number): string {
+  const category = categoryOf(f.ruleId)
+  const search = `${f.title} ${f.file ?? ''} ${f.ruleId}`.toLowerCase()
+  const trace = f.evidence?.length
+    ? `<h3>Trace (static relationships)</h3><ol class="trace">${f.evidence.map(step =>
+      `<li><span class="k">${EVIDENCE_LABEL[step.kind]}</span><span class="v">${esc(locationOf(step))}</span><span class="note">${esc(step.description)}</span></li>`).join('')}</ol>${f.evidenceTruncated ? '<p class="faint">Additional dependency steps omitted.</p>' : ''}`
+    : ''
+  const fix = f.fix.length > 0 ? `<h3>Fix</h3><ol class="steps">${f.fix.map(s => `<li>${linkify(esc(s))}</li>`).join('')}</ol>` : ''
+  const hand = f.humanOnly?.length
+    ? `<div class="hand"><b>By hand</b><ul>${f.humanOnly.map(s => `<li>${linkify(esc(s))}</li>`).join('')}</ul></div>`
+    : ''
+  return `<details class="f" data-i="${index}" data-sev="${f.severity}" data-cat="${esc(category)}" data-conf="${f.confidence}" data-file="${esc(f.file ?? '')}" data-text="${esc(search)}">
+<summary class="row"><span class="sev ${f.severity}">${f.severity}</span><span class="main"><span class="title">${esc(f.title)}</span>${f.confidence === 'likely' ? '<span class="likely">likely</span>' : ''}<span class="loc"><span class="loc-line">${f.line === null ? 'whole file' : `line ${f.line}`}</span><span class="loc-full">${esc(locationOf(f))}</span></span></span><span class="cat">${esc(category)}</span></summary>
+<div class="body">
+<p class="rule">${esc(f.ruleId)}</p>
+${f.excerpt ? `<pre class="excerpt"><code>${esc(f.excerpt)}</code></pre>` : ''}
+<div class="why">${paragraphs(f.why)}</div>
+${trace}${fix}${hand}
+<p class="actions"><button type="button" class="link" data-copy="${index}">copy fix prompt</button></p>
+</div>
+</details>`
+}
+
+/** 页面脚本：只操作已渲染的元素，不加载任何资源。 */
+const SCRIPT = `(function(){
+var d=document,b=d.body;b.classList.add('js');
+var data={};try{data=JSON.parse(d.getElementById('canship-data').textContent||'{}')}catch(e){}
+var rows=[].slice.call(d.querySelectorAll('details.f')),list=d.getElementById('list'),st={sev:null,cat:null,q:'',g:'file'};
+var SEV=['P0','P1','P2'],CAT=data.categories||[];
+function matches(r){return(!st.sev||r.dataset.sev===st.sev)&&(!st.cat||r.dataset.cat===st.cat)&&(!st.q||r.dataset.text.indexOf(st.q)>=0)}
+function keyOf(r){return st.g==='sev'?r.dataset.sev:st.g==='cat'?r.dataset.cat:r.dataset.file}
+function label(k){return st.g==='sev'?k+' \\u00b7 '+({P0:'critical',P1:'high',P2:'medium'})[k]:(k||'repository')}
+function render(){
+  if(!list)return;
+  var groups=[],index={};
+  rows.forEach(function(r){var k=keyOf(r);if(!(k in index)){index[k]=groups.length;groups.push({k:k,rows:[]})}groups[index[k]].rows.push(r)});
+  if(st.g==='sev')groups.sort(function(a,c){return SEV.indexOf(a.k)-SEV.indexOf(c.k)});
+  if(st.g==='cat')groups.sort(function(a,c){return CAT.indexOf(a.k)-CAT.indexOf(c.k)});
+  list.textContent='';var shown=0;
+  groups.forEach(function(g){
+    var visible=g.rows.filter(matches);if(!visible.length)return;shown+=visible.length;
+    var h=d.createElement('div');h.className='group';var name=d.createElement('span');name.className='gk';name.textContent=label(g.k);
+    h.appendChild(name);h.appendChild(d.createTextNode(' \\u2014 '+visible.length));list.appendChild(h);
+    var box=d.createElement('div');box.className='ledger';visible.forEach(function(r){box.appendChild(r)});list.appendChild(box);
+  });
+  list.classList.toggle('by-file',st.g==='file');
+  var count=d.getElementById('count');if(count)count.textContent=shown===rows.length?rows.length+' findings':shown+' of '+rows.length+' findings';
+  var empty=d.getElementById('empty');if(empty)empty.hidden=shown>0;
+  [].forEach.call(d.querySelectorAll('[data-filter-sev]'),function(x){x.classList.toggle('on',(x.dataset.filterSev||null)===st.sev&&!st.cat)});
+  [].forEach.call(d.querySelectorAll('[data-group]'),function(x){x.classList.toggle('on',x.dataset.group===st.g)});
+  [].forEach.call(d.querySelectorAll('[data-mx-cat]'),function(x){x.classList.toggle('on',x.dataset.mxCat===st.cat&&x.dataset.mxSev===st.sev)});
+}
+[].forEach.call(d.querySelectorAll('[data-filter-sev]'),function(x){x.onclick=function(){st.sev=x.dataset.filterSev||null;st.cat=null;render()}});
+[].forEach.call(d.querySelectorAll('[data-group]'),function(x){x.onclick=function(){st.g=x.dataset.group;render()}});
+[].forEach.call(d.querySelectorAll('[data-mx-cat]'),function(x){x.onclick=function(){var same=st.cat===x.dataset.mxCat&&st.sev===x.dataset.mxSev;st.cat=same?null:x.dataset.mxCat;st.sev=same?null:x.dataset.mxSev;render()}});
+var q=d.getElementById('q');if(q)q.oninput=function(){st.q=q.value.toLowerCase();render()};
+var clear=d.getElementById('clear');if(clear)clear.onclick=function(){st.sev=null;st.cat=null;st.q='';if(q)q.value='';render()};
+function copy(text,btn){
+  function done(){var t=btn.textContent;btn.textContent='copied';setTimeout(function(){btn.textContent=t},1200)}
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done,fallback)}else fallback();
+  function fallback(){var a=d.createElement('textarea');a.value=text;d.body.appendChild(a);a.select();try{d.execCommand('copy');done()}catch(e){}d.body.removeChild(a)}
+}
+[].forEach.call(d.querySelectorAll('[data-copy]'),function(x){x.onclick=function(e){e.preventDefault();var t=(data.prompts||{})[x.dataset.copy];if(t)copy(t,x)}});
+var store=null;try{store=window.localStorage}catch(e){}
+var prefix='canship:'+(data.key||'')+':';
+[].forEach.call(d.querySelectorAll('.manual input[type=checkbox]'),function(c){
+  try{c.checked=!!store&&store.getItem(prefix+c.dataset.step)==='1'}catch(e){}
+  c.closest('li').classList.toggle('done',c.checked);
+  c.onchange=function(){c.closest('li').classList.toggle('done',c.checked);try{if(store){if(c.checked)store.setItem(prefix+c.dataset.step,'1');else store.removeItem(prefix+c.dataset.step)}}catch(e){}};
+});
+var print=d.getElementById('print');if(print)print.onclick=function(){window.print()};
+window.addEventListener('beforeprint',function(){rows.forEach(function(r){r.open=true})});
+render();
+})();`
+
+const SCRIPT_HASH = createHash('sha256').update(SCRIPT, 'utf8').digest('base64')
+
+const STYLE = `
+:root{color-scheme:light dark;
+  --paper:#fcfcfa;--ink:#1b1b18;--ink-2:#5c5b56;--ink-3:#8f8d86;--rule:#dddbd3;--rule-2:#bdbab0;--hover:#f3f2ed;
+  --p0:#b3261e;--p1:#946200;--p2:#5c5b56;--ok:#2f6b2f;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --code:ui-monospace,"Cascadia Mono","SF Mono",Menlo,Consolas,monospace}
+@media (prefers-color-scheme:dark){:root{
+  --paper:#171715;--ink:#e9e7e0;--ink-2:#a8a69e;--ink-3:#77756e;--rule:#2e2d29;--rule-2:#4a4843;--hover:#1f1f1c;
+  --p0:#f2877f;--p1:#e0b050;--p2:#a8a69e;--ok:#8fcf8f}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.6 var(--serif);font-variant-numeric:lining-nums tabular-nums}
+button,input{font:inherit;color:inherit;background:none;border:0;padding:0}
+a{color:inherit}
+.page{max-width:1040px;margin:0 auto;padding:28px 32px 80px}
+.P0{color:var(--p0)}.P1{color:var(--p1)}.P2{color:var(--p2)}
+.faint{color:var(--ink-3)}
+.mast{display:flex;justify-content:space-between;align-items:baseline;gap:16px;border-bottom:1px solid var(--ink);padding-bottom:8px;font-size:13.5px}
+.mast .root{overflow-wrap:anywhere}
+.mast .right{white-space:nowrap}
+.link{cursor:pointer;text-decoration:underline;text-decoration-color:var(--rule-2);text-underline-offset:3px;margin-left:16px;color:var(--ink-2)}
+.js-only{display:none}.js .js-only{display:inline}
+.verdict-block{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:40px;padding:36px 0 30px;border-bottom:1px solid var(--rule)}
+h1.verdict{font-weight:400;font-size:44px;line-height:1.08;margin:0 0 12px;letter-spacing:-.01em}
+h1.verdict .n{color:var(--p0)}
+h1.verdict.warn .n{color:var(--p1)}
+h1.verdict.clean{color:var(--ok)}
+.verdict-block p{margin:0 0 8px;max-width:58ch;color:var(--ink-2)}
+.facts{font-size:13.5px;display:grid;grid-template-columns:auto auto;gap:4px 18px;align-self:end;color:var(--ink-2);margin:0}
+.facts dt{color:var(--ink-3)}.facts dd{margin:0;text-align:right;color:var(--ink)}
+.notice{color:var(--ink-3);font-size:13.5px;max-width:78ch;margin:14px 0 0}
+h2{font-weight:400;font-size:22px;margin:0 0 12px}
+.section{padding:28px 0;border-bottom:1px solid var(--rule)}
+.section.last{border-bottom:0}
+.two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:48px}
+table.matrix{border-collapse:collapse;width:100%}
+.matrix th,.matrix td{padding:7px 0;border-bottom:1px solid var(--rule);font-weight:400;text-align:right}
+.matrix th{font-size:13.5px;color:var(--ink-3)}
+.matrix th:first-child,.matrix td:first-child{text-align:left}
+.matrix td button{min-width:28px;text-align:right;cursor:pointer;border-bottom:1px solid transparent}
+.matrix td button:hover{border-bottom-color:currentColor}
+.matrix td button.on{border-bottom:2px solid currentColor}
+.matrix .zero{color:var(--rule-2)}
+.matrix tfoot td{border-bottom:0;color:var(--ink-2)}
+ol.manual{margin:0;padding:0;list-style:none}
+ol.manual li{display:grid;grid-template-columns:24px minmax(0,1fr);align-items:start;gap:8px;padding:6px 0;border-bottom:1px solid var(--rule);font-size:15px}
+ol.manual .num{color:var(--ink-3)}
+.js ol.manual .num{display:none}
+ol.manual input{display:none;margin:5px 0 0;accent-color:var(--ink)}
+.js ol.manual input{display:block}
+ol.manual li.done .t{color:var(--ink-3);text-decoration:line-through}
+ol.manual .src{font-size:13.5px;color:var(--ink-3);overflow-wrap:anywhere}
+.controls{display:none;flex-wrap:wrap;align-items:baseline;gap:6px 22px;margin:4px 0 10px;font-size:14px;color:var(--ink-2)}
+.js .controls{display:flex}
+.controls .lbl{color:var(--ink-3);margin-right:6px}
+.controls button{cursor:pointer;margin-right:10px;color:var(--ink-2)}
+.controls button.on{color:var(--ink);text-decoration:underline;text-underline-offset:4px;text-decoration-thickness:1.5px}
+.controls input{border-bottom:1px solid var(--rule-2);width:200px;padding:2px 0;outline:0}
+.controls input:focus{border-bottom-color:var(--ink)}
+.controls .clear{margin-left:auto}
+#count{color:var(--ink-3);font-size:13.5px;margin:0 0 4px}
+.head{display:grid;grid-template-columns:44px minmax(0,1fr) 130px;font-size:13.5px;color:var(--ink-3);padding:6px 0;border-bottom:1px solid var(--ink)}
+.group{padding:22px 0 6px;font-size:13.5px;color:var(--ink-3)}
+.group .gk{color:var(--ink);font-size:15.5px;overflow-wrap:anywhere}
+details.f{border-bottom:1px solid var(--rule)}
+summary.row{display:grid;grid-template-columns:44px minmax(0,1fr) 130px;align-items:start;padding:10px 0;cursor:pointer;list-style:none}
+summary.row::-webkit-details-marker{display:none}
+summary.row:hover{background:var(--hover)}
+summary.row:focus-visible{outline:2px solid var(--ink-2);outline-offset:2px}
+.sev{font-weight:600;font-size:14px;padding-left:4px}
+.main{min-width:0}
+.title{overflow-wrap:anywhere}
+.likely{font-size:13.5px;color:var(--ink-3);margin-left:8px}
+.loc{display:block;font-size:13.5px;color:var(--ink-2);overflow-wrap:anywhere}
+.loc-line{display:none}
+.by-file .loc-line{display:inline}.by-file .loc-full{display:none}
+.cat{font-size:13.5px;color:var(--ink-3)}
+.body{margin:0 0 22px 44px;max-width:740px}
+.body p{margin:0 0 12px;color:var(--ink-2)}
+.body .rule{font-size:13.5px;color:var(--ink-3)}
+.body h3{font-weight:400;font-style:italic;font-size:14px;color:var(--ink-3);margin:18px 0 6px}
+pre.excerpt{margin:0 0 14px;padding:8px 10px;background:var(--hover);overflow-x:auto}
+code{font-family:var(--code);font-size:12.5px}
+ol.trace{margin:0;padding:0;list-style:none;border-left:1px solid var(--rule-2)}
+ol.trace li{padding:3px 0 3px 14px;position:relative;font-size:14px}
+ol.trace li::before{content:"";position:absolute;left:-4px;top:12px;width:7px;height:7px;border-radius:50%;background:var(--paper);border:1px solid var(--rule-2)}
+ol.trace li:first-child::before{background:var(--p0);border-color:var(--p0)}
+ol.trace .k{color:var(--ink-3);display:inline-block;width:120px}
+ol.trace .v{overflow-wrap:anywhere}
+ol.trace .note{display:block;color:var(--ink-3);font-size:13.5px;margin-left:120px}
+ol.steps{margin:0;padding-left:20px}
+ol.steps li{margin-bottom:6px}
+.hand{margin-top:14px;padding-left:12px;border-left:2px solid var(--p1);font-size:15px}
+.hand ul{margin:4px 0 0;padding-left:18px}
+.actions{margin:14px 0 0;font-size:14px}
+.actions .link{margin-left:0}
+.incomplete{border-left:2px solid var(--p1);padding-left:14px}
+.incomplete ul{margin:0 0 8px;padding-left:18px}
+.notes p{margin:0 0 6px;color:var(--ink-2);font-size:14px}
+.checked ul{margin:0 0 12px;padding-left:18px;color:var(--ink-2)}
+.colophon{margin-top:36px;font-size:13.5px;color:var(--ink-3);max-width:78ch}
+@media (max-width:820px){.verdict-block,.two{grid-template-columns:1fr;gap:24px}h1.verdict{font-size:34px}
+  summary.row,.head{grid-template-columns:40px minmax(0,1fr)}.cat,.head .c{display:none}.body{margin-left:40px}}
+@media print{.controls,.link,#count{display:none!important}body{background:#fff;color:#000}.page{max-width:none;padding:0}}
+`
+
 export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
   const { findings } = result
   const hiddenLikely = opts.hiddenLikely ?? 0
   const baselineSuppressed = opts.baselineSuppressed ?? 0
   const baselineStale = opts.baselineStale ?? 0
-  // 联合严重度和置信度计算报告结论。
-  const { blocking, minor, unsure } = verdictOf(findings)
-  const certain = result.changeView?.totalBlocking ?? blocking
+  const { blocking: visibleBlocking, minor, unsure } = verdictOf(findings)
+  const blocking = result.changeView?.totalBlocking ?? visibleBlocking
+  const steps = manualSteps(findings)
+  const rotations = steps.filter(step => /^Rotate\b/.test(step.text)).length
 
-  const verdict =
-    findings.length === 0
-      ? result.filesScanned === 0
-        ? // 未扫描文件时不显示通过结论。
-          `<div class="verdict warn">No files were scanned &mdash; nothing was checked</div>`
-        : result.partial
-          ? // 扫描不完整时不得显示正常通过。
-            hiddenLikely > 0
-              ? `<div class="verdict warn">No certain findings &mdash; ${hiddenLikely} lower-confidence ${plural(hiddenLikely, 'finding')} hidden, and not everything was checked</div>`
-              : `<div class="verdict warn">No findings &mdash; but not everything was checked</div>`
-          : (result.changeView?.hiddenFindings ?? 0) > 0
-            ? `<div class="verdict warn">No visible findings in changed files &mdash; other findings still exist</div>`
-          : hiddenLikely > 0
-            ? `<div class="verdict warn">No certain findings &mdash; ${hiddenLikely} lower-confidence ${plural(hiddenLikely, 'finding')} hidden</div>`
-            : // 基线抑制结果时明确说明，避免误报为项目无问题。
-              baselineSuppressed > 0
-              ? `<div class="verdict warn">No new findings &mdash; ${baselineSuppressed} ${plural(baselineSuppressed, 'finding')} accepted by the baseline</div>`
-              : `<div class="verdict clean">No exposed credentials found</div>`
-      : certain > 0
-        ? `<div class="verdict bad">${certain} critical ${plural(certain, 'issue')} &mdash; do not deploy</div>`
-        : minor > 0
-          ? `<div class="verdict warn">${minor} ${plural(minor, 'thing')} to fix &mdash; nothing exposed</div>`
-          : `<div class="verdict warn">${unsure} possible ${plural(unsure, 'issue')} to review</div>`
+  // 结论与终端一致；无结果时区分空扫描、未完成、隐藏和基线，避免误报为安全。
+  let verdict: string
+  let explanation = ''
+  if (findings.length > 0) {
+    if (blocking > 0) {
+      verdict = `<h1 class="verdict bad"><span class="n">${blocking} blocking ${plural(blocking, 'finding')}.</span><br>Do not deploy yet.</h1>`
+      explanation = 'Every certain P0 or P1 result below needs a code change.' + (rotations > 0
+        ? ` ${rotations} exposed ${plural(rotations, 'credential')} must also be rotated in ${rotations === 1 ? 'its provider' : 'their providers'}; a code change does not revoke ${rotations === 1 ? 'it' : 'them'}.`
+        : '')
+    } else if (minor > 0) {
+      verdict = `<h1 class="verdict warn"><span class="n">${minor} ${plural(minor, 'finding')} to fix.</span><br>Nothing blocking.</h1>`
+      explanation = 'No certain P0 or P1 result was found; the findings below are lower severity.'
+    } else {
+      verdict = `<h1 class="verdict warn"><span class="n">${unsure} ${plural(unsure, 'finding')} to review.</span></h1>`
+      explanation = 'These are likely findings: the static evidence is not conclusive, so check each one.'
+    }
+  } else if (result.filesScanned === 0) {
+    verdict = '<h1 class="verdict warn">No files were scanned.<br>Nothing was checked.</h1>'
+    explanation = 'canship found no files it could read at this path, so none of its checks ran. This is not a clean result — it is an empty one.'
+  } else if (result.partial) {
+    verdict = hiddenLikely > 0
+      ? `<h1 class="verdict warn">No certain findings — ${hiddenLikely} lower-confidence ${plural(hiddenLikely, 'finding')} hidden, and not everything was checked.</h1>`
+      : '<h1 class="verdict warn">No findings — but not everything was checked.</h1>'
+  } else if ((result.changeView?.hiddenFindings ?? 0) > 0) {
+    verdict = '<h1 class="verdict warn">No visible findings in changed files — other findings still exist.</h1>'
+    explanation = 'This view hides existing findings. Re-run without --changed-since for the full report.'
+  } else if (hiddenLikely > 0) {
+    verdict = `<h1 class="verdict warn">No certain findings — ${hiddenLikely} lower-confidence ${plural(hiddenLikely, 'finding')} hidden.</h1>`
+    explanation = `This is not a finding-free result. Re-run with --all --report to include ${hiddenLikely === 1 ? 'it' : 'them'} in the report.`
+  } else if (baselineSuppressed > 0) {
+    verdict = `<h1 class="verdict warn">No new findings — ${baselineSuppressed} ${plural(baselineSuppressed, 'finding')} accepted by the baseline.</h1>`
+    explanation = `This is not a finding-free result. Those problems still exist. Re-run without --baseline to see ${baselineSuppressed === 1 ? 'it' : 'them'}.`
+  } else {
+    verdict = '<h1 class="verdict clean">No exposed credentials found.</h1>'
+  }
 
-  const body =
-    findings.length === 0
-      ? result.filesScanned === 0
-        ? // 零文件扫描不能显示已完成的检查清单。
-          `<div class="clean-note">
-           <p>canship found no files it could read at this path, so none of its checks ran.
-           <strong>This is not a clean result &mdash; it is an empty one.</strong></p>
-           <p>Most likely this is not the directory you meant to scan, or everything in it is
-           gitignored or build output that canship skips. If the project lives in a
-           subdirectory, point canship at it: <code>npx canship ./app</code>.</p>
-         </div>`
-        : (result.changeView?.hiddenFindings ?? 0) > 0
-          ? '<div class="clean-note">This view hides existing findings. Re-run without --changed-since for the full report.</div>'
-        : hiddenLikely > 0
-          ? `<div class="clean-note">
-             <p><strong>This is not a finding-free result.</strong> The default report hides
-             ${hiddenLikely} lower-confidence ${plural(hiddenLikely, 'finding')}.</p>
-             <p>Re-run with <code>--all --report</code> to include ${hiddenLikely === 1 ? 'it' : 'them'} in the report.</p>
-           </div>`
-          : baselineSuppressed > 0
-            ? `<div class="clean-note">
-             <p><strong>This is not a finding-free result.</strong> A baseline is hiding
-             ${baselineSuppressed} ${plural(baselineSuppressed, 'finding')}${opts.baselinePath ? ` (<code>${esc(opts.baselinePath)}</code>)` : ''}.</p>
-             <p>Those problems still exist. Re-run without <code>--baseline</code> to see ${baselineSuppressed === 1 ? 'it' : 'them'}.</p>
-           </div>`
-            : `<div class="clean-note">
-           <p>canship checked for hardcoded API keys, server secrets exposed to the browser,
-            Supabase tables without Row Level Security or with policies open to everyone, open Firebase rules, API routes and server actions that reach
-            the database with no sign-in check, CORS that lets other sites use your visitors&rsquo;
-           sessions, and <code>.env</code> files committed to git.</p>
-           <p><strong>A clean result means those checks passed &mdash; not that your app is secure.</strong>
-           Rate limiting and injection are not covered, and neither is whether the authorisation
-           checks it did find are the right ones.</p>
-         </div>`
-      : findings.map((f, i) => renderFinding(f, i + 1)).join('\n')
+  const facts = [
+    ['findings', String(findings.length)],
+    ...(hiddenLikely > 0 ? [['likely hidden', String(hiddenLikely)]] : []),
+    ['files scanned', String(result.filesScanned)],
+    ['coverage', result.partial ? 'incomplete' : 'complete'],
+    ['duration', `${result.durationMs} ms`],
+  ].map(([k, v]) => `<dt>${k}</dt><dd>${esc(v!)}</dd>`).join('')
 
-  const optedOut =
-    result.ignored.length > 0
-      ? `<p class="opted-out">${result.ignored.length} ${plural(result.ignored.length, 'file')} excluded by <code>canship-ignore-file</code>: ${result.ignored.map((f) => `<code>${esc(f)}</code>`).join(', ')}</p>`
-      : ''
+  // 汇总表：数字按钮用于筛选，无脚本时仍是普通计数表。
+  const rows = categoryCounts(findings)
+  const totals = SEVERITIES.map(s => findings.filter(f => f.severity === s).length)
+  const matrix = `<table class="matrix"><thead><tr><th></th>${SEVERITIES.map(s => `<th>${s}</th>`).join('')}<th>total</th></tr></thead><tbody>${rows.map(row =>
+    `<tr><td>${row.category}</td>${SEVERITIES.map(s => `<td>${row.counts[s]
+      ? `<button type="button" class="${s}" data-mx-cat="${row.category}" data-mx-sev="${s}">${row.counts[s]}</button>`
+      : '<span class="zero">–</span>'}</td>`).join('')}<td>${row.total}</td></tr>`).join('')}</tbody><tfoot><tr><td>all</td>${totals.map(n => `<td>${n}</td>`).join('')}<td>${findings.length}</td></tr></tfoot></table>`
 
-  // 披露本次规则筛选范围。
-  const selection = result.ruleSelection
-  const ruleSelection =
-    selection === null
-      ? ''
-      : `<p class="opted-out">Rule selection in force: ${
-          selection.only.length > 0
-            ? `only <code>${selection.only.map(esc).join('</code>, <code>')}</code>`
-            : `everything except <code>${selection.skip.map(esc).join('</code>, <code>')}</code>`
-        }${selection.removed > 0 ? `, hiding ${selection.removed} ${plural(selection.removed, 'finding')}` : ''}.</p>`
+  const manual = steps.length > 0
+    ? `<ol class="manual">${steps.map((step, i) => `<li><span class="num">${i + 1}</span><input type="checkbox" data-step="${i}" aria-label="done"><div><div class="t">${linkify(esc(step.text))}</div><div class="src">${esc(step.locations.join(', '))}</div></div></li>`).join('')}</ol>`
+    : '<p class="faint">No manual steps for these findings.</p>'
 
-  // 列出被抑制的位置并转义路径。
-  const silenced =
-    result.ignoredFindings.length > 0
-      ? `<p class="opted-out">${result.ignoredFindings.length} ${plural(result.ignoredFindings.length, 'finding')} silenced by <code>canship-ignore-next-line</code>: ${result.ignoredFindings
-          .map((f) => `<code>${esc(f.file)}:${f.line}</code> (${esc(f.ruleId)})`)
-          .join(', ')}</p>`
-      : ''
+  const groups = groupByFile(findings)
+  let index = 0
+  const prompts: Record<string, string> = {}
+  const allPrompt = renderFixPrompt(findings)
+  if (allPrompt) prompts['all'] = allPrompt
+  const list = groups.map(group => {
+    const items = group.findings.map(f => {
+      index++
+      const prompt = renderFixPrompt([f])
+      if (prompt) prompts[String(index)] = prompt
+      return renderFinding(f, index)
+    }).join('\n')
+    return `<div class="group"><span class="gk">${esc(group.file ?? 'repository')}</span> — ${group.findings.length}</div><div class="ledger">${items}</div>`
+  }).join('\n')
 
-  const hiddenNotice =
-    hiddenLikely > 0 && findings.length > 0
-      ? `<p class="opted-out">${hiddenLikely} lower-confidence ${plural(hiddenLikely, 'finding')} hidden. Re-run with <code>--all --report</code> to include ${hiddenLikely === 1 ? 'it' : 'them'}.</p>`
-      : ''
-
-  // 无结果时已有基线说明，避免重复。
-  const baselineNotice =
-    baselineSuppressed > 0 && findings.length > 0
-      ? `<p class="opted-out">${baselineSuppressed} ${plural(baselineSuppressed, 'finding')} hidden by the baseline${opts.baselinePath ? ` (<code>${esc(opts.baselinePath)}</code>)` : ''}. Those problems still exist.</p>`
-      : ''
-
-  const staleNotice =
-    baselineStale > 0
-      ? `<p class="opted-out">${baselineStale} baseline ${baselineStale === 1 ? 'entry' : 'entries'} no longer ${baselineStale === 1 ? 'matches' : 'match'} anything &mdash; re-run <code>--baseline-write</code> to prune.</p>`
-      : ''
+  const findingsSection = findings.length > 0 ? `
+<section class="section two">
+<div><h2>By category</h2>${matrix}</div>
+<div><h2>Manual steps</h2>${manual}</div>
+</section>
+<section class="section last">
+<h2>Findings</h2>
+<div class="controls">
+<span><span class="lbl">severity</span><button type="button" data-filter-sev="">all</button>${SEVERITIES.map(s => `<button type="button" data-filter-sev="${s}">${s}</button>`).join('')}</span>
+<span><span class="lbl">group by</span><button type="button" data-group="file">file</button><button type="button" data-group="sev">severity</button><button type="button" data-group="cat">category</button></span>
+<input id="q" type="search" placeholder="filter by text or path" aria-label="Filter findings">
+<button type="button" class="clear" id="clear">clear filters</button>
+</div>
+<p id="count"></p>
+<div class="head"><span>sev</span><span>finding</span><span class="c">category</span></div>
+<div id="list" class="by-file">${list}</div>
+<p id="empty" class="faint" hidden>No findings match these filters.</p>
+</section>` : `
+<section class="section last checked">
+<h2>Checked for</h2>
+<ul>
+<li>API keys hardcoded in source code</li>
+<li>Server-side secrets exposed to the browser via public env prefixes</li>
+<li>Supabase service_role keys reachable from the client</li>
+<li><code>.env</code> files committed to git, including in history</li>
+<li>Supabase tables with no Row Level Security, or policies open to everyone</li>
+<li>Firebase rules left open to anyone</li>
+<li>API routes and server actions that query your database with no sign-in check</li>
+<li>CORS that lets other sites act as your signed-in visitors</li>
+</ul>
+<p><strong>A clean result means those checks passed — not that your app is secure.</strong> Rate limiting and injection are not covered, and neither is whether the authorisation checks it did find are the right ones.</p>
+</section>`
 
   // 无论是否发现问题，都披露未检查的内容。
-  const incomplete = result.partial
-    ? `<div class="incomplete">
-         <h2>Not everything was checked</h2>
-         <ul>
-           ${
-             // 工作区零文件时仍可能产生 Git 历史结果。
-             result.filesScanned === 0
-               ? `<li>no files could be read at this path, so every file-based check was skipped</li>`
-               : ''
-           }
-           ${result.errors
-             .map(
-               (e) =>
-                 `<li>the <code>${esc(e.ruleId)}</code> check ${
-                   e.kind === 'incomplete' ? 'did not finish' : 'failed'
-                 }${e.file ? ` on <code>${esc(e.file)}</code>` : ''} &mdash; ${esc(e.message)}</li>`,
-             )
-             .join('\n           ')}
-           ${result.skipped
-             .map((s) => `<li><code>${esc(s.path)}</code> &mdash; ${esc(skipPhrase(s.reason))}${s.detail ? ` (${esc(s.detail)})` : ''}</li>`)
-             .join('\n           ')}
-         </ul>
-         <p>Anything could be in what was skipped. Re-run once it is readable.</p>
-       </div>`
-    : ''
+  const incomplete = result.partial ? `
+<section class="section incomplete">
+<h2>Not everything was checked</h2>
+<ul>
+${result.filesScanned === 0 ? '<li>no files could be read at this path, so every file-based check was skipped</li>' : ''}
+${result.errors.map(e => `<li>the <code>${esc(e.ruleId)}</code> check ${e.kind === 'incomplete' ? 'did not finish' : 'failed'}${e.file ? ` on <code>${esc(e.file)}</code>` : ''} — ${esc(e.message)}</li>`).join('\n')}
+${result.skipped.map(s => `<li><code>${esc(s.path)}</code> — ${esc(skipPhrase(s.reason))}${s.detail ? ` (${esc(s.detail)})` : ''}</li>`).join('\n')}
+</ul>
+<p>Anything could be in what was skipped. Re-run once it is readable.</p>
+</section>` : ''
+
+  const selection = result.ruleSelection
+  const notes = [
+    hiddenLikely > 0 && findings.length > 0
+      ? `${hiddenLikely} lower-confidence ${plural(hiddenLikely, 'finding')} hidden. Re-run with <code>--all --report</code> to include ${hiddenLikely === 1 ? 'it' : 'them'}.` : '',
+    baselineSuppressed > 0
+      ? `${baselineSuppressed} ${plural(baselineSuppressed, 'finding')} hidden by the baseline${opts.baselinePath ? ` (<code>${esc(opts.baselinePath)}</code>)` : ''}. Those problems still exist.` : '',
+    baselineStale > 0
+      ? `${baselineStale} baseline ${baselineStale === 1 ? 'entry' : 'entries'} no longer ${baselineStale === 1 ? 'matches' : 'match'} anything — re-run <code>--baseline-write</code> to prune.` : '',
+    result.ignoredFindings.length > 0
+      ? `${result.ignoredFindings.length} ${plural(result.ignoredFindings.length, 'finding')} silenced by <code>canship-ignore-next-line</code>: ${result.ignoredFindings.map(f => `<code>${esc(f.file)}:${f.line}</code> (${esc(f.ruleId)})`).join(', ')}` : '',
+    selection === null ? '' : `Rule selection in force: ${selection.only.length > 0
+      ? `only <code>${selection.only.map(esc).join('</code>, <code>')}</code>`
+      : `everything except <code>${selection.skip.map(esc).join('</code>, <code>')}</code>`}${selection.removed > 0 ? `, hiding ${selection.removed} ${plural(selection.removed, 'finding')}` : ''}.`,
+    result.ignored.length > 0
+      ? `${result.ignored.length} ${plural(result.ignored.length, 'file')} excluded by <code>canship-ignore-file</code>: ${result.ignored.map(f => `<code>${esc(f)}</code>`).join(', ')}` : '',
+    result.vendored > 0
+      ? `${result.vendored} ${plural(result.vendored, 'file')} skipped inside dependency directories.` : '',
+  ].filter(Boolean)
+
+  const data = { key: createHash('sha256').update(`${opts.root}\0${opts.generatedAt}`).digest('hex').slice(0, 16),
+    categories: CATEGORIES, prompts }
 
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-${SCRIPT_HASH}'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
 <title>canship report</title>
-<style>
-  :root {
-    --bg: #ffffff; --fg: #1a1a1a; --muted: #666; --line: #e3e3e3;
-    --card: #fafafa; --bad: #c0392b; --warn: #b8860b; --good: #1e7e34;
-    --code-bg: #f4f4f4; --human-bg: #fff8e6; --human-line: #e6c35c;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #16181c; --fg: #e6e6e6; --muted: #9aa0a6; --line: #2c3036;
-      --card: #1c1f24; --bad: #ff6b5e; --warn: #e8b339; --good: #4ade80;
-      --code-bg: #22262c; --human-bg: #2a2418; --human-line: #6b5a2a;
-    }
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; padding: 2rem 1rem 4rem; background: var(--bg); color: var(--fg);
-    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  }
-  main { max-width: 46rem; margin: 0 auto; }
-  h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
-  .meta { color: var(--muted); font-size: .85rem; margin-bottom: 1.5rem; word-break: break-all; }
-  .verdict { font-weight: 600; padding: .75rem 1rem; border-radius: 6px; margin-bottom: 1.5rem; }
-  .verdict.bad { background: var(--bad); color: #fff; }
-  .verdict.warn { background: var(--warn); color: #000; }
-  .verdict.clean { background: var(--good); color: #fff; }
-  .notice {
-    border: 1px solid var(--line); border-left: 3px solid var(--muted);
-    padding: .75rem 1rem; margin-bottom: 2rem; font-size: .85rem; color: var(--muted);
-  }
-  .finding {
-    border: 1px solid var(--line); border-radius: 6px; background: var(--card);
-    padding: 1.25rem; margin-bottom: 1.25rem;
-  }
-  .finding.certain { border-left: 3px solid var(--bad); }
-  .finding.likely { border-left: 3px solid var(--warn); }
-  .finding header { display: flex; gap: .6rem; align-items: baseline; }
-  .num { color: var(--muted); font-variant-numeric: tabular-nums; font-size: .9rem; }
-  .finding h3 { font-size: 1.05rem; margin: 0 0 .35rem; }
-  .loc { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82rem; color: var(--muted); margin-bottom: .75rem; word-break: break-all; }
-  .tag { background: var(--warn); color: #000; padding: 0 .35rem; border-radius: 3px; font-size: .72rem; }
-  pre {
-    background: var(--code-bg); padding: .7rem .9rem; border-radius: 4px;
-    overflow-x: auto; font-size: .82rem; margin: 0 0 .9rem;
-  }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .why p { margin: 0 0 .7rem; }
-  h4 { font-size: .82rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 1.1rem 0 .4rem; }
-  ol, ul { margin: 0; padding-left: 1.3rem; }
-  li { margin-bottom: .45rem; }
-  .human {
-    background: var(--human-bg); border-left: 3px solid var(--human-line);
-    padding: .1rem 1rem .8rem; margin-top: 1rem; border-radius: 0 4px 4px 0;
-  }
-  .human h4 { color: var(--fg); }
-  .opted-out { color: var(--muted); font-size: .85rem; margin-top: 1.5rem; }
-  .clean-note { border: 1px solid var(--line); border-radius: 6px; padding: 1.25rem; }
-  .incomplete { border: 1px solid var(--warn); border-radius: 6px; padding: 1rem 1.25rem; margin-top: 1.5rem; }
-  .incomplete h2 { font-size: 1rem; margin: 0 0 .5rem; }
-  .incomplete ul { margin: 0 0 .75rem; padding-left: 1.25rem; }
-  .incomplete li { margin-bottom: .25rem; }
-  .incomplete p:last-child { margin-bottom: 0; }
-  .clean-note p:last-child { margin-bottom: 0; }
-  footer { margin-top: 2.5rem; padding-top: 1.25rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .82rem; }
-  a { color: inherit; }
-</style>
+<style>${STYLE}</style>
 </head>
 <body>
-<main>
-  <h1>canship report</h1>
-  <div class="meta">${esc(opts.root)}<br>${esc(opts.generatedAt)} &middot; ${result.filesScanned} ${plural(result.filesScanned, 'file')} scanned in ${result.durationMs}ms</div>
-  ${verdict}
-  ${result.changeView ? `<p class="opted-out">${esc(changeViewNotice(result.changeView))}</p>` : ''}
-  <div class="notice">
-    Credential values canship recognises are masked in this report. One in a format it has no
-    pattern for can still appear inside a quoted line, and this report lists your
-    file paths and project structure either way &mdash; so treat it as internal,
-    shareable with your team rather than something to post publicly.
-  </div>
-  ${body}
-  ${incomplete}
-  ${hiddenNotice}
-  ${baselineNotice}
-  ${staleNotice}
-  ${silenced}
-  ${ruleSelection}
-  ${optedOut}
-  <footer>
-    Generated by canship. Everything ran locally; nothing was uploaded.
-  </footer>
-</main>
+<div class="page">
+<header class="mast"><span class="root"><b>canship</b>${opts.version ? ` ${esc(opts.version)}` : ''} · ${esc(opts.root)}</span><span class="right">${esc(displayTime(opts.generatedAt))}${allPrompt ? '<button type="button" class="link js-only" data-copy="all">copy fix prompt</button>' : ''}<button type="button" class="link js-only" id="print">print</button></span></header>
+<section class="verdict-block">
+<div>${verdict}${explanation ? `<p>${esc(explanation)}</p>` : ''}${result.changeView ? `<p>${esc(changeViewNotice(result.changeView))}</p>` : ''}
+<p class="notice">Credential values canship recognises are masked in this report. One in a format it has no pattern for can still appear inside a quoted line, and this report lists your file paths and project structure either way — so treat it as internal, shareable with your team rather than something to post publicly.</p></div>
+<dl class="facts">${facts}</dl>
+</section>
+${findingsSection}
+${incomplete}
+${notes.length > 0 ? `<section class="section last notes">${notes.map(n => `<p>${n}</p>`).join('')}</section>` : ''}
+<p class="colophon">Generated by canship. Everything ran locally; nothing was uploaded. Findings describe static evidence in this repository; they do not verify deployed configuration, credential validity or business authorisation.</p>
+</div>
+<script type="application/json" id="canship-data">${jsonForScript(data)}</script>
+<script>${SCRIPT}</script>
 </body>
 </html>
 `

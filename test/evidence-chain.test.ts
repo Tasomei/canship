@@ -76,7 +76,12 @@ test('evidence strings use the common output boundary and HTML escaping', async 
     const result = await scan(project({ 'index.ts': 'export const ok = true' }))
     assert.doesNotMatch(JSON.stringify(result), /\\u001b/)
     assert.equal(JSON.stringify(result).includes(simulated), false)
-    assert.doesNotMatch(renderHtml(result, { root: '.', generatedAt: '' }), /<script>/)
+    // 报告末尾只有自身的数据块与页面脚本；去掉这两者后不得再出现任何脚本元素。
+    const page = renderHtml(result, { root: '.', generatedAt: '' })
+    assert.equal((page.match(/<script\b/gi) ?? []).length, 2)
+    const own = /<script type="application\/json" id="canship-data">[\s\S]*?<\/script>\n<script>[\s\S]*?<\/script>\n<\/body>/
+    assert.match(page, own)
+    assert.doesNotMatch(page.replace(own, '</body>'), /<script/i)
     assert.equal((renderFixPrompt(result.findings)!.match(/--- End of prompt ---/g) ?? []).length, 1)
   } finally { FILE_RULES.splice(FILE_RULES.indexOf(rule), 1) }
 })

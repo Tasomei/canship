@@ -130,9 +130,9 @@ test('a visible minor finding cannot hide the full-scan blocking verdict', () =>
   const html = join(root, 'canship-report.html')
   const result = cli(root, '--changed-since=HEAD', `--report=${html}`)
   assert.equal(result.status, 1)
-  assert.match(result.stdout, /1 blocking finding\. Do not deploy yet\./)
-  assert.doesNotMatch(result.stdout, /Nothing blocking/)
-  const report = readFileSync(html, 'utf8')
-  assert.match(report, /1 critical issue/)
-  assert.doesNotMatch(report, /nothing exposed/)
+  for (const output of [result.stdout, readFileSync(html, 'utf8')]) {
+    assert.match(output, /1 blocking finding\./)
+    assert.match(output, /Do not deploy yet\./)
+    assert.doesNotMatch(output, /Nothing blocking/)
+  }
 })

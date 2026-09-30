@@ -568,6 +568,7 @@ async function main(): Promise<void> {
           {
             root: displayRoot,
             generatedAt: new Date().toISOString(),
+            version: VERSION,
             hiddenLikely,
             baselineSuppressed,
             baselineStale,
