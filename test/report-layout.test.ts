@@ -27,6 +27,8 @@ test('rule namespaces map to report categories, with unknown namespaces kept vis
   assert.equal(categoryOf('exposure/secret-in-public-env'), 'Credentials')
   assert.equal(categoryOf('gitleak/env-in-history'), 'Credentials')
   assert.equal(categoryOf('api/db-write-without-auth'), 'API access')
+  assert.equal(categoryOf('auth/unverified-session'), 'API access')
+  assert.equal(categoryOf('webhook/unverified-signature'), 'API access')
   assert.equal(categoryOf('supabase/rls-not-enabled'), 'Database rules')
   assert.equal(categoryOf('firebase/open-rules'), 'Database rules')
   assert.equal(categoryOf('cors/wildcard-with-credentials'), 'CORS')

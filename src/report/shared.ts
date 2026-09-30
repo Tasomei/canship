@@ -67,7 +67,7 @@ export const SEVERITIES: readonly Severity[] = ['P0', 'P1', 'P2']
 export function categoryOf(ruleId: string): Category {
   const namespace = ruleId.split('/')[0]
   if (namespace === 'secrets' || namespace === 'exposure' || namespace === 'gitleak') return 'Credentials'
-  if (namespace === 'api') return 'API access'
+  if (namespace === 'api' || namespace === 'auth' || namespace === 'webhook') return 'API access'
   if (namespace === 'supabase' || namespace === 'firebase') return 'Database rules'
   if (namespace === 'cors') return 'CORS'
   if (namespace === 'injection' || namespace === 'ssrf' || namespace === 'redirect') return 'Code'

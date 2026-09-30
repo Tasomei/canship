@@ -2427,15 +2427,17 @@ describe('a third review — checks that went quiet instead of failing', () => {
   test('verified sessions suppress findings but raw token presence does not', async () => {
     // 收紧鉴权判断时仍需保留合法保护方式。
     const guards = [
-      'const { data: { session } } = await a.auth.getSession(); if (!session) return new Response("no", { status: 401 });',
+      'const { data: { user } } = await a.auth.getUser(); if (!user) return new Response("no", { status: 401 });',
       'const session = await getServerSession(); if (session.user == null) return new Response("no", { status: 401 });',
       'const token = req.headers.get("authorization"); if (!token) return new Response("no", { status: 401 });',
+      // Supabase 的 getSession 在服务端只读取 Cookie、不验证，与请求头存在一样不能作为鉴权。
+      'const { data: { session } } = await a.auth.getSession(); if (!session) return new Response("no", { status: 401 });',
     ]
     for (const guard of guards) {
       assert.deepEqual(
         await ids({ 'app/api/u/route.ts': ADMIN_ROUTE.replace('{ const', `{ ${guard} const`) }, 'api/'),
-        // 请求头存在不等于凭据已经验证；保留该反例并要求检出。
-        guard.includes('req.headers') ? ['api/admin-db-access-without-auth'] : [],
+        // 请求头存在或未验证的会话不等于凭据已经验证；保留这些反例并要求检出。
+        guard.includes('req.headers') || guard.includes('getSession') ? ['api/admin-db-access-without-auth'] : [],
         `authentication evidence was classified incorrectly: ${guard}`,
       )
     }

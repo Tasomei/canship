@@ -29,6 +29,7 @@ Requires Node.js ≥18; no runtime dependencies. Installation may use the networ
 | Credentialed CORS with reflected or wildcard origins | P1 / P2 |
 | SQL queries and shell commands built from request input in server routes | P1 |
 | Server requests to caller-chosen hosts (SSRF) | P1 |
+| Server code trusting Supabase `getSession()`; Stripe webhooks without signature checks | P1 |
 | Redirects to caller-chosen sites | P2 |
 
 Recognises OpenAI, Anthropic, AWS, Stripe, GitHub, npm, and other credential formats. Firebase checks cover Firestore, Storage, and Realtime Database. Use `--list-rules` for rule IDs and scope.
@@ -43,7 +44,7 @@ Recognises OpenAI, Anthropic, AWS, Stripe, GitHub, npm, and other credential for
 | Remix / React Router | `loader` and `action` exports in `app/routes` |
 | Astro | Endpoints in `src/pages` |
 
-Supports route groups, workspace applications, local helper chains, identity aliases and destructuring, argument requirements, and bounded branch/exception analysis. Raw request input, constants, unawaited promises, or helper names alone do not establish local authentication.
+Supports route groups, workspace applications, local helper chains, identity aliases and destructuring, argument requirements, and bounded branch/exception analysis. Raw request input, Supabase `getSession()` results, constants, unawaited promises, or helper names alone do not establish local authentication.
 
 Recognised Next.js/Astro middleware may suppress covered findings; Server Functions require function-local checks. Local helpers, SvelteKit hooks, and Nuxt middleware may lower confidence but retain findings. SvelteKit page loads and remote functions are excluded.
 

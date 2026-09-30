@@ -29,6 +29,7 @@ npx canship .
 | 携带凭据的 CORS 来源回显或通配符配置 | P1 / P2 |
 | 服务端路由中由请求输入拼接的 SQL 查询和 shell 命令 | P1 |
 | 由调用方决定目标主机的服务端请求（SSRF） | P1 |
+| 服务端信任 Supabase `getSession()`；未验证签名的 Stripe webhook | P1 |
 | 由调用方决定目标站点的重定向 | P2 |
 
 识别 OpenAI、Anthropic、AWS、Stripe、GitHub、npm 等凭据格式。Firebase 检查覆盖 Firestore、Storage、Realtime Database。规则 ID 与范围见 `--list-rules`。
@@ -43,7 +44,7 @@ npx canship .
 | Remix / React Router | `app/routes` 中的 `loader`、`action` 导出 |
 | Astro | `src/pages` 中的端点 |
 
-支持路由组、工作区应用、本地辅助函数链、身份别名与解构、实参约束及有界分支/异常分析。原始请求输入、常量、未等待的 Promise 或辅助函数名称本身，不构成本地鉴权依据。
+支持路由组、工作区应用、本地辅助函数链、身份别名与解构、实参约束及有界分支/异常分析。原始请求输入、Supabase `getSession()` 的结果、常量、未等待的 Promise 或辅助函数名称本身，不构成本地鉴权依据。
 
 已识别的 Next.js/Astro 中间件可抑制覆盖范围内的结果；Server Function 需在函数内检查。本地辅助函数、SvelteKit hooks、Nuxt 中间件可降低置信度，但保留结果。不检查 SvelteKit 页面 load 与 remote function。
 

@@ -11,9 +11,11 @@ import { apiAuthRule } from './apiauth.js'
 import { corsRule } from './cors.js'
 import { injectionRule } from './injection.js'
 import { redirectRule, ssrfRule } from './outbound.js'
+import { sessionRule } from './session.js'
+import { webhookRule } from './webhook.js'
 
 /** 按文件执行的规则。 */
-export const FILE_RULES: Rule[] = [secretsRule, exposureRule, firebaseRulesRule, corsRule]
+export const FILE_RULES: Rule[] = [secretsRule, exposureRule, firebaseRulesRule, corsRule, sessionRule, webhookRule]
 
 /** 每次扫描执行一次的跨文件规则。 */
 export const PROJECT_RULES: ProjectRule[] = [gitleakRule, supabaseRlsRule, apiAuthRule, injectionRule, ssrfRule, redirectRule]
@@ -22,6 +24,7 @@ export const PROJECT_RULES: ProjectRule[] = [gitleakRule, supabaseRlsRule, apiAu
 export const RULE_IDS: readonly string[] = [
   'api/admin-db-access-without-auth',
   'api/db-write-without-auth',
+  'auth/unverified-session',
   'cors/reflected-origin-with-credentials',
   'cors/wildcard-with-credentials',
   'exposure/private-name-in-public-env',
@@ -38,6 +41,7 @@ export const RULE_IDS: readonly string[] = [
   'supabase/permissive-policy',
   'supabase/public-bucket-listing',
   'supabase/rls-not-enabled',
+  'webhook/unverified-signature',
   // 凭据规则 ID 从共享格式表生成。
   ...SECRET_PATTERNS.map((p) => `secrets/hardcoded/${p.id}`),
 ]

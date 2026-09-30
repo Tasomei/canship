@@ -1848,6 +1848,12 @@ export const apiAuthRule: ProjectRule = {
           `lower confidence. Confirm that check runs for ${url}.`,
       ]
 
+      // 服务端的 Supabase getSession 不验证会话，不计为鉴权；说明原因，避免与代码中可见的检查相矛盾。
+      const handlerCode = noiseMaskedOf(route.file).slice(reachable?.start ?? 0, reachable?.end)
+      if (/\.auth\s*\.\s*getSession\s*\(/.test(handlerCode)) globalNote.push(
+        'This handler checks supabase.auth.getSession(). On the server that reads the session from the cookie without ' +
+          'verifying it, so a forged cookie passes; it is not counted as authentication. Use supabase.auth.getClaims() or getUser() instead.')
+
       const admin = usesAdminClient(route, adminModules, ctx.files)
       // 存在写操作时优先用其作为证据。
       const hit = ops.find((o) => o.writes) ?? ops[0]!

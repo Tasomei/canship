@@ -200,6 +200,9 @@ class AuthValues {
       }
       if (depth !== 0 || masked.slice(end).trim() !== '') return { kind: 'opaque' }
       if (/\|\||&&|\?(?!\.)|\.then\s*\(/.test(expr) || /\.catch\s*\(/.test(expr)) return { kind: 'opaque' }
+      // Supabase 的 getSession 直接读取 Cookie 中的会话而不重新验证，服务端不能据此确认身份。
+      // 来源：https://supabase.com/docs/guides/auth/server-side/nextjs
+      if (/\.auth\.getSession\s*\($/.test(call![0])) return { kind: 'opaque' }
       // Supabase 返回 { data: { user } } 或 { data: { claims } }，只有对应字段才是已验证身份。
       const envelope = /\.auth\.(getUser|getClaims)\s*\($/.exec(call![0])?.[1]
       if (envelope) return { kind: 'envelope', field: envelope === 'getUser' ? 'user' : 'claims' }

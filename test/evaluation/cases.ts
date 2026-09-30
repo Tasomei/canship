@@ -45,6 +45,11 @@ const redirectRoute = (target: string) => "import { redirect } from 'next/naviga
   'export async function GET(request: Request) {\n' +
   "  const next = new URL(request.url).searchParams.get('next') ?? '/';\n" +
   `  redirect(${target});\n}\n`
+const stripeWebhook = (read: string) => "import Stripe from 'stripe';\n" +
+  'const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);\n' +
+  `export async function POST(request: Request) {\n  ${read}\n` +
+  "  if (event.type === 'checkout.session.completed') await fulfil(event.data.object.id);\n" +
+  "  return new Response('ok');\n}\n"
 const finding = (ruleId: string, file: string, severity: Severity = 'P1', confidence: Confidence = 'certain'): ExpectedFinding =>
   ({ ruleId, file, severity, confidence })
 
@@ -157,6 +162,17 @@ export const evaluationCases: readonly EvaluationCase[] = [
   {
     id: 'nextjs-redirect-fixed-path', origin: 'synthetic',
     files: { 'app/auth/confirm/route.ts': redirectRoute('`/posts/${next}`') }, expected: [],
+  },
+  {
+    id: 'stripe-webhook-unverified', origin: 'synthetic',
+    files: { 'app/api/webhooks/stripe/route.ts': stripeWebhook('const event = await request.json();') },
+    expected: [finding('webhook/unverified-signature', 'app/api/webhooks/stripe/route.ts')],
+  },
+  {
+    id: 'stripe-webhook-verified', origin: 'synthetic',
+    files: { 'app/api/webhooks/stripe/route.ts': stripeWebhook(
+      "const event = stripe.webhooks.constructEvent(await request.text(), request.headers.get('stripe-signature')!, process.env.STRIPE_WEBHOOK_SECRET!);") },
+    expected: [],
   },
   {
     id: 'incomplete-with-finding', origin: 'synthetic',
