@@ -8,7 +8,7 @@ import { lineNumberAt } from './offsets.js'
 import { bindingsOf, namePattern } from './bindings.js'
 import { argumentExpressions } from './auth-values.js'
 import type { Route } from './apiauth.js'
-import { InputFlow, handlerFileOf, reportInputLimit, type Taint } from './request-input.js'
+import { InputFlow, handlerFileOf, lowerBound, reportInputLimit, type Taint } from './request-input.js'
 
 type SinkKind = 'sql' | 'command'
 
@@ -179,14 +179,17 @@ export const injectionRule: ProjectRule = {
     const findings: Finding[] = []
     for (const file of ctx.files) {
       const analysed = handlerFileOf(file)
-      if (!analysed || analysed.handlers.length === 0) continue
+      if (!analysed) continue
       const { code, source, pairs, lineStarts } = analysed
       const sinks = sinksIn(code, pairs, commandCallees(file))
       if (sinks.length === 0) continue
+      const positions = sinks.map(sink => sink.at)
       const reported = new Set<number>()
-      for (const { route, body, flow } of analysed.handlers) {
-        for (const sink of sinks) {
-          if (sink.at <= body.start || sink.close >= body.end || reported.has(sink.at)) continue
+      for (const { route, body, flow } of analysed.handlersAround(positions)) {
+        // 只看落在该函数内的调用。
+        for (let i = lowerBound(positions, body.start + 1); i < sinks.length && sinks[i]!.at < body.end; i++) {
+          const sink = sinks[i]!
+          if (sink.close >= body.end || reported.has(sink.at)) continue
           const hit = hitOf(sink, code, source, pairs, flow)
           if (!hit) continue
           reported.add(sink.at)

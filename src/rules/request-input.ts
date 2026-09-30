@@ -507,19 +507,61 @@ export function hasInput(roles: ParamRoles): boolean {
 /** 路由中接收请求的函数及其输入流向。 */
 export interface RouteHandler { route: Route; body: FunctionBody; flow: InputFlow }
 
-/** 一个路由文件的共享分析结果，供注入、SSRF 与重定向规则共用。 */
-export interface HandlerFile {
-  code: string
-  source: string
-  pairs: Map<number, number>
-  lineStarts: number[]
-  handlers: RouteHandler[]
-  limited: boolean
+interface HandlerCandidate { route: Route; body: FunctionBody; roles: ParamRoles }
+
+/** 第一个不小于 value 的下标；数组已按升序排列。 */
+export function lowerBound(values: readonly number[], value: number): number {
+  let low = 0, high = values.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (values[middle]! < value) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
+/**
+ * 一个路由文件的共享分析结果，供注入、SSRF 与重定向规则共用。
+ * 输入追踪按需建立：只有包含待检查调用的函数才分析，一个文件可含数以万计的 Server Function。
+ */
+export class HandlerFile {
+  private readonly flows = new Map<HandlerCandidate, InputFlow>()
+
+  constructor(
+    readonly code: string,
+    readonly source: string,
+    readonly pairs: Map<number, number>,
+    readonly lineStarts: number[],
+    private readonly candidates: HandlerCandidate[],
+  ) {}
+
+  get limited(): boolean {
+    for (const flow of this.flows.values()) if (flow.limited) return true
+    return false
+  }
+
+  /** 至少包含一个给定位置的处理函数；positions 必须已按升序排列。 */
+  handlersAround(positions: readonly number[]): RouteHandler[] {
+    const result: RouteHandler[] = []
+    if (positions.length === 0) return result
+    for (const candidate of this.candidates) {
+      const { body } = candidate
+      const first = lowerBound(positions, body.start + 1)
+      if (first >= positions.length || positions[first]! >= body.end) continue
+      let flow = this.flows.get(candidate)
+      if (!flow) {
+        flow = new InputFlow(this.code, this.source, { start: body.start, end: body.end }, this.pairs, candidate.roles)
+        this.flows.set(candidate, flow)
+      }
+      result.push({ route: candidate.route, body, flow })
+    }
+    return result
+  }
 }
 
 const handlerCache = new WeakMap<ScanFile, HandlerFile | null>()
 
-/** 路由文件中接收请求的函数；不是路由的文件返回空值。结果按文件对象缓存，生命周期随扫描结束。 */
+/** 路由文件中接收请求的函数；不是路由或没有接收请求的函数时返回空值。结果按文件对象缓存，生命周期随扫描结束。 */
 export function handlerFileOf(file: ScanFile): HandlerFile | null {
   const cached = handlerCache.get(file)
   if (cached !== undefined) return cached
@@ -533,28 +575,32 @@ export function handlerFileOf(file: ScanFile): HandlerFile | null {
       const pairs = delimiterPairs(code)
       const openers = new Map<number, number>()
       for (const [open, close] of pairs) openers.set(close, open)
-      const bodies = functionBodies(code, pairs)
-      const handlers: RouteHandler[] = []
+      const bodies = functionBodies(code, pairs).sort((a, b) => a.start - b.start)
+      const starts = bodies.map(body => body.start)
+      const candidates: HandlerCandidate[] = []
       for (const r of routes) {
         const reachable = r.reachable
-        for (const body of bodies) {
-          if (reachable && (body.start < reachable.start || body.end > reachable.end)) continue
+        // 只取路由范围内的函数体：按起点二分定位，避免“路由数 × 函数数”的开销。
+        const from = reachable ? lowerBound(starts, reachable.start) : 0
+        for (let i = from; i < bodies.length; i++) {
+          const body = bodies[i]!
+          if (reachable && body.start >= reachable.end) break
+          if (reachable && body.end > reachable.end) continue
           // Server Function 只有自身参数来自客户端；其中的嵌套函数按普通处理函数判断。
           const action = r.action !== undefined && reachable !== undefined && body.start === reachable.start
           const params = parametersOf(code, body, pairs, openers)
           if (!params) continue
           const roles = paramRoles(source.slice(params.start, params.end), params.start, action)
-          if (!hasInput(roles)) continue
-          handlers.push({ route: r, body, flow: new InputFlow(code, source, { start: body.start, end: body.end }, pairs, roles) })
+          if (hasInput(roles)) candidates.push({ route: r, body, roles })
         }
       }
-      result = { code, source, pairs, lineStarts: lineStartsOf(file.content), handlers,
-        limited: handlers.some(h => h.flow.limited) }
+      if (candidates.length > 0) result = new HandlerFile(code, source, pairs, lineStartsOf(file.content), candidates)
     }
   }
   handlerCache.set(file, result)
   return result
 }
+
 /** 追踪达到上限时记录一次扫描缺口；三条规则共用同一条记录，由引擎按规则与消息去重。 */
 export function reportInputLimit(ctx: ScanContext, file: ScanFile, analysed: HandlerFile): void {
   if (analysed.limited) ctx.reportIncomplete('request-input/tracking',

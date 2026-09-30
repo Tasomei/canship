@@ -6,7 +6,7 @@ import type { Finding, ProjectRule, ScanContext, ScanFile } from '../types.js'
 import { lineNumberAt } from './offsets.js'
 import { argumentExpressions } from './auth-values.js'
 import type { Route } from './apiauth.js'
-import { handlerFileOf, reportInputLimit, type HandlerFile, type InputFlow, type Taint } from './request-input.js'
+import { handlerFileOf, lowerBound, reportInputLimit, type HandlerFile, type InputFlow, type Taint } from './request-input.js'
 
 /** 服务端 HTTP 客户端：fetch、Nuxt 的 $fetch/ofetch、axios、got、ky、needle 及 Node http(s)。 */
 const FETCH_CALL = /(?<![\w$.])(?:fetch|\$fetch|ofetch|axios|got|ky|needle)\s*(?:<[^()]{0,200}>\s*)?\(/g
@@ -227,13 +227,16 @@ function check(ctx: ScanContext, kind: Kind): Finding[] {
   const findings: Finding[] = []
   for (const file of ctx.files) {
     const analysed = handlerFileOf(file)
-    if (!analysed || analysed.handlers.length === 0) continue
-    const calls = callsIn(analysed.code, analysed.pairs).filter(call => call.kind === kind)
+    if (!analysed) continue
+    const calls = callsIn(analysed.code, analysed.pairs).filter(call => call.kind === kind).sort((a, b) => a.at - b.at)
     if (calls.length === 0) continue
+    const positions = calls.map(call => call.at)
     const reported = new Set<number>()
-    for (const { route, body, flow } of analysed.handlers) {
-      for (const call of calls) {
-        if (call.at <= body.start || call.close >= body.end || reported.has(call.at)) continue
+    for (const { route, body, flow } of analysed.handlersAround(positions)) {
+      // 只看落在该函数内的调用。
+      for (let i = lowerBound(positions, body.start + 1); i < calls.length && calls[i]!.at < body.end; i++) {
+        const call = calls[i]!
+        if (call.close >= body.end || reported.has(call.at)) continue
         const target = targetOf(call, analysed)
         if (!target) continue
         const taint = controlsStart(target.expr, target.at, flow, analysed.source, kind)

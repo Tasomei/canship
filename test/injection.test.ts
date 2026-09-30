@@ -260,6 +260,17 @@ describe('reporting', () => {
     assert.equal(skipped.findings.filter(f => f.ruleId.startsWith('injection/')).length, 0)
   })
 
+  // 曾对每个 Server Function 遍历全部函数体并提前建立输入追踪：2 万个 action 在较慢的 CI 上超过 10 秒。
+  test('files with thousands of Server Functions are analysed in linear time', async () => {
+    const withSinks = Array.from({ length: 10_000 }, (_, i) =>
+      `export async function a${i}(id: string) { redirect(id); await db.$queryRawUnsafe(\`SELECT * FROM t WHERE id = '\${id}'\`); await fetch(id) }\n`).join('')
+    const without = Array.from({ length: 20_000 }, (_, i) => `export const b${i} = async (x: string): Promise<void> => { return }\n`).join('')
+    const started = Date.now()
+    const { hits } = await run({ 'app/sinks.ts': `'use server'\n${withSinks}`, 'app/plain.ts': `'use server'\n${without}` })
+    assert.ok(hits.length > 0)
+    assert.ok(Date.now() - started < 10_000, `took ${Date.now() - started}ms`)
+  })
+
   test('large handlers stay fast and disclose the tracking limit', async () => {
     const lines = Array.from({ length: 3000 }, (_, i) => `  const v${i} = v${i - 1 < 0 ? 0 : i - 1} + 1`)
     const started = Date.now()
