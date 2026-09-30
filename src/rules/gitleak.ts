@@ -356,8 +356,9 @@ export const gitleakRule: ProjectRule = {
         ],
         fix: [`Add ${path} to .gitignore.`, untrackStep(path)],
         humanOnly: [
-          `Rotate every credential in that file. This is the step people skip, and it is the only one that actually stops the leak.`,
-          `Removing it from history entirely requires rewriting the repo (git filter-repo or BFG). Do that only after rotating the keys — rotation is what matters, and history rewriting is disruptive enough that it should be a deliberate decision.`,
+          // 人工步骤会被单独汇总，首句须写明文件并能独立执行。
+          `Rotate every credential in ${path}. This is the step people skip, and it is the only one that actually stops the leak.`,
+          `If you want ${path} gone from git history, rewrite the history with git filter-repo or BFG Repo-Cleaner after rotating the keys. Rotation is what matters; history rewriting is disruptive enough that it should be a deliberate decision.`,
         ],
       })
       reportedTracked.add(path)
@@ -423,8 +424,8 @@ export const gitleakRule: ProjectRule = {
           ? [`Add ${path} to .gitignore.`, untrackStep(path)]
           : [`Confirm ${path} is in .gitignore so it does not come back.`],
         humanOnly: [
-          `Rotate every credential that was ever in this file. Do this first, and do not skip it — it is the only step that actually revokes access.`,
-          `Then, if you need the history cleaned, rewrite it with git filter-repo or BFG Repo-Cleaner. Do this deliberately: it rewrites every commit hash and disrupts anyone else working on the repo.`,
+          `Rotate every credential that was ever in ${path}. Do this first, and do not skip it — it is the only step that actually revokes access.`,
+          `If you want ${path} gone from git history, rewrite the history with git filter-repo or BFG Repo-Cleaner after rotating the keys. Do this deliberately: it rewrites every commit hash and disrupts anyone else working on the repo.`,
         ],
       })
     }

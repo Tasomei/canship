@@ -585,8 +585,8 @@ export const supabaseRlsRule: ProjectRule = {
           `Keep this in a migration rather than only in the dashboard, so the rule travels with your code.`,
         ],
         humanOnly: [
-          `Check the real state first: open Table Editor in the Supabase dashboard and look for the "RLS disabled" badge on "${entry.table}". The repository cannot tell you whether RLS was turned on there.`,
-          `If this table has been live without RLS, assume its contents have already been read.`,
+          // 后果说明并入同一步骤，汇总时不会变成脱离表名的独立条目。
+          `Check the real state first: open Table Editor in the Supabase dashboard and look for the "RLS disabled" badge on "${entry.table}". The repository cannot tell you whether RLS was turned on there. If the table has been live without RLS, assume its contents have already been read.`,
         ],
       })
     }

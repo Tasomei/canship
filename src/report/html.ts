@@ -84,7 +84,7 @@ function renderFinding(f: Finding, index: number): string {
     ? `<div class="hand"><b>By hand</b><ul>${f.humanOnly.map(s => `<li>${linkify(esc(s))}</li>`).join('')}</ul></div>`
     : ''
   return `<details class="f" data-i="${index}" data-sev="${f.severity}" data-cat="${esc(category)}" data-conf="${f.confidence}" data-file="${esc(f.file ?? '')}" data-text="${esc(search)}">
-<summary class="row"><span class="sev ${f.severity}">${f.severity}</span><span class="main"><span class="title">${esc(f.title)}</span>${f.confidence === 'likely' ? '<span class="likely">likely</span>' : ''}<span class="loc"><span class="loc-line">${f.line === null ? 'whole file' : `line ${f.line}`}</span><span class="loc-full">${esc(locationOf(f))}</span></span></span><span class="cat">${esc(category)}</span></summary>
+<summary class="row"><span class="sev ${f.severity}">${f.severity}</span><span class="main"><span class="title">${esc(f.title)}</span>${f.confidence === 'likely' ? '<span class="likely">likely</span>' : ''}<span class="loc"><span class="loc-line">${f.line !== null ? `line ${f.line}` : f.file ? 'whole file' : 'repository'}</span><span class="loc-full">${esc(locationOf(f))}</span></span></span><span class="cat">${esc(category)}</span></summary>
 <div class="body">
 <p class="rule">${esc(f.ruleId)}</p>
 ${f.excerpt ? `<pre class="excerpt"><code>${esc(f.excerpt)}</code></pre>` : ''}

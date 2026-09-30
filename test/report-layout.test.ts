@@ -98,6 +98,12 @@ test('long titles and paths wrap within narrow terminals instead of overflowing'
   }
 })
 
+test('whole-file findings show "file" in the line column instead of a blank', () => {
+  const out = visible(renderReport(result([finding({ file: '.env.local', line: null, title: 'Committed env file' })]),
+    { root: '/p', showingLikely: true, hiddenLikely: 0 }))
+  assert.match(out, /^ {2}P0 {2}file {2}Committed env file$/m)
+})
+
 test('the verdict tracks the most severe certain finding', () => {
   const minor = visible(renderReport(result([finding({ severity: 'P2' })]), { root: '/p', showingLikely: false, hiddenLikely: 0 }))
   assert.match(minor, /1 finding to fix\. Nothing blocking\./)

@@ -111,7 +111,7 @@ function checkEnvFile(file: ScanFile): FindingBuffer {
           `For anything the browser needs, use the anon key (NEXT_PUBLIC_SUPABASE_ANON_KEY) together with Row Level Security policies.`,
         ],
         humanOnly: [
-          `Rotate the service_role key in your Supabase dashboard (Project Settings -> API). If your site has ever been deployed with this key, assume it is already compromised — renaming the variable does not revoke it.`,
+          `Rotate the Supabase service_role key in your Supabase dashboard (Project Settings -> API). If your site has ever been deployed with this key, assume it is already compromised — renaming the variable does not revoke it.`,
         ],
       })
       continue
@@ -216,7 +216,8 @@ function pushServiceRoleJwts(findings: FindingBuffer, file: ScanFile, line: stri
         `Put it in .env as SUPABASE_SERVICE_ROLE_KEY (no public prefix) and read it via process.env on the server only.`,
       ],
       humanOnly: [
-        `Rotate the key in your Supabase dashboard (Project Settings -> API) — the current one must be treated as compromised.`,
+        // 与公开变量中的同类结果使用相同首句，汇总时合并为一个轮换步骤。
+        `Rotate the Supabase service_role key in your Supabase dashboard (Project Settings -> API) — the current one must be treated as compromised.`,
       ],
     })
   }

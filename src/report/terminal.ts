@@ -181,7 +181,8 @@ function renderFinding(f: Finding, width: number, verbose: boolean): string[] {
   const title = wrapText(f.title, width - DETAIL.length)
   const likely = f.confidence === 'likely' ? dim('  likely') : ''
   title.forEach((line, i) => out.push(i === 0
-    ? `  ${severityColor(f.severity)(pad(f.severity, 4))}${dim(rpad(f.line === null ? '' : String(f.line), 4))}  ${verbose ? bold(line) : line}${i === title.length - 1 ? likely : ''}`
+    // 整个文件的结果没有行号，行号列显示 file，避免看起来像缺失。
+    ? `  ${severityColor(f.severity)(pad(f.severity, 4))}${dim(rpad(f.line !== null ? String(f.line) : f.file ? 'file' : '', 4))}  ${verbose ? bold(line) : line}${i === title.length - 1 ? likely : ''}`
     : `${DETAIL}${verbose ? bold(line) : line}${i === title.length - 1 ? likely : ''}`))
   if (!verbose) return out
 

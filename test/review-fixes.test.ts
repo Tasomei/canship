@@ -11,6 +11,7 @@ import { applyBaseline, buildBaseline } from '../src/baseline.js'
 import { renderReport } from '../src/report/terminal.js'
 import { renderHtml } from '../src/report/html.js'
 import { renderFixPrompt } from '../src/report/prompt.js'
+import { manualSteps } from '../src/report/shared.js'
 import { PROJECT_RULES } from '../src/rules/index.js'
 import { renderSarif } from '../src/report/sarif.js'
 import { collectFiles } from '../src/walker.js'
@@ -236,6 +237,32 @@ test('a credential change past the truncation point still yields a new baseline 
   const next = await scan(root)
   assert.equal(first.findings[0]?.excerpt, next.findings[0]?.excerpt)
   assert.equal(applyBaseline(next.findings, buildBaseline(first.findings)).kept.length, 1)
+})
+
+test('manual steps name their file or table and stand on their own once summarised', async () => {
+  const root = project({ 'app.ts': 'export const ok=true;', 'config/.env': `OPENAI_KEY=${KEY}\n`, 'old/.env': `OPENAI_KEY=${OTHER}\n`,
+    'supabase/migrations/1_init.sql': 'create table public.alpha (id int);\ncreate table public.beta (id int);\n' })
+  // 所有 Git 写入均限于本用例新建的系统临时仓库。
+  const git = (...args: string[]) => execFileSync('git', [
+    '-c', 'user.name=test', '-c', 'user.email=test@example.com',
+    '-c', 'core.hooksPath=', '-c', 'commit.gpgsign=false', ...args,
+  ], { cwd: root, stdio: 'ignore' })
+  git('init', '-q')
+  git('add', '-A', '-f'); git('commit', '-qm', 'fixture')
+  rmSync(join(root, 'old/.env'))
+  git('add', '-A', '-f'); git('commit', '-qm', 'remove')
+  const steps = manualSteps((await scan(root)).findings).map(step => step.text)
+  for (const step of steps) {
+    assert.doesNotMatch(step, /\b(?:that|this) (?:file|table)\b/i, `a summarised step lost its subject: ${step}`)
+    assert.doesNotMatch(step, /^(?:Removing|Then\b|If this)/, `a summarised step is not an action: ${step}`)
+  }
+  for (const expected of [
+    'Rotate every credential in config/.env',
+    'Rotate every credential that was ever in old/.env',
+    'If you want config/.env gone from git history, rewrite the history with git filter-repo or BFG Repo-Cleaner after rotating the keys',
+    'Check the real state first: open Table Editor in the Supabase dashboard and look for the "RLS disabled" badge on "alpha"',
+    'Check the real state first: open Table Editor in the Supabase dashboard and look for the "RLS disabled" badge on "beta"',
+  ]) assert.ok(steps.includes(expected), `missing step: ${expected}`)
 })
 
 test('credential changes in tracked and historical env files do not reuse an old baseline identity', async () => {
