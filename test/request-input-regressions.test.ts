@@ -47,6 +47,29 @@ test('a later assignment cannot taint an earlier query', async () => {
   assert.equal(result.passed, true, JSON.stringify(result))
 })
 
+test('assignments inside callbacks are followed to sinks in the same callback', async () => {
+  const content = `export async function POST(req) {
+  const body = await req.json()
+  await prisma.$transaction(async (tx) => {
+    const q = \`DELETE FROM items WHERE id = '\${body.id}'\`
+    await tx.$executeRawUnsafe(q)
+  })
+}`
+  const result = await evaluateCase({ id: 'callback', origin: 'synthetic', files: { [path]: content },
+    expected: [{ ruleId: 'injection/sql', file: path, severity: 'P1', confidence: 'certain' }] })
+  assert.equal(result.passed, true, JSON.stringify(result))
+})
+
+for (const mutation of ['COLUMNS.push(req.body.column)', 'Object.assign(COLUMNS, req.body)']) {
+  test(`a mutated lookup table is not a fixed choice: ${mutation}`, async () => {
+    const table = mutation.startsWith('COLUMNS') ? "const COLUMNS = ['name', 'created_at'];" : "const COLUMNS = { name: 'name' };"
+    const content = `${table}\n` + sql(`${mutation}; const id = COLUMNS[req.body.key]`)
+    const result = await evaluateCase({ id: 'mutated-table', origin: 'synthetic', files: { [path]: content },
+      expected: [{ ruleId: 'injection/sql', file: path, severity: 'P1', confidence: 'certain' }] })
+    assert.equal(result.passed, true, JSON.stringify(result))
+  })
+}
+
 test('a fixed lookup cannot sanitize a request-controlled fallback', async () => {
   const content = "const IDS = {one: 1};\n" + sql('const id = IDS[req.body.key] ?? req.body.fallback')
   const result = await evaluateCase({ id: 'lookup-fallback', origin: 'synthetic', files: { [path]: content },

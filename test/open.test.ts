@@ -15,7 +15,8 @@ test('each platform uses its own opener with the path as a separate argument', (
   const path = 'C:\\reports\\a b & c.html'
   assert.deepEqual(openerFor('win32', path, { SystemRoot: 'C:\\Windows' }), { command: 'C:\\Windows\\explorer.exe', args: [path] })
   assert.deepEqual(openerFor('darwin', '/tmp/r.html'), { command: '/usr/bin/open', args: ['/tmp/r.html'] })
-  assert.deepEqual(openerFor('linux', '/tmp/r.html'), { command: '/usr/bin/xdg-open', args: ['/tmp/r.html'] })
+  assert.deepEqual(openerFor('linux', '/tmp/r.html', {}, { cwd: '/work', exists: p => p === '/usr/bin/xdg-open' }),
+    { command: '/usr/bin/xdg-open', args: ['/tmp/r.html'] })
 })
 
 test('opener resolution ignores project programs and refuses an unsafe system directory', () => {
@@ -25,8 +26,22 @@ test('opener resolution ignores project programs and refuses an unsafe system di
   assert.equal(openerFor('win32', 'r.html', { SYSTEMROOT: 'D:\\OS', PATH: '.;node_modules/.bin' }).command, 'D:\\OS\\explorer.exe')
   assert.deepEqual(openerEnvironment('win32', 'C:\\Windows\\explorer.exe', { Path: '.;node_modules/.bin' }),
     { PATH: 'C:\\Windows;C:\\Windows\\System32' })
-  assert.equal(openerEnvironment('linux', '/usr/bin/xdg-open', { PATH: './node_modules/.bin:.' }).PATH,
-    '/usr/bin:/bin:/usr/sbin:/sbin')
+  assert.equal(openerEnvironment('linux', '/usr/bin/xdg-open', { PATH: './node_modules/.bin:.' }, '/work/project').PATH,
+    '/usr/bin:/bin:/usr/local/bin:/usr/sbin:/sbin:/usr/local/sbin')
+})
+
+test('Linux finds xdg-open outside /usr/bin but never in the project, its dependencies, or relative directories', () => {
+  const env = { PATH: '/work/project/bin:/opt/tools/node_modules/.bin:bin:/run/current-system/sw/bin:/snap/bin' }
+  const installed = new Set(['/work/project/bin/xdg-open', '/opt/tools/node_modules/.bin/xdg-open', '/run/current-system/sw/bin/xdg-open'])
+  // NixOS 等把 xdg-open 装在系统目录之外；项目及依赖中的同名程序即使存在也不采用。
+  assert.equal(openerFor('linux', 'r.html', env, { cwd: '/work/project', exists: p => installed.has(p) }).command,
+    '/run/current-system/sw/bin/xdg-open')
+  assert.throws(() => openerFor('linux', 'r.html', { PATH: '/work/project/bin' }, { cwd: '/work/project', exists: p => p === '/work/project/bin/xdg-open' }),
+    /xdg-open was not found/)
+  // 浏览器常装在 /snap/bin 等目录，打开脚本需要能找到它们，但项目目录仍被排除。
+  const path = openerEnvironment('linux', '/run/current-system/sw/bin/xdg-open', env, '/work/project').PATH!.split(':')
+  assert.ok(path.includes('/snap/bin') && path.includes('/run/current-system/sw/bin'))
+  assert.ok(!path.some(dir => dir.startsWith('/work/project') || dir.includes('node_modules') || !dir.startsWith('/')))
 })
 
 test('the report is never opened in CI or without an interactive terminal', () => {
@@ -36,7 +51,8 @@ test('the report is never opened in CI or without an interactive terminal', () =
 })
 
 test('openReport passes an absolute system program and isolated working directory to spawn', () => {
-  const expected = openerFor(process.platform, '/report with spaces.html')
+  let expected: { command: string; args: string[] } | null = null
+  try { expected = openerFor(process.platform, '/report with spaces.html') } catch { /* 没有可用的打开程序时应改为报告错误 */ }
   const calls: Array<{ command: string; args: readonly string[]; options: SpawnOptions }> = []
   const stub = mock.method(childProcess, 'spawn', (command: string, args: readonly string[], options: SpawnOptions) => {
     calls.push({ command, args, options })
@@ -44,6 +60,13 @@ test('openReport passes an absolute system program and isolated working director
   })
   syncBuiltinESMExports()
   try {
+    if (expected === null) {
+      const errors: string[] = []
+      openReport('/report with spaces.html', message => errors.push(message))
+      assert.equal(calls.length, 0)
+      assert.match(errors.join(''), /could not open the report/)
+      return
+    }
     openReport('/report with spaces.html', message => assert.fail(message))
     assert.equal(calls.length, 1)
     assert.equal(calls[0]!.command, expected.command)

@@ -231,6 +231,13 @@ function fixedTablesOf(code: string, source: string, pairs: Map<number, number>)
   for (const m of code.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)(?:\s*\.\s*[\w$]+|\s*\[[^\]]*\])?\s*(?:\+\+|--|[+*/%&|^-]?=(?![=>]))/g)) {
     if (!/\bconst\s+$/.test(code.slice(Math.max(0, m.index - 20), m.index))) result.delete(m[1]!)
   }
+  // 变更方法和对象工具同样会改写表内容。
+  for (const m of code.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*\.\s*(?:push|pop|shift|unshift|splice|sort|reverse|fill|copyWithin)\s*\(/g)) {
+    result.delete(m[1]!)
+  }
+  for (const m of code.matchAll(/\b(?:Object\s*\.\s*(?:assign|defineProperty|defineProperties|setPrototypeOf)|Reflect\s*\.\s*(?:set|defineProperty|setPrototypeOf))\s*\(\s*([A-Za-z_$][\w$]*)\b/g)) {
+    result.delete(m[1]!)
+  }
   return result
 }
 
@@ -256,7 +263,6 @@ export class InputFlow {
     this.sourcePattern = sourceRegex(roles)
     const assignments = this.assignments().sort((a, b) => a.at - b.at)
     const region = code.slice(span.start, span.end)
-    const nested = functionBodies(region, delimiterPairs(region))
     const scopes: Span[] = [span]
     for (let i = span.start + 1; i < span.end; i++) {
       const end = code[i] === '{' ? pairs.get(i) : undefined
@@ -271,7 +277,7 @@ export class InputFlow {
       if (controls.length >= MAX_ASSIGNMENTS) { this.limited = true; break }
     }
     for (const a of assignments) {
-      if (nested.some(body => body.declaration + span.start <= a.at && a.at < body.end + span.start)) continue
+      // 嵌套函数中的赋值以该函数为作用域：内部使用可见；对外层使用只作为可能来源，不视为覆盖。
       a.scope = scopes.filter(s => s.start < a.at && a.at < s.end).at(-1) ?? span
       a.controls = controls.filter(s => s.start <= a.at && a.at <= s.end)
       for (const name of a.names) {

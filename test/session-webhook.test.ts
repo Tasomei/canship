@@ -225,4 +225,49 @@ export default async function handler(req, res) {
 export function handle(event) { if (event.type === 'invoice.paid') markPaid() }`,
     })), [])
   })
+
+  // 类型标注曾把 let event: Stripe.Event 与其后的 try 一起读成声明，try/catch 检查因此失效。
+  const typedTry = (catchBody: string) => `import Stripe from 'stripe'
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!)
+export async function POST(req: Request) {
+  const body = await req.text()
+  let event: Stripe.Event
+  try {
+    event = stripe.webhooks.constructEvent(body, req.headers.get('stripe-signature')!, process.env.STRIPE_WEBHOOK_SECRET!)
+  } catch (err: any) {
+    ${catchBody}
+  }
+  switch (event.type) {
+    case 'checkout.session.completed':
+      await fulfil(event.data.object.id)
+  }
+  return new Response('ok')
+}`
+
+  test('a typed event verified in try is accepted when the catch logs and then returns', async () => {
+    assert.deepEqual(summary(await findings({ 'app/api/webhooks/route.ts':
+      typedTry("console.log(`Webhook Error: ${err.message}`)\n    return new Response('bad', { status: 400 })") })), [])
+  })
+
+  test('a catch that swallows the failure, or returns only conditionally, leaves the event unverified', async () => {
+    for (const catchBody of ["console.log(err.message)", "if (process.env.STRICT) return new Response('bad', { status: 400 })"]) {
+      assert.deepEqual(summary(await findings({ 'app/api/webhooks/route.ts': typedTry(catchBody) })),
+        [['webhook/unverified-signature', 12, 'certain']], catchBody)
+    }
+  })
+})
+
+describe('verification guards that log before exiting', () => {
+  test('a getUser() error branch that logs and then returns still verifies the session', async () => {
+    assert.deepEqual(summary(await findings({ 'src/hooks.server.ts': `export const handle = async ({ event, resolve }) => {
+  event.locals.safeGetSession = async () => {
+    const { data: { session } } = await event.locals.supabase.auth.getSession()
+    if (!session) return { session: null, user: null }
+    const { data: { user }, error } = await event.locals.supabase.auth.getUser()
+    if (error) { console.error(error); return { session: null, user: null } }
+    return { session, user }
+  }
+  return resolve(event)
+}` })), [])
+  })
 })
