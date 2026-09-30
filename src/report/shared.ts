@@ -59,8 +59,8 @@ export function skipPhrase(reason: SkipReason): string {
 }
 
 /** 报告中的问题类别，按规则命名空间划分。 */
-export type Category = 'Credentials' | 'API access' | 'Database rules' | 'CORS' | 'Other'
-export const CATEGORIES: readonly Category[] = ['Credentials', 'API access', 'Database rules', 'CORS', 'Other']
+export type Category = 'Credentials' | 'API access' | 'Database rules' | 'CORS' | 'Code' | 'Other'
+export const CATEGORIES: readonly Category[] = ['Credentials', 'API access', 'Database rules', 'CORS', 'Code', 'Other']
 export const SEVERITIES: readonly Severity[] = ['P0', 'P1', 'P2']
 
 /** 未知命名空间归入 Other，新规则不会因此从汇总中消失。 */
@@ -70,6 +70,7 @@ export function categoryOf(ruleId: string): Category {
   if (namespace === 'api') return 'API access'
   if (namespace === 'supabase' || namespace === 'firebase') return 'Database rules'
   if (namespace === 'cors') return 'CORS'
+  if (namespace === 'injection') return 'Code'
   return 'Other'
 }
 

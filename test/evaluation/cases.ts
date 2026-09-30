@@ -37,6 +37,10 @@ const route = (guard: string) => "import { db } from '@/lib/admin';\n" +
   `export async function GET() { ${guard} return Response.json(await db.from('profiles').select('*')); }`
 const firebase = (condition: string, operation = 'read, write') =>
   `service cloud.firestore { match /databases/{database}/documents { match /notes/{id} { allow ${operation}: if ${condition}; } } }`
+const sqlRoute = (args: string) => "import { prisma } from '@/lib/db';\n" +
+  'export async function GET(request: Request) {\n' +
+  "  const name = new URL(request.url).searchParams.get('name');\n" +
+  `  return Response.json(await prisma.$queryRawUnsafe(${args}));\n}\n`
 const finding = (ruleId: string, file: string, severity: Severity = 'P1', confidence: Confidence = 'certain'): ExpectedFinding =>
   ({ ruleId, file, severity, confidence })
 
@@ -131,6 +135,15 @@ export const evaluationCases: readonly EvaluationCase[] = [
   {
     id: 'cors-fixed-origin', origin: 'synthetic',
     files: { 'lib/cors.ts': "export const headers = { 'Access-Control-Allow-Origin': 'https://app.example.com', 'Access-Control-Allow-Credentials': 'true' };" }, expected: [],
+  },
+  {
+    id: 'nextjs-sql-from-search-params', origin: 'synthetic',
+    files: { 'app/api/items/route.ts': sqlRoute("`SELECT * FROM items WHERE name = '${name}'`") },
+    expected: [finding('injection/sql', 'app/api/items/route.ts')],
+  },
+  {
+    id: 'nextjs-sql-parameterised', origin: 'synthetic',
+    files: { 'app/api/items/route.ts': sqlRoute("'SELECT * FROM items WHERE name = $1', name") }, expected: [],
   },
   {
     id: 'incomplete-with-finding', origin: 'synthetic',

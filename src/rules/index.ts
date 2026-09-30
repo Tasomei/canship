@@ -9,12 +9,13 @@ import { supabaseRlsRule } from './supabase.js'
 import { firebaseRulesRule } from './firebase.js'
 import { apiAuthRule } from './apiauth.js'
 import { corsRule } from './cors.js'
+import { injectionRule } from './injection.js'
 
 /** 按文件执行的规则。 */
 export const FILE_RULES: Rule[] = [secretsRule, exposureRule, firebaseRulesRule, corsRule]
 
 /** 每次扫描执行一次的跨文件规则。 */
-export const PROJECT_RULES: ProjectRule[] = [gitleakRule, supabaseRlsRule, apiAuthRule]
+export const PROJECT_RULES: ProjectRule[] = [gitleakRule, supabaseRlsRule, apiAuthRule, injectionRule]
 
 /** 所有可能输出的规则 ID，用于参数校验和执行筛选。 */
 export const RULE_IDS: readonly string[] = [
@@ -29,6 +30,8 @@ export const RULE_IDS: readonly string[] = [
   'firebase/test-mode-rules',
   'gitleak/env-in-history',
   'gitleak/env-tracked',
+  'injection/command',
+  'injection/sql',
   'supabase/permissive-policy',
   'supabase/public-bucket-listing',
   'supabase/rls-not-enabled',

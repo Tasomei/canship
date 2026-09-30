@@ -61,7 +61,7 @@ function isAstroEndpoint(file: ScanFile): boolean {
 }
 
 /** 一个可被直接请求的服务端路由。 */
-interface Route {
+export interface Route {
   file: ScanFile
   framework: Framework
   url: string
@@ -78,7 +78,7 @@ interface Route {
  * 文件顶部的 'use server' 使全部导出函数成为 Server Function；函数体首行的 'use server' 只标记该函数。
  * 只检查导出函数和内联标记的函数，未导出的辅助函数由调用方负责鉴权，不单独报告。
  */
-function serverActionRoutes(file: ScanFile): Route[] {
+export function serverActionRoutes(file: ScanFile): Route[] {
   if (!/use server/.test(file.content) || !/\.[mc]?[jt]sx?$/.test(file.path)) return []
   const code = noiseMaskedOf(file)
   const source = commentsMaskedOf(file)
@@ -204,7 +204,7 @@ function routePathOf(path: string): string {
 }
 
 /** 按框架约定识别路由；不属于任何框架时返回空值。 */
-function routeOf(file: ScanFile): Route | null {
+export function routeOf(file: ScanFile): Route | null {
   const path = routePathOf(file.path)
   // src/pages/api 同时符合 Next.js Pages Router 与 Astro 的约定：Next.js 默认导出处理函数，Astro 按 HTTP 方法导出。
   if (PAGES_ROUTER.test(file.path) && ASTRO_ENDPOINT.test(path) && isAstroEndpoint(file)) {
@@ -488,14 +488,14 @@ function hasAuthSignal(file: { content: string }): boolean {
   return found
 }
 
-interface FunctionBody {
+export interface FunctionBody {
   declaration: number
   start: number
   end: number
 }
 
 /** 一次配对括号，后续函数边界和语句扫描不重复搜索整个文件。 */
-function delimiterPairs(code: string): Map<number, number> {
+export function delimiterPairs(code: string): Map<number, number> {
   const pairs = new Map<number, number>()
   const stack: number[] = []
   for (let i = 0; i < code.length; i++) {
@@ -512,7 +512,7 @@ function delimiterPairs(code: string): Map<number, number> {
 }
 
 /** 常见函数声明及块体箭头函数；无法确认边界时不假设已有鉴权。 */
-function functionBodies(code: string, pairs: Map<number, number>): FunctionBody[] {
+export function functionBodies(code: string, pairs: Map<number, number>): FunctionBody[] {
   const bodies: FunctionBody[] = []
   for (const match of code.matchAll(/\bfunction\s*\*?\s*(?:\w+\s*)?\(|=>\s*\{/g)) {
     let body: number

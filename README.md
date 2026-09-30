@@ -27,6 +27,7 @@ Requires Node.js ≥18; no runtime dependencies. Installation may use the networ
 | Firebase unconditional access and date-based test rules | P1 |
 | Server-side data operations without recognised authentication | P0 / P1 |
 | Credentialed CORS with reflected or wildcard origins | P1 / P2 |
+| SQL queries and shell commands built from request input in server routes | P1 |
 
 Recognises OpenAI, Anthropic, AWS, Stripe, GitHub, npm, and other credential formats. Firebase checks cover Firestore, Storage, and Realtime Database. Use `--list-rules` for rule IDs and scope.
 

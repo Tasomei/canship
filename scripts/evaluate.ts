@@ -6,7 +6,7 @@ const results = []
 for (const sample of evaluationCases) results.push(await evaluateCase(sample))
 const summary = {
   schemaVersion: 1,
-  corpus: 'canship-starter-v3',
+  corpus: 'canship-starter-v4',
   cases: results.length,
   passed: results.filter(result => result.passed).length,
   missing: results.reduce((sum, result) => sum + result.missing.length, 0),

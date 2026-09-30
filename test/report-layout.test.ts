@@ -30,10 +30,13 @@ test('rule namespaces map to report categories, with unknown namespaces kept vis
   assert.equal(categoryOf('supabase/rls-not-enabled'), 'Database rules')
   assert.equal(categoryOf('firebase/open-rules'), 'Database rules')
   assert.equal(categoryOf('cors/wildcard-with-credentials'), 'CORS')
-  assert.equal(categoryOf('injection/sql'), 'Other')
-  const rows = categoryCounts([finding({}), finding({ ruleId: 'injection/sql', severity: 'P2' })])
-  assert.deepEqual(rows.map(row => [row.category, row.total]), [['Credentials', 1], ['Other', 1]])
-  assert.equal(rows.reduce((sum, row) => sum + row.total, 0), 2, 'every finding is counted once')
+  assert.equal(categoryOf('injection/sql'), 'Code')
+  assert.equal(categoryOf('injection/command'), 'Code')
+  assert.equal(categoryOf('future/unknown-rule'), 'Other')
+  const rows = categoryCounts([finding({}), finding({ ruleId: 'injection/sql', severity: 'P2' }),
+    finding({ ruleId: 'future/unknown-rule', severity: 'P2' })])
+  assert.deepEqual(rows.map(row => [row.category, row.total]), [['Credentials', 1], ['Code', 1], ['Other', 1]])
+  assert.equal(rows.reduce((sum, row) => sum + row.total, 0), 3, 'every finding is counted once')
 })
 
 test('file groups put the most severe file first, then larger groups, and sort lines within a file', () => {
