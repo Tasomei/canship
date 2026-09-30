@@ -53,6 +53,7 @@ Omitting the path scans the current directory. Reports are in English.
 | Option | Effect |
 |---|---|
 | `-a`, `--all` | Include `likely` findings |
+| `--verbose` | Expand each terminal finding with its excerpt, explanation, trace and fix steps |
 | `--json` | Output JSON |
 | `--fix-prompt` | Output repair instructions and separate manual actions |
 | `--report[=file]` | Write HTML; default: `canship-report.html` |

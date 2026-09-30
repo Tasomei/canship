@@ -588,6 +588,8 @@ describe('redaction is an output-boundary invariant, not a rule responsibility',
     const surfaces: Record<string, string> = {
       json: JSON.stringify(result.findings),
       terminal: renderReport(result, { root: VULNERABLE, showingLikely: true, hiddenLikely: 0 }),
+      // 详细视图会显示摘录，同样必须脱敏。
+      terminalVerbose: renderReport(result, { root: VULNERABLE, showingLikely: true, hiddenLikely: 0, verbose: true }),
       // 有修复步骤的夹具应生成提示。
       prompt: renderFixPrompt(result.findings) ?? '',
       html: renderHtml(result, { root: VULNERABLE, generatedAt: '1970-01-01T00:00:00.000Z' }),
@@ -626,7 +628,8 @@ describe('redaction is an output-boundary invariant, not a rule responsibility',
     assert.ok(hit, 'the fixture should expose the service_role key')
     assert.ok(hit.why.length > 1, 'this explanation is written as more than one paragraph')
 
-    const terminal = renderReport(result, { root: VULNERABLE, showingLikely: true, hiddenLikely: 0 })
+    // 终端默认只列标题，说明段落在 --verbose 中展开。
+    const terminal = renderReport(result, { root: VULNERABLE, showingLikely: true, hiddenLikely: 0, verbose: true })
     assert.ok(terminal.includes('root password.'), 'the first paragraph went missing entirely')
     assert.ok(!terminal.includes('root password.Because'), 'two paragraphs ran together in the terminal')
 
@@ -1541,7 +1544,8 @@ describe('the CLI contract', () => {
       )
       const result = run([root])
       assert.equal(result.status, 2, 'a P2 blocked a deploy')
-      assert.match(result.stdout, /nothing exposed/, 'the verdict overstated a configuration bug')
+      assert.match(result.stdout, /Nothing blocking/, 'the verdict overstated a configuration bug')
+      assert.doesNotMatch(result.stdout, /Do not deploy/, 'the verdict overstated a configuration bug')
     } finally {
       try {
         rmSync(root, { recursive: true, force: true })

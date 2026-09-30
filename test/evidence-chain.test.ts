@@ -38,7 +38,8 @@ test('re-exports retain ordered import positions and the admin constructor', asy
     ['import', 'lib/barrel.ts', 1], ['admin-client', 'lib/admin.ts', 2],
   ])
   assert.equal(finding.excerpt, null)
-  for (const output of [renderReport(result, { root: '.', showingLikely: true, hiddenLikely: 0 }),
+  // 终端默认只列标题，追踪链在 --verbose 中展开。
+  for (const output of [renderReport(result, { root: '.', showingLikely: true, hiddenLikely: 0, verbose: true }),
     renderHtml(result, { root: '.', generatedAt: '' }), renderFixPrompt(result.findings)!]) {
     assert.match(output, /lib\/admin\.ts/)
     assert.match(output, /[Ss]tatic/)

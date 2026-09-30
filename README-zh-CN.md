@@ -53,6 +53,7 @@ npx canship .
 | 参数 | 作用 |
 |---|---|
 | `-a`、`--all` | 包含 `likely` 结果 |
+| `--verbose` | 终端输出中展开每条结果的摘录、说明、追踪和修复步骤 |
 | `--json` | 输出 JSON |
 | `--fix-prompt` | 输出修复指令及独立的人工操作清单 |
 | `--report[=file]` | 写入 HTML，默认 `canship-report.html` |

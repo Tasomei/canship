@@ -57,6 +57,10 @@ interface Args {
   listRules: boolean
   noExcerpts: boolean
   changedSince: string | null
+  /** 终端报告展开每条结果的详情。 */
+  verbose: boolean
+  /** 生成 HTML 报告后用系统浏览器打开。 */
+  open: boolean
 }
 
 /** 保留退出码，等待标准输出和错误输出写完后自然结束。 */
@@ -151,6 +155,8 @@ function parseArgs(argv: string[]): Args {
     listRules: false,
     noExcerpts: false,
     changedSince: null,
+    verbose: false,
+    open: false,
   }
   const positional: string[] = []
 
@@ -238,6 +244,9 @@ function parseArgs(argv: string[]): Args {
       case '--no-excerpts':
         args.noExcerpts = true
         break
+      case '--verbose':
+        args.verbose = true
+        break
       case '--help':
       case '-h':
         args.help = true
@@ -269,6 +278,7 @@ const HELP = `
 
   ${bold('Options')}
     -a, --all         Show likely findings
+        --verbose     Show each finding's excerpt, explanation, trace and fix steps
         --fix-prompt  Output instructions to paste into a coding assistant
         --report[=F]  Write a self-contained HTML report (default canship-report.html)
         --json        Output raw JSON (for CI or tooling)
@@ -466,6 +476,10 @@ async function main(): Promise<void> {
   if (changed) result = changedFileView(result, changed)
   const shown = showAll ? result.findings : result.findings.filter((f) => f.confidence === 'certain')
   const hiddenLikely = showAll ? 0 : result.findings.filter((f) => f.confidence === 'likely').length
+  // 严重确定结果优先，其次为其他结果，最后判断完整性；报告写入失败时另行退出 3。
+  const exitCode: 0 | 1 | 2 | 3 = verdictOf(fullResult.findings).blocking > 0 ? 1
+    : fullResult.findings.length > 0 ? 2
+      : result.partial && !bestEffort ? 3 : 0
 
   if (args.fixPrompt) {
     const prompt = renderFixPrompt(shown, {
@@ -507,6 +521,9 @@ async function main(): Promise<void> {
           baselineSuppressed,
           baselineStale,
           baselinePath: baselinePath === null ? null : cleanForOutput(baselinePath),
+          verbose: args.verbose,
+          version: VERSION,
+          exitCode,
         },
       )}\n`,
     )
@@ -530,7 +547,7 @@ async function main(): Promise<void> {
         'utf8',
       )
       if (!args.json && !args.fixPrompt) {
-        process.stdout.write(`  ${dim('SARIF written to')} ${cyan(cleanForOutput(target))}\n\n`)
+        process.stdout.write(`SARIF written to ${cleanForOutput(target)}\n`)
       }
     } catch (err) {
       process.stderr.write(
@@ -560,7 +577,7 @@ async function main(): Promise<void> {
         'utf8',
       )
       if (!args.json && !args.fixPrompt) {
-        process.stdout.write(`  ${dim('Report written to')} ${cyan(cleanForOutput(target))}\n\n`)
+        process.stdout.write(`Report written to ${cleanForOutput(target)}\n`)
       }
     } catch (err) {
       process.stderr.write(
@@ -570,12 +587,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // 严重确定结果优先，其次为其他结果，最后判断完整性。
-  if (verdictOf(fullResult.findings).blocking > 0) return finish(1)
-  if (fullResult.findings.length > 0) return finish(2)
-  // 仅在无发现时按完整性决定退出状态。
-  if (result.partial && !bestEffort) return finish(3)
-  return finish(0)
+  return finish(exitCode)
 }
 
 main().catch((err: unknown) => {

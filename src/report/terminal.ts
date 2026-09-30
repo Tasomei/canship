@@ -1,10 +1,10 @@
-/** 生成终端报告，展示影响、证据、修复步骤和扫描范围。 */
+/** 生成终端报告：先给结论和汇总，再按文件列出结果；--verbose 展开每条结果的说明和修复步骤。 */
 
 import type { Finding, ScanResult, SkipReason } from '../types.js'
-import { bold, dim, red, green, yellow, cyan, gray } from '../colors.js'
-import { changeViewNotice, SKIP_LABEL, locationOf, plural, verdictOf } from './shared.js'
-
-const INDENT = '  '
+import { bold, dim, red, green, yellow, gray } from '../colors.js'
+import {
+  categoryCounts, categoryOf, changeViewNotice, groupByFile, locationOf, manualSteps, plural, SEVERITIES, SKIP_LABEL, verdictOf,
+} from './shared.js'
 
 export interface RenderOptions {
   /** 报告标题使用的扫描根目录。 */
@@ -19,232 +19,314 @@ export interface RenderOptions {
   baselineStale?: number
   /** 应用的基线文件路径。 */
   baselinePath?: string | null
+  /** 展开每条结果的摘录、说明、追踪、修复步骤和人工操作。 */
+  verbose?: boolean
+  /** 页眉显示的扫描器版本。 */
+  version?: string
+  /** 预期退出码；由调用方按完整结果计算。 */
+  exitCode?: 0 | 1 | 2 | 3
+  /** 输出宽度；默认取终端列数。 */
+  width?: number
+}
+
+/** 结果行的缩进：严重度 4 列、行号 4 列及间隔。 */
+const DETAIL = ' '.repeat(12)
+
+function widthOf(opts: RenderOptions): number {
+  const columns = opts.width ?? (process.stdout.isTTY ? process.stdout.columns : undefined) ?? 96
+  return Math.max(60, Math.min(120, columns))
+}
+
+/** 严重度只用红色与琥珀色区分，其余保持默认颜色。 */
+function severityColor(severity: Finding['severity']): (s: string) => string {
+  return severity === 'P0' ? red : severity === 'P1' ? yellow : (s: string) => s
+}
+
+/** 去除颜色控制序列后的可见长度。 */
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g')
+const visibleLength = (s: string): number => s.replace(ANSI, '').length
+
+/** 按项拼接，放不下时整项换行，不在项内截断。 */
+function joinFitting(items: string[], separator: string, width: number): string[] {
+  const lines: string[] = []
+  let line = ''
+  for (const item of items) {
+    const next = line === '' ? item : `${line}${separator}${item}`
+    if (line !== '' && visibleLength(next) > width) {
+      lines.push(line)
+      line = item
+    } else {
+      line = next
+    }
+  }
+  if (line !== '') lines.push(line)
+  return lines
+}
+
+const pad = (s: string, n: number): string => (s.length >= n ? s : s + ' '.repeat(n - s.length))
+const rpad = (s: string, n: number): string => (s.length >= n ? s : ' '.repeat(n - s.length) + s)
+
+export function renderReport(result: ScanResult, opts: RenderOptions): string {
+  const width = widthOf(opts)
+  const out: string[] = []
+  const rule = (): void => { out.push(dim('─'.repeat(width))) }
+
+  out.push(`${bold('canship')}${opts.version ? ` ${opts.version}` : ''} ${dim('·')} ${opts.root}`)
+  out.push('─'.repeat(width))
+  out.push('')
+
+  const { findings } = result
+  if (findings.length === 0) {
+    out.push(...renderClean(result, opts, width))
+    out.push(...renderNext(opts, width))
+    return out.join('\n')
+  }
+
+  out.push(...renderVerdict(result, opts, width))
+  out.push('')
+  rule()
+  out.push('')
+  out.push(...renderSummary(findings))
+  const steps = renderManualSteps(findings, width)
+  if (steps.length > 0) out.push('', ...steps)
+  out.push('')
+  rule()
+  out.push('')
+  out.push(`${bold('Findings')}${dim('  grouped by file · most severe first')}`)
+  out.push('')
+  for (const group of groupByFile(findings)) {
+    out.push(`${group.file ?? 'repository'}${dim(` — ${group.findings.length}`)}`)
+    for (const f of group.findings) out.push(...renderFinding(f, width, opts.verbose === true))
+    out.push('')
+  }
+  rule()
+
+  const notes = [...renderIncomplete(result, width), ...renderIgnored(result), ...renderBaseline(opts)]
+  if (!opts.showingLikely && opts.hiddenLikely > 0) {
+    notes.push(dim(`${opts.hiddenLikely} lower-confidence ${plural(opts.hiddenLikely, 'finding')} hidden. Run with --all to see ${opts.hiddenLikely === 1 ? 'it' : 'them'}.`))
+  }
+  if (notes.length > 0) out.push(...notes, '')
+  out.push(...renderNext(opts, width))
+  return out.join('\n')
+}
+
+/** 结论与说明句按严重程度选择，变更视图仍以完整扫描的阻断数为准。 */
+function renderVerdict(result: ScanResult, opts: RenderOptions, width: number): string[] {
+  const { findings } = result
+  const { blocking: visibleBlocking, minor, unsure } = verdictOf(findings)
+  const blocking = result.changeView?.totalBlocking ?? visibleBlocking
+  const rotations = manualSteps(findings).filter(step => /^Rotate\b/.test(step.text)).length
+  const out: string[] = []
+  let explanation: string
+  if (blocking > 0) {
+    out.push(`${red(bold(`${blocking} blocking ${plural(blocking, 'finding')}.`))} ${bold('Do not deploy yet.')}`)
+    explanation = 'Every certain P0 or P1 result below needs a code change.' + (rotations > 0
+      ? ` ${rotations} exposed ${plural(rotations, 'credential')} must also be rotated in ${rotations === 1 ? 'its provider' : 'their providers'}; a code change does not revoke ${rotations === 1 ? 'it' : 'them'}.`
+      : '')
+  } else if (minor > 0) {
+    out.push(`${yellow(bold(`${minor} ${plural(minor, 'finding')} to fix.`))} ${bold('Nothing blocking.')}`)
+    explanation = 'No certain P0 or P1 result was found; the findings below are lower severity.'
+  } else {
+    out.push(`${yellow(bold(`${unsure} ${plural(unsure, 'finding')} to review.`))}`)
+    explanation = 'These are likely findings: the static evidence is not conclusive, so check each one.'
+  }
+  for (const line of wrapText(explanation, width)) out.push(dim(line))
+  out.push('')
+  const facts = [
+    `${dim('findings')} ${findings.length} ${dim('shown')}${opts.hiddenLikely > 0 && !opts.showingLikely ? dim(`, ${opts.hiddenLikely} likely hidden (--all)`) : ''}`,
+    `${dim('files scanned')} ${result.filesScanned}`,
+    `${dim('coverage')} ${result.partial ? yellow('incomplete') : 'complete'}`,
+    `${result.durationMs} ${dim('ms')}`,
+  ]
+  out.push(...joinFitting(facts, dim('  ·  '), width))
+  if (result.changeView) for (const line of wrapText(changeViewNotice(result.changeView), width)) out.push(yellow(line))
+  return out
+}
+
+/** 类别 × 严重度计数，数字按严重度着色，空格显示短横线。 */
+function renderSummary(findings: Finding[]): string[] {
+  const rows = categoryCounts(findings)
+  const out = [bold('By category'), dim(pad('', 22) + SEVERITIES.map(s => rpad(s, 5)).join('') + rpad('total', 8))]
+  for (const row of rows) {
+    out.push(pad(row.category, 22) + SEVERITIES.map(s => row.counts[s]
+      ? severityColor(s)(rpad(String(row.counts[s]), 5)) : dim(rpad('–', 5))).join('') + rpad(String(row.total), 8))
+  }
+  const totals = SEVERITIES.map(s => findings.filter(f => f.severity === s).length)
+  out.push(dim(pad('all', 22) + totals.map(n => rpad(String(n), 5)).join('') + rpad(String(findings.length), 8)))
+  return out
+}
+
+/** 合并相同的人工操作；来源超过一处时只列首个并注明其余数量。 */
+function renderManualSteps(findings: Finding[], width: number): string[] {
+  const steps = manualSteps(findings)
+  if (steps.length === 0) return []
+  const out = [bold('Manual steps')]
+  steps.forEach((step, i) => {
+    wrapText(step.text, width - 5).forEach((line, j) => out.push(`${dim(j === 0 ? rpad(String(i + 1), 3) : '   ')}  ${line}`))
+    const more = step.locations.length > 1 ? ` +${step.locations.length - 1}` : ''
+    out.push(`     ${dim(`${step.locations[0]}${more}`)}`)
+  })
+  return out
+}
+
+const EVIDENCE_LABEL: Record<NonNullable<Finding['evidence']>[number]['kind'], string> = {
+  operation: 'operation',
+  import: 'imports',
+  'admin-client': 'admin client',
+  'auth-helper': 'auth helper',
+}
+
+function renderFinding(f: Finding, width: number, verbose: boolean): string[] {
+  const out: string[] = []
+  const title = wrapText(f.title, width - DETAIL.length)
+  const likely = f.confidence === 'likely' ? dim('  likely') : ''
+  title.forEach((line, i) => out.push(i === 0
+    ? `  ${severityColor(f.severity)(pad(f.severity, 4))}${dim(rpad(f.line === null ? '' : String(f.line), 4))}  ${verbose ? bold(line) : line}${i === title.length - 1 ? likely : ''}`
+    : `${DETAIL}${verbose ? bold(line) : line}${i === title.length - 1 ? likely : ''}`))
+  if (!verbose) return out
+
+  const text = (s: string, indent = DETAIL): string[] => wrapText(s, width - indent.length).map(line => line === '' ? '' : `${indent}${line}`)
+  out.push(`${DETAIL}${dim(`${categoryOf(f.ruleId)} · ${f.ruleId}`)}`)
+  if (f.excerpt) out.push('', `${DETAIL}${gray(f.excerpt)}`)
+  out.push('', ...text(f.why.join('\n\n')))
+  if (f.evidence?.length) {
+    // 追踪只说明静态关系，不证明运行时数据流。
+    out.push('', `${DETAIL}${dim('trace (static relationships)')}`)
+    f.evidence.forEach((step, i) => {
+      const marker = i === 0 ? red('●') : i === f.evidence!.length - 1 ? dim('○') : dim('│')
+      out.push(`${DETAIL}${marker} ${dim(pad(EVIDENCE_LABEL[step.kind], 14))}${locationOf(step)}`)
+    })
+    if (f.evidenceTruncated) out.push(`${DETAIL}${dim('  additional dependency steps omitted')}`)
+  }
+  if (f.fix.length > 0) {
+    out.push('', `${DETAIL}${dim('fix')}`)
+    f.fix.forEach((step, i) => {
+      wrapText(step, width - DETAIL.length - 3).forEach((line, j) => out.push(`${DETAIL}${j === 0 ? `${i + 1}. ` : '   '}${line}`))
+    })
+  }
+  if (f.humanOnly?.length) {
+    out.push('', `${DETAIL}${yellow('by hand')}`)
+    for (const step of f.humanOnly) {
+      wrapText(step, width - DETAIL.length - 2).forEach((line, j) => out.push(`${DETAIL}${j === 0 ? dim('· ') : '  '}${line}`))
+    }
+  }
+  out.push('')
+  return out
+}
+
+/** 页尾列出下一步命令及退出码原因。 */
+function renderNext(opts: RenderOptions, width: number): string[] {
+  const out: string[] = []
+  const commands = [
+    ...(opts.verbose ? [] : [`${dim('details')} canship --verbose`]),
+    `${dim('report')} canship --report --open`,
+    `${dim('fix prompt')} canship --fix-prompt`,
+  ]
+  out.push(...joinFitting(commands, '   ', width))
+  if (opts.exitCode !== undefined) {
+    const reason = {
+      0: 'no findings',
+      1: 'blocking findings present',
+      2: 'findings present, none blocking',
+      3: 'scan incomplete',
+    }[opts.exitCode]
+    out.push(dim(`exit ${opts.exitCode} · ${reason}`))
+  }
+  out.push('')
+  return out
 }
 
 /** 无论有无新结果，都显示基线抑制信息。 */
 function renderBaseline(opts: RenderOptions): string[] {
   const suppressed = opts.baselineSuppressed ?? 0
   const stale = opts.baselineStale ?? 0
-  if (suppressed === 0 && stale === 0) return []
-
   const out: string[] = []
   if (suppressed > 0) {
     const where = opts.baselinePath ? ` (${opts.baselinePath})` : ''
-    out.push(
-      `${INDENT}${yellow(`${suppressed} ${plural(suppressed, 'finding')} hidden by the baseline${where}`)}`,
-    )
-    out.push(`${INDENT}${dim('These problems still exist. Re-run without --baseline to see them.')}`)
+    out.push(yellow(`${suppressed} ${plural(suppressed, 'finding')} hidden by the baseline${where}`))
+    out.push(dim('These problems still exist. Re-run without --baseline to see them.'))
   }
   if (stale > 0) {
-    out.push(
-      // 不规则复数单独处理。
-      `${INDENT}${dim(`${stale} baseline ${stale === 1 ? 'entry' : 'entries'} no longer ${stale === 1 ? 'matches' : 'match'} anything — re-run --baseline-write to prune.`)}`,
-    )
+    // 不规则复数单独处理。
+    out.push(dim(`${stale} baseline ${stale === 1 ? 'entry' : 'entries'} no longer ${stale === 1 ? 'matches' : 'match'} anything — re-run --baseline-write to prune.`))
   }
   return out
 }
 
-export function renderReport(result: ScanResult, opts: RenderOptions): string {
-  const out: string[] = ['']
-  const { findings } = result
-
-  // 报告标题。
-  out.push(
-    `${INDENT}${bold('canship')} ${dim(`scanned ${result.filesScanned} ${plural(result.filesScanned, 'file')} in ${result.durationMs}ms`)}`,
-  )
-  out.push(`${INDENT}${dim(opts.root)}`)
-  if (result.changeView) out.push(`${INDENT}${yellow(changeViewNotice(result.changeView))}`)
-  out.push('')
-
-  if (findings.length === 0) {
-    out.push(...renderClean(result, opts))
-    return out.join('\n')
-  }
-
-  // 按严重度和置信度生成结论。
-  const { blocking: visibleBlocking, minor: confirmedMinor, unsure } = verdictOf(findings)
-  const blocking = result.changeView?.totalBlocking ?? visibleBlocking
-  if (blocking > 0) {
-    out.push(`${INDENT}${red(bold(`✗ ${blocking} critical ${plural(blocking, 'issue')} — do not deploy`))}`)
-  } else if (confirmedMinor > 0) {
-    out.push(
-      `${INDENT}${yellow(bold(`! ${confirmedMinor} ${plural(confirmedMinor, 'thing')} to fix — nothing exposed`))}`,
-    )
-  } else {
-    out.push(`${INDENT}${yellow(bold(`! ${unsure} possible ${plural(unsure, 'issue')} to review`))}`)
-  }
-  out.push('')
-
-  // 结果详情。
-  findings.forEach((f, i) => {
-    out.push(...renderFinding(f, i + 1))
-    out.push('')
-  })
-
-  // 报告页尾。
-  out.push(`${INDENT}${gray('─'.repeat(60))}`)
-  out.push('')
-  if (result.partial) {
-    out.push(...renderIncomplete(result))
-    out.push('')
-  }
-  out.push(...renderIgnored(result))
-  out.push(...renderBaseline(opts))
-  if (!opts.showingLikely && opts.hiddenLikely > 0) {
-    out.push(
-      `${INDENT}${dim(`${opts.hiddenLikely} lower-confidence ${plural(opts.hiddenLikely, 'finding')} hidden. Run with --all to see ${opts.hiddenLikely === 1 ? 'it' : 'them'}.`)}`,
-    )
-  }
-  out.push(`${INDENT}${dim('Rotate any key that was exposed. Removing it from the code is not enough.')}`)
-  out.push('')
-
-  return out.join('\n')
-}
-
-function renderFinding(f: Finding, index: number): string[] {
+function renderClean(result: ScanResult, opts: RenderOptions, width: number): string[] {
   const out: string[] = []
-  const marker = f.confidence === 'certain' ? red('✗') : yellow('!')
-  const location = locationOf(f)
-
-  out.push(`${INDENT}${marker} ${bold(`[${index}] ${f.title}`)}`)
-  out.push(`${INDENT}${INDENT}${cyan(location)}${f.confidence === 'likely' ? dim('  (lower confidence)') : ''}`)
-
-  if (f.excerpt) {
-    out.push('')
-    out.push(`${INDENT}${INDENT}${gray(f.excerpt)}`)
-  }
-
-  if (f.evidence?.length) {
-    out.push('', `${INDENT}${INDENT}${bold('Evidence (static relationships):')}`)
-    for (const step of f.evidence) out.push(`${INDENT}${INDENT}  ${locationOf(step)} — ${step.description}`)
-    if (f.evidenceTruncated) out.push(`${INDENT}${INDENT}  Additional dependency steps omitted.`)
-  }
-
-  out.push('')
-  // 输出边界已清理段内换行，此处恢复段落结构。
-  for (const line of wrapText(f.why.join('\n\n'), 76)) {
-    // 段落空行不增加缩进，避免尾随空白。
-    out.push(line === '' ? '' : `${INDENT}${INDENT}${line}`)
-  }
-
-  if (f.fix.length > 0) {
-    out.push('')
-    out.push(`${INDENT}${INDENT}${bold('How to fix:')}`)
-    f.fix.forEach((step, i) => {
-      const wrapped = wrapText(step, 72)
-      wrapped.forEach((line, j) => {
-        const prefix = j === 0 ? `${i + 1}. ` : '   '
-        out.push(`${INDENT}${INDENT}${INDENT}${dim(prefix)}${line}`)
-      })
-    })
-  }
-
-  // 人工操作单独列出，突出凭据轮换等必要步骤。
-  if (f.humanOnly && f.humanOnly.length > 0) {
-    out.push('')
-    out.push(`${INDENT}${INDENT}${yellow(bold('Only you can do this:'))}`)
-    f.humanOnly.forEach((step) => {
-      wrapText(step, 72).forEach((line, j) => {
-        const prefix = j === 0 ? '· ' : '  '
-        out.push(`${INDENT}${INDENT}${INDENT}${dim(prefix)}${line}`)
-      })
-    })
-  }
-
-  return out
-}
-
-function renderClean(result: ScanResult, opts: RenderOptions): string[] {
-  const out: string[] = []
+  const facts = joinFitting([`${dim('files scanned')} ${result.filesScanned}`, `${dim('coverage')} ${result.partial ? yellow('incomplete') : 'complete'}`,
+    `${result.durationMs} ${dim('ms')}`], dim('  ·  '), width)
 
   // 零文件扫描使用独立提示。
   if (result.filesScanned === 0) {
-    out.push(`${INDENT}${yellow(bold('! No files were scanned — nothing was checked'))}`)
+    out.push(yellow(bold('No files were scanned — nothing was checked.')))
+    for (const line of wrapText('canship found no files it could read here, so none of its checks ran. This is not a clean result — it is an empty one.', width)) out.push(dim(line))
     out.push('')
-    for (const line of wrapText(
-      'canship found no files it could read here, so none of its checks ran. ' +
-        'This is not a clean result — it is an empty one.',
-      76,
-    )) {
-      out.push(`${INDENT}${line}`)
-    }
-    out.push('')
-    out.push(`${INDENT}${dim('Most likely one of:')}`)
-    out.push(`${INDENT}${dim('  · this is not the directory you meant to scan')}`)
-    out.push(`${INDENT}${dim('  · everything here is gitignored, or is build output canship skips')}`)
-    out.push(`${INDENT}${dim('  · the project lives in a subdirectory — try: npx canship ./app')}`)
+    out.push(dim('Most likely one of:'))
+    out.push(dim('  · this is not the directory you meant to scan'))
+    out.push(dim('  · everything here is gitignored, or is build output canship skips'))
+    out.push(dim('  · the project lives in a subdirectory — try: npx canship ./app'))
     // 全部文件被主动忽略时说明具体原因。
     if (result.ignored.length > 0) {
-      out.push(`${INDENT}${dim('  · every file here was excluded by canship-ignore-file')}`)
-      out.push('')
-      out.push(...renderIgnored(result))
+      out.push(dim('  · every file here was excluded by canship-ignore-file'))
+      out.push('', ...renderIgnored(result))
     }
     out.push('')
+    if (result.partial) out.push(...renderIncomplete(result, width), '')
     return out
   }
 
-  // 扫描未完成时不得显示正常通过。
+  // 扫描未完成、存在隐藏或基线抑制时不得显示正常通过。
   if (result.partial) {
-    const headline =
-      opts.hiddenLikely > 0
-        ? `! No certain findings — ${opts.hiddenLikely} lower-confidence ${plural(opts.hiddenLikely, 'finding')} hidden, and not everything was checked`
-        : '! No findings — but not everything was checked'
-    out.push(`${INDENT}${yellow(bold(headline))}`)
+    out.push(yellow(bold(opts.hiddenLikely > 0
+      ? `No certain findings — ${opts.hiddenLikely} lower-confidence ${plural(opts.hiddenLikely, 'finding')} hidden, and not everything was checked.`
+      : 'No findings — but not everything was checked.')))
   } else if ((result.changeView?.hiddenFindings ?? 0) > 0) {
-    out.push(`${INDENT}${yellow(bold('! No visible findings in changed files — other findings still exist'))}`)
+    out.push(yellow(bold('No visible findings in changed files — other findings still exist.')))
   } else if (opts.hiddenLikely > 0) {
-    out.push(
-      `${INDENT}${yellow(bold(`! No certain findings — ${opts.hiddenLikely} lower-confidence ${plural(opts.hiddenLikely, 'finding')} hidden`))}`,
-    )
+    out.push(yellow(bold(`No certain findings — ${opts.hiddenLikely} lower-confidence ${plural(opts.hiddenLikely, 'finding')} hidden.`)))
   } else if ((opts.baselineSuppressed ?? 0) > 0) {
-    // 基线隐藏结果时不得宣称项目无问题。
     const suppressed = opts.baselineSuppressed ?? 0
-    out.push(
-      `${INDENT}${yellow(bold(`! No new findings — ${suppressed} ${plural(suppressed, 'finding')} accepted by the baseline`))}`,
-    )
+    out.push(yellow(bold(`No new findings — ${suppressed} ${plural(suppressed, 'finding')} accepted by the baseline.`)))
   } else {
-    out.push(`${INDENT}${green(bold('✓ No exposed credentials found'))}`)
+    out.push(green(bold('No exposed credentials found.')))
   }
+  out.push(...facts)
+  if (result.changeView) for (const line of wrapText(changeViewNotice(result.changeView), width)) out.push(yellow(line))
   out.push('')
-  out.push(...renderBaseline(opts))
-  if ((opts.baselineSuppressed ?? 0) > 0 || (opts.baselineStale ?? 0) > 0) out.push('')
+  const baseline = renderBaseline(opts)
+  if (baseline.length > 0) out.push(...baseline, '')
+
   // 明确静态检查的能力边界。
-  out.push(`${INDENT}${dim('canship checked for:')}`)
-  out.push(`${INDENT}${dim('  · API keys hardcoded in source code')}`)
-  out.push(`${INDENT}${dim('  · Server-side secrets exposed to the browser via public env prefixes')}`)
-  out.push(`${INDENT}${dim('  · Supabase service_role keys reachable from the client')}`)
-  out.push(`${INDENT}${dim('  · .env files committed to git, including in history')}`)
-  out.push(`${INDENT}${dim('  · Supabase tables with no Row Level Security, or policies open to everyone')}`)
-  out.push(`${INDENT}${dim('  · Firebase rules left open to anyone')}`)
-  out.push(`${INDENT}${dim('  · API routes and server actions that query your database with no sign-in check')}`)
-  out.push(`${INDENT}${dim('  · CORS that lets other sites act as your signed-in visitors')}`)
+  out.push(bold('Checked for'))
+  for (const item of [
+    'API keys hardcoded in source code',
+    'Server-side secrets exposed to the browser via public env prefixes',
+    'Supabase service_role keys reachable from the client',
+    '.env files committed to git, including in history',
+    'Supabase tables with no Row Level Security, or policies open to everyone',
+    'Firebase rules left open to anyone',
+    'API routes and server actions that query your database with no sign-in check',
+    'CORS that lets other sites act as your signed-in visitors',
+  ]) out.push(`${dim('  · ')}${item}`)
   out.push('')
-  out.push(`${INDENT}${dim('It does not check rate limiting, injection, or whether the checks it')}`)
-  out.push(`${INDENT}${dim('did find are the right ones.')}`)
-// 结束语必须保留隐藏、忽略和筛选信息。
+  out.push(dim('It does not check rate limiting, injection, or whether the checks it did find are the right ones.'))
+  // 结束语必须保留隐藏、忽略和筛选信息。
   if (opts.hiddenLikely > 0) {
-    out.push(`${INDENT}${dim('This is not a finding-free result. Review the hidden items with --all.')}`)
+    out.push(dim('This is not a finding-free result. Review the hidden items with --all.'))
   } else if (result.ignoredFindings.length > 0) {
-    out.push(
-      `${INDENT}${dim('This is not a finding-free result — some were silenced in the source. See below.')}`,
-    )
+    out.push(dim('This is not a finding-free result — some were silenced in the source. See below.'))
   } else {
-    out.push(`${INDENT}${dim('A clean result means these checks passed — not that your app is secure.')}`)
+    out.push(dim('A clean result means these checks passed — not that your app is secure.'))
   }
-  if (result.partial) {
-    out.push('')
-    out.push(...renderIncomplete(result))
-  }
-  const optedOut = renderIgnored(result)
-  if (optedOut.length > 0) {
-    out.push('')
-    out.push(...optedOut)
-  }
+  const notes = [...renderIncomplete(result, width), ...renderIgnored(result)]
   if (opts.hiddenLikely > 0) {
-    out.push('')
-    out.push(`${INDENT}${dim(`${opts.hiddenLikely} lower-confidence ${plural(opts.hiddenLikely, 'finding')} hidden. Run with --all to see ${opts.hiddenLikely === 1 ? 'it' : 'them'}.`)}`)
+    notes.push(dim(`${opts.hiddenLikely} lower-confidence ${plural(opts.hiddenLikely, 'finding')} hidden. Run with --all to see ${opts.hiddenLikely === 1 ? 'it' : 'them'}.`))
   }
+  if (notes.length > 0) out.push('', ...notes)
   out.push('')
+  out.push(dim('─'.repeat(width)))
   return out
 }
 
@@ -254,60 +336,46 @@ function renderIgnored(result: ScanResult): string[] {
   if (result.ignored.length > 0) {
     const shown = result.ignored.slice(0, 3).join(', ')
     const more = result.ignored.length > 3 ? `, and ${result.ignored.length - 3} more` : ''
-    out.push(
-      `${INDENT}${dim(`${result.ignored.length} ${plural(result.ignored.length, 'file')} excluded by canship-ignore-file: ${shown}${more}`)}`,
-    )
+    out.push(dim(`${result.ignored.length} ${plural(result.ignored.length, 'file')} excluded by canship-ignore-file: ${shown}${more}`))
   }
   // 披露被排除的规则范围。
   if (result.ruleSelection !== null) {
     const { only, skip, removed } = result.ruleSelection
-    const which =
-      only.length > 0 ? `only ${only.join(', ')}` : `everything except ${skip.join(', ')}`
+    const which = only.length > 0 ? `only ${only.join(', ')}` : `everything except ${skip.join(', ')}`
     const cost = removed > 0 ? `, hiding ${removed} ${plural(removed, 'finding')}` : ''
-    out.push(`${INDENT}${dim(`Rule selection in force: ${which}${cost}`)}`)
+    out.push(dim(`Rule selection in force: ${which}${cost}`))
   }
   // 逐条列出忽略标记对应的位置及规则。
   if (result.ignoredFindings.length > 0) {
     const n = result.ignoredFindings.length
-    const shown = result.ignoredFindings
-      .slice(0, 3)
-      .map((f) => `${f.file}:${f.line} (${f.ruleId})`)
-      .join(', ')
+    const shown = result.ignoredFindings.slice(0, 3).map((f) => `${f.file}:${f.line} (${f.ruleId})`).join(', ')
     const more = n > 3 ? `, and ${n - 3} more` : ''
-    out.push(
-      `${INDENT}${dim(`${n} ${plural(n, 'finding')} silenced by canship-ignore-next-line: ${shown}${more}`)}`,
-    )
+    out.push(dim(`${n} ${plural(n, 'finding')} silenced by canship-ignore-next-line: ${shown}${more}`))
   }
   // 披露工具默认排除的第三方目录数量。
   if (result.vendored > 0) {
-    out.push(
-      `${INDENT}${dim(`${result.vendored} ${plural(result.vendored, 'file')} skipped inside dependency directories (node_modules, vendor, Pods, .yarn, .pnpm-store)`)}`,
-    )
+    out.push(dim(`${result.vendored} ${plural(result.vendored, 'file')} skipped inside dependency directories (node_modules, vendor, Pods, .yarn, .pnpm-store)`))
   }
   return out
 }
 
 /** 列出未完成的检查和跳过原因。 */
-function renderIncomplete(result: ScanResult): string[] {
-  const out: string[] = []
-  out.push(`${INDENT}${yellow(bold('Not everything was checked:'))}`)
-
-  // 零工作区文件仍可能存在历史扫描结果。
-  if (result.filesScanned === 0) {
-    out.push(
-      `${INDENT}${INDENT}${dim('·')} no files could be read at this path, so every file-based check was skipped`,
-    )
+function renderIncomplete(result: ScanResult, width: number): string[] {
+  if (!result.partial) return []
+  const out: string[] = [yellow(bold('Not everything was checked'))]
+  const item = (text: string): void => {
+    wrapText(text, width - 4).forEach((line, i) => out.push(`${i === 0 ? dim('  · ') : '    '}${line}`))
   }
 
+  // 零工作区文件仍可能存在历史扫描结果。
+  if (result.filesScanned === 0) item('no files could be read at this path, so every file-based check was skipped')
   for (const err of result.errors.slice(0, 5)) {
     const where = err.file ? ` on ${err.file}` : ''
     // 区分规则异常与规则达到资源上限。
     const verb = err.kind === 'incomplete' ? 'did not finish' : 'failed'
-    out.push(`${INDENT}${INDENT}${dim('·')} the ${err.ruleId} check ${verb}${where} — ${err.message}`)
+    item(`the ${err.ruleId} check ${verb}${where} — ${err.message}`)
   }
-  if (result.errors.length > 5) {
-    out.push(`${INDENT}${INDENT}${dim(`· and ${result.errors.length - 5} more`)}`)
-  }
+  if (result.errors.length > 5) out.push(dim(`  · and ${result.errors.length - 5} more`))
 
   const byReason = new Map<SkipReason, string[]>()
   for (const skip of result.skipped) {
@@ -319,17 +387,13 @@ function renderIncomplete(result: ScanResult): string[] {
     const { noun, because } = SKIP_LABEL[reason]
     const shown = paths.slice(0, 3).join(', ')
     const more = paths.length > 3 ? `, and ${paths.length - 3} more` : ''
-    out.push(
-      `${INDENT}${INDENT}${dim('·')} ${paths.length} ${plural(paths.length, noun)} ${because}: ${shown}${more}`,
-    )
+    item(`${paths.length} ${plural(paths.length, noun)} ${because}: ${shown}${more}`)
   }
-
-  out.push('')
-  out.push(`${INDENT}${dim('Anything could be in what was skipped. Re-run once it is readable.')}`)
+  out.push(dim('Anything could be in what was skipped. Re-run once it is readable.'))
   return out
 }
 
-/** 按宽度换行，保留显式段落分隔。 */
+/** 按宽度换行，保留显式段落分隔；超长单词单独成行。 */
 function wrapText(text: string, width: number): string[] {
   const out: string[] = []
   for (const paragraph of text.split('\n')) {

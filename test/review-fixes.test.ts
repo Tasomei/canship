@@ -171,6 +171,7 @@ test('several credentials are all redacted before truncation, so no report leaks
   const result = await scan(root)
   assert.equal(result.findings.length, 2)
   const outputs = [JSON.stringify(result), renderReport(result, { root, showingLikely: true, hiddenLikely: 0 }),
+    renderReport(result, { root, showingLikely: true, hiddenLikely: 0, verbose: true }),
     renderHtml(result, { root, generatedAt: new Date().toISOString() }),
     renderFixPrompt(result.findings) ?? '']
   for (const output of outputs) {
