@@ -23,6 +23,7 @@ import { ConfigError, CONFIG_FILENAME, loadConfig } from './config.js'
 import { isKnownSelector } from './rules/index.js'
 import { RULE_CATALOG, renderRuleCatalog } from './rules/catalog.js'
 import { changedFilesSince, changedFileView, ChangeViewError } from './changes.js'
+import { canOpen, openReport } from './open.js'
 
 /** 构建时从包信息注入版本；源码运行使用开发版本。 */
 declare const __CANSHIP_VERSION__: string | undefined
@@ -247,6 +248,9 @@ function parseArgs(argv: string[]): Args {
       case '--verbose':
         args.verbose = true
         break
+      case '--open':
+        args.open = true
+        break
       case '--help':
       case '-h':
         args.help = true
@@ -281,6 +285,8 @@ const HELP = `
         --verbose     Show each finding's excerpt, explanation, trace and fix steps
         --fix-prompt  Output instructions to paste into a coding assistant
         --report[=F]  Write a self-contained HTML report (default canship-report.html)
+        --open        With --report, open the report in the default browser
+                      (skipped in CI and non-interactive shells)
         --json        Output raw JSON (for CI or tooling)
         --best-effort Allow exit 0 for an incomplete scan with no findings;
                       findings still exit 1 or 2
@@ -354,6 +360,7 @@ async function main(): Promise<void> {
     process.stderr.write(`${red('canship:')} not a directory: ${cleanForOutput(args.root)}\n`)
     return finish(3)
   }
+  if (args.open && args.report === null) argumentError('--open requires --report')
   if (args.changedSince !== null && (args.baselineWrite !== null || args.baselineWriteDefault)) {
     argumentError('--changed-since cannot be combined with --baseline-write')
   }
@@ -579,6 +586,14 @@ async function main(): Promise<void> {
       )
       if (!args.json && !args.fixPrompt) {
         process.stdout.write(`Report written to ${cleanForOutput(target)}\n`)
+      }
+      // 提示写入标准错误，避免破坏 JSON 或修复指令输出。
+      if (args.open) {
+        if (canOpen(process.env, process.stdout.isTTY === true)) {
+          openReport(target, message => process.stderr.write(`canship: ${cleanForOutput(message)}\n`))
+        } else {
+          process.stderr.write('canship: not opening the report in CI or a non-interactive session\n')
+        }
       }
     } catch (err) {
       process.stderr.write(

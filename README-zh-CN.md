@@ -57,6 +57,7 @@ npx canship .
 | `--json` | 输出 JSON |
 | `--fix-prompt` | 输出修复指令及独立的人工操作清单 |
 | `--report[=file]` | 写入 HTML，默认 `canship-report.html` |
+| `--open` | 与 `--report` 同用，生成后用默认浏览器打开；CI 和非交互终端中不打开 |
 | `--sarif[=file]` | 写入 SARIF 2.1.0，默认 `canship.sarif` |
 | `--no-excerpts` | 省略源码摘录，保留结果和退出码 |
 | `--changed-since=ref` | 展示与变更文件相关的结果，退出码仍基于全量扫描 |

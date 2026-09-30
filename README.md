@@ -57,6 +57,7 @@ Omitting the path scans the current directory. Reports are in English.
 | `--json` | Output JSON |
 | `--fix-prompt` | Output repair instructions and separate manual actions |
 | `--report[=file]` | Write HTML; default: `canship-report.html` |
+| `--open` | With `--report`, open the report in the default browser; skipped in CI and non-interactive shells |
 | `--sarif[=file]` | Write SARIF 2.1.0; default: `canship.sarif` |
 | `--no-excerpts` | Omit source excerpts, preserving findings and exit status |
 | `--changed-since=ref` | Show findings related to changed files; retain full-scan exit status |
