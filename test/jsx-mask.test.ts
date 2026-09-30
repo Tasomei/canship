@@ -59,6 +59,20 @@ test('HTML closing tags outside JSX files are not read as regular expressions', 
   assertTailIntact(maskJsNoise(source), source)
 })
 
+test('a regex after a less-than comparison does not hide the following handler', async () => {
+  for (const prefix of ['const check = 0 < /"/.source.length;', 'const check = 0</a>"/.source.length;']) {
+    for (const path of ['app/api/items/route.ts', 'app/api/items/route.js', 'app/api/items/route.tsx']) {
+      const content = prefix + '\n' + admin +
+        '\nexport async function POST() { await admin.from("records").delete(); }'
+      assert.ok(maskJsNoise(content).includes('export async function POST'))
+      const file = { path, content, lines: content.split('\n'), isExampleContext: false }
+      const hits = await apiAuthRule.check({ root: '.', files: [file], git: 'not-a-repo', gitExecutable: null,
+        reportIncomplete() { assert.fail('unexpected incomplete scan') } })
+      assert.equal(hits[0]?.ruleId, 'api/admin-db-access-without-auth')
+    }
+  }
+})
+
 test('deep or unterminated JSX stays linear and does not exhaust the stack', () => {
   for (const source of ['const a = ' + '<a>'.repeat(100_000), 'const a = ' + '<p>{'.repeat(100_000)]) {
     const started = performance.now()

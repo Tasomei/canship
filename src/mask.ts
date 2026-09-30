@@ -128,8 +128,7 @@ function advanceCode(src: string, at: number, context: RegexContext): number {
     context.control = false
     context.member = false
     return at + 2
-  // 小于号后的斜杠通常是 HTML 或 JSX 结束标签，不作为正则起点。
-  } else context.allowed = !/[\d\]}<]/.test(ch)
+  } else context.allowed = !/[\d\]}]/.test(ch)
   context.control = false
   context.member = false
   return at + 1
@@ -309,7 +308,9 @@ function maskSource(src: string, maskStrings: boolean, jsx: boolean): string {
       i++
       continue
     }
-    if (jsx && ch === LESS_THAN && frame.lexical.allowed && jsxStartsAt(src, i)) {
+    // 带赋值属性的标签可确定为标记语言；其结束标签只在标签状态中处理。
+    const markup = ch === LESS_THAN && !jsx && /^<[A-Za-z_$][\w$.:-]*\s+[\w:-]+\s*=\s*['"{]/.test(src.slice(i, i + 256))
+    if ((jsx || markup) && ch === LESS_THAN && frame.lexical.allowed && jsxStartsAt(src, i)) {
       stack.push({ kind: 'tag', closing: false })
       i++
       continue

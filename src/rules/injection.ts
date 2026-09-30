@@ -28,18 +28,18 @@ const CHILD_PROCESS = /^(?:node:)?child_process$/
 const SHELL_EXPORTS = new Set(['exec', 'execSync'])
 const SPAWN_EXPORTS = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSync'])
 
-interface Callees { shell: Set<string>; spawn: Set<string>; namespaces: Set<string> }
+interface Callees { shell: Set<string>; spawn: Set<string>; commands: Set<string>; namespaces: Set<string> }
 
 /** 本文件中来自 child_process 或 execa 的命令函数名，含别名、require、命名空间和 promisify。 */
 function commandCallees(file: ScanFile): Callees {
-  const callees: Callees = { shell: new Set(), spawn: new Set(), namespaces: new Set() }
+  const callees: Callees = { shell: new Set(), spawn: new Set(), commands: new Set(), namespaces: new Set() }
   for (const binding of bindingsOf(file).imports) {
     if (binding.spec !== undefined && CHILD_PROCESS.test(binding.spec)) {
       if (binding.imported === 'default') callees.namespaces.add(binding.local)
       else if (SHELL_EXPORTS.has(binding.imported)) callees.shell.add(binding.local)
       else if (SPAWN_EXPORTS.has(binding.imported)) callees.spawn.add(binding.local)
     } else if (binding.spec === 'execa' && /^execaCommand(?:Sync)?$/.test(binding.imported)) {
-      callees.shell.add(binding.local)
+      callees.commands.add(binding.local)
     }
   }
   const source = commentsMaskedOf(file)
@@ -66,7 +66,7 @@ function commandCallees(file: ScanFile): Callees {
   return callees
 }
 
-interface Sink { kind: SinkKind; at: number; open: number; close: number; mode: 'unsafe' | 'fragment' | 'driver' | 'condition' | 'shell' | 'spawn' }
+interface Sink { kind: SinkKind; at: number; open: number; close: number; mode: 'unsafe' | 'fragment' | 'driver' | 'condition' | 'shell' | 'spawn' | 'execa' }
 
 function sinksIn(code: string, pairs: Map<number, number>, callees: Callees): Sink[] {
   const sinks = new Map<number, Sink>()
@@ -82,6 +82,7 @@ function sinksIn(code: string, pairs: Map<number, number>, callees: Callees): Si
   }
   if (callees.shell.size > 0) add(new RegExp(`(?<![\\w$.])(?:${namePattern(callees.shell)})\\s*\\(`, 'g'), 'command', 'shell')
   if (callees.spawn.size > 0) add(new RegExp(`(?<![\\w$.])(?:${namePattern(callees.spawn)})\\s*\\(`, 'g'), 'command', 'spawn')
+  if (callees.commands.size > 0) add(new RegExp(`(?<![\\w$.])(?:${namePattern(callees.commands)})\\s*\\(`, 'g'), 'command', 'execa')
   if (callees.namespaces.size > 0) {
     const ns = namePattern(callees.namespaces)
     add(new RegExp(`(?<![\\w$.])(?:${ns})\\s*\\.\\s*(?:exec|execSync)\\s*\\(`, 'g'), 'command', 'shell')
@@ -94,7 +95,21 @@ function sinksIn(code: string, pairs: Map<number, number>, callees: Callees): Si
   return [...sinks.values()].sort((a, b) => a.at - b.at)
 }
 
-interface Hit { taint: Taint }
+interface Hit { taint: Taint; executable?: boolean }
+
+/** Execa 默认不经 shell；固定程序后的参数拼接不等于 shell 注入。 */
+function fixedProgram(expr: string, at: number, flow: InputFlow, source: string, depth = 0): boolean {
+  if (depth >= 8) { flow.limited = true; return false }
+  const text = expr.trim()
+  const start = at + expr.length - expr.trimStart().length
+  if (/^[A-Za-z_$][\w$]*$/.test(text)) {
+    const assignments = flow.assignmentsFor(text, at).filter(a => !a.append)
+    return assignments.length > 0 && assignments.every(a => fixedProgram(a.expr, a.exprAt, flow, source, depth + 1))
+  }
+  const raw = source.slice(start, start + text.length)
+  const prefix = /^["'`]([^"'`$\\]*)/.exec(raw)?.[1]
+  return prefix !== undefined && /^\S+\s/.test(prefix)
+}
 
 /** 判断接收位置的实参是否由请求输入构成。 */
 function hitOf(sink: Sink, code: string, source: string, pairs: Map<number, number>, flow: InputFlow): Hit | null {
@@ -113,9 +128,16 @@ function hitOf(sink: Sink, code: string, source: string, pairs: Map<number, numb
 
   const built = flow.builtOf(first, firstAt)
   const identifier = /^[A-Za-z_$][\w$]*$/.exec(first)
-  const builtVariable = identifier ? flow.built.get(identifier[0]) : undefined
-  const text = built ? firstSource : identifier && builtVariable ? flow.assignedText(identifier[0]) : null
+  const builtVariable = identifier ? flow.builtValue(identifier[0], firstAt) : undefined
+  const text = built ? firstSource : builtVariable?.text ?? null
   const stringTaint = built ?? builtVariable ?? null
+
+  if (sink.mode === 'execa') {
+    const shell = /\bshell\s*:\s*(?:true\b|['"][^'"]+['"])/.test(source.slice(sink.open, sink.close))
+    if (!shell && fixedProgram(first, firstAt, flow, source)) return null
+    const taint = stringTaint ?? flow.taintOf(first, firstAt)
+    return taint ? { taint, executable: !shell } : null
+  }
 
   if (sink.mode === 'shell' || sink.mode === 'unsafe') {
     const taint = stringTaint ?? flow.taintOf(first, firstAt)
@@ -131,7 +153,7 @@ function capitalised(text: string): string {
   return `${text.charAt(0).toUpperCase()}${text.slice(1)}`
 }
 
-function findingFor(kind: SinkKind, route: Route, file: ScanFile, line: number, originLine: number, certain: boolean): Finding {
+function findingFor(kind: SinkKind, route: Route, file: ScanFile, line: number, originLine: number, certain: boolean, executable = false): Finding {
   const lowered = certain ? [] : [
     'The value passes through other code or a check before it gets here, and the scan cannot tell whether that makes it safe. ' +
       'Confirm the value is restricted to what the query or command expects.',
@@ -157,15 +179,19 @@ function findingFor(kind: SinkKind, route: Route, file: ScanFile, line: number, 
   }
   return {
     ruleId: 'injection/command', severity: 'P1', confidence: certain ? 'certain' : 'likely',
-    title: `${capitalised(route.url)} runs a shell command built from request input`,
+    title: executable ? `${capitalised(route.url)} runs an executable selected by request input`
+      : `${capitalised(route.url)} runs a shell command built from request input`,
     file: file.path, line, excerpt,
     why: [
+      executable ? `The caller can influence the executable name (read on line ${originLine}). Execa does not use a shell by default, ` +
+        'but allowing a caller to choose the program can still run unintended code with server permissions.' :
       `The command line includes a value the caller controls (read on line ${originLine}) and is run through a shell. ` +
         `Characters such as ; | $( ) let a caller append their own commands, which run with your server's permissions.`,
       ...lowered,
     ],
     fix: [
-      'Use execFile or spawn with an argument array and no shell option, so the value is passed as one argument and never parsed by a shell.',
+      executable ? 'Use a fixed executable and pass request values in a separate argument array; do not accept a caller-supplied command line.'
+        : 'Use execFile or spawn with an argument array and no shell option, so the value is passed as one argument and never parsed by a shell.',
       'Check the value against a fixed list of allowed values before using it.',
     ],
   }
@@ -195,7 +221,7 @@ export const injectionRule: ProjectRule = {
           reported.add(sink.at)
           const certain = hit.taint.level === 'direct' && !flow.validatedBefore(hit.taint.names, sink.at)
           findings.push(findingFor(sink.kind, route, file, lineNumberAt(lineStarts, sink.at),
-            lineNumberAt(lineStarts, hit.taint.origin), certain))
+            lineNumberAt(lineStarts, hit.taint.origin), certain, hit.executable))
         }
       }
       reportInputLimit(ctx, file, analysed)

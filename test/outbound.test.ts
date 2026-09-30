@@ -58,7 +58,7 @@ export async function GET(request) {
     }, [['redirect/open', 3, 'certain'], ['redirect/open', 2, 'certain'], ['redirect/open', 3, 'certain']])
   })
 
-  test('the request\'s own URL and fixed paths followed by input are not reported', async () => {
+  test('own URLs and fixed paths stay clean; an unverified redirect helper remains likely', async () => {
     await expectHits({
       'app/auth/confirm/route.ts': `export async function GET(request) {
   const redirectTo = request.nextUrl.clone()
@@ -74,7 +74,7 @@ export async function navigate(data) { redirect(\`/posts/\${data.get('id')}\`) }
   const form = await request.formData()
   return redirect(safeRedirect(form.get('redirectTo'), '/'))
 }`,
-    }, [])
+    }, [['redirect/open', 3, 'likely']])
   })
 
   test('status-first and event-first signatures use the target argument', async () => {

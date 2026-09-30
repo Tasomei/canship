@@ -44,7 +44,9 @@ function controlsStart(expr: string, at: number, flow: InputFlow, source: string
   const lead = expr.length - expr.trimStart().length
   const text = expr.trim()
   const start = at + lead
-  if (text === '' || depth > 4) return null
+  if (text === '') return null
+  if (depth >= 8) { flow.limited = true; return null }
+  if (text.length > 4000) { flow.limited = true; return null }
   const open = (prefix: string): boolean => HOST_OPEN.test(prefix) || (kind === 'redirect' && REDIRECT_OPEN.test(prefix))
 
   // new URL(input, base)：输入为绝对地址或 // 开头时基址被忽略。
@@ -79,9 +81,9 @@ function controlsStart(expr: string, at: number, flow: InputFlow, source: string
 
   // 变量：看它的每一次赋值；追加赋值不改变开头。
   if (/^[A-Za-z_$][\w$]*$/.test(text)) {
-    const assignments = flow.assignmentsFor(text).filter(a => !a.append)
+    const assignments = flow.assignmentsFor(text, at).filter(a => !a.append)
     if (assignments.length === 0) {
-      const t = flow.names.get(text)
+      const t = flow.valueOf(text, at)
       return t && !t.ownUrl ? t : null
     }
     for (const a of assignments) {
@@ -111,7 +113,7 @@ function templateStart(text: string, start: number, flow: InputFlow, source: str
       continue
     }
     prefix += source[start + i]
-    if (prefix.length > 200) return null
+    if (prefix.length > 200) { flow.limited = true; return null }
   }
   return null
 }

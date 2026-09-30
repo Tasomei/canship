@@ -2,6 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { runInNewContext } from 'node:vm'
 import { renderHtml } from '../src/report/html.js'
 import type { Finding, ScanResult } from '../src/types.js'
 
@@ -79,4 +80,25 @@ test('a clean scan keeps the scope disclosure and the clean verdict marker', () 
   assert.match(clean, /<h1 class="verdict clean">No exposed credentials found\.<\/h1>/)
   assert.match(clean, /not that your app is secure/)
   assert.doesNotMatch(clean, /<details class="f"/)
+  assert.match(clean, /Request input in SQL/)
+  assert.doesNotMatch(clean, /injection are not covered/)
+})
+
+test('the report script groups prototype-like filenames without losing rows', () => {
+  const names = ['constructor', '__proto__', 'toString', 'normal.ts']
+  const page = renderHtml(result(names.map(file => finding({ file }))), { root: '.', generatedAt: '' })
+  const script = /<script>([\s\S]*?)<\/script>/.exec(page)![1]!
+  // 最小 DOM 替身实际执行报告脚本；断言重组结果而非只检查源码文本。
+  const placed: unknown[] = []
+  const element = () => ({ classList: { add() {}, toggle() {} }, appendChild(child: unknown) { placed.push(child) } })
+  const list = element()
+  const rows = names.map(file => ({ dataset: { file, sev: 'P0', cat: 'Credentials', text: file } }))
+  const document = {
+    body: element(),
+    getElementById: (id: string) => id === 'canship-data' ? { textContent: '{}' } : id === 'list' ? list : null,
+    querySelectorAll: (selector: string) => selector === 'details.f' ? rows : [],
+    createElement: element, createTextNode: (text: string) => text,
+  }
+  runInNewContext(script, { document, window: { addEventListener() {} }, navigator: {}, setTimeout }, { timeout: 1000 })
+  assert.deepEqual(placed.filter(item => rows.includes(item as typeof rows[number])), rows)
 })

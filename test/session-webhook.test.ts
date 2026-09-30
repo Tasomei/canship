@@ -30,6 +30,84 @@ const summary = (list: Finding[]) => list.map(f => [f.ruleId, f.line, f.confiden
 const ADMIN = "import { createClient } from '@supabase/supabase-js'\n" +
   'const admin = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)\n'
 
+for (const check of [
+  'const unused = () => supabase.auth.getUser();',
+  'supabase.auth.getUser();',
+  'await supabase.auth.getUser();',
+  'if (flag) { const {data:{user}}=await supabase.auth.getUser(); if(!user) return null; }',
+  'const {data:{user}}=await other.auth.getUser(); if(!user) return null;',
+  'const {data:{user}}=await supabase.auth.getUser(otherToken); if(!user) return null;',
+]) {
+  test(`unrelated or unenforced session verification cannot suppress a finding: ${check}`, async () => {
+    const hits = await findings({ 'app/dashboard/page.tsx': `export default async function Page(){
+      const {data:{session}}=await supabase.auth.getSession(); ${check}
+      if(!session)return null; return session.user.id;
+    }` })
+    assert.deepEqual(hits.map(f => f.ruleId), ['auth/unverified-session'])
+  })
+}
+
+test('session verification must precede trusted use', async () => {
+  const hits = await findings({ 'app/dashboard/page.tsx': `export default async function Page(){
+    const {data:{session}}=await supabase.auth.getSession(); await grantAccess(session.user.id);
+    const {data:{user}}=await supabase.auth.getUser(); if(!user)return null;
+    return session.user.id;
+  }` })
+  assert.deepEqual(hits.map(f => f.ruleId), ['auth/unverified-session'])
+})
+
+test('a checked identity from the same client precedes trusted session use', async () => {
+  const hits = await findings({ 'app/dashboard/page.tsx': `export default async function Page(){
+    const {data:{session}}=await supabase.auth.getSession();
+    const {data:{user}}=await supabase.auth.getUser(); if(!user)return null;
+    if(!session)return null; return session.user.id;
+  }` })
+  assert.deepEqual(hits, [])
+})
+
+for (const extra of [
+  'function unused(){return stripe.webhooks.constructEvent(body, signature, secret);}',
+  "const signature=req.headers.get('stripe-signature'); const digest=createHmac('sha256',secret).update(body).digest('hex');",
+  'stripe.webhooks.constructEvent(otherBody, otherSignature, secret);',
+  'if(flag)event=stripe.webhooks.constructEvent(body,signature,secret);',
+  'try{event=stripe.webhooks.constructEvent(body,signature,secret);}catch{}',
+  'event=stripe.webhooks.constructEventAsync(body,signature,secret);',
+  'event=stripe.webhooks.constructEvent(body,signature,secret);event=await req.json();',
+  'event=stripe.webhooks.constructEvent(body,signature,secret);event.data=req.body.data;',
+]) {
+  test(`webhook verification must protect the handled event: ${extra}`, async () => {
+    const hits = await findings({ 'app/api/stripe/route.ts': `import Stripe from 'stripe';
+      export async function POST(req){let event=await req.json();${extra}
+      if(event.type==='invoice.paid')await markPaid(event.data.object.id);return new Response('ok');}` })
+    assert.deepEqual(hits.map(f => f.ruleId), ['webhook/unverified-signature'])
+  })
+}
+
+test('manual signature checks remain review findings instead of being silently exempted', async () => {
+  const hits = await findings({ 'app/api/stripe/route.ts': `import Stripe from 'stripe';
+    export async function POST(req){ const event=await req.json();
+    const digest=createHmac('sha256',secret).update(body).digest();
+    if(!timingSafeEqual(digest, signature))return new Response('bad',{status:400});
+    if(event.type==='invoice.paid')markPaid(event.data.object.id); }` })
+  assert.deepEqual(hits.map(f => [f.ruleId, f.confidence]), [['webhook/unverified-signature', 'likely']])
+})
+
+test('a verified GET cannot suppress an unverified POST webhook in the same file', async () => {
+  const hits = await findings({ 'app/api/stripe/route.ts': `import Stripe from 'stripe';
+    export async function GET(req){const event=stripe.webhooks.constructEvent(body,signature,secret);if(event.type==='invoice.paid')markPaid();}
+    export async function POST(req){const event=await req.json();if(event.type==='invoice.paid')markPaid();}` })
+  assert.equal(hits.length, 1)
+  assert.equal(hits[0]!.line, 3)
+})
+
+test('a throwing verifier with a rejecting catch still protects its event', async () => {
+  const hits = await findings({ 'app/api/stripe/route.ts': `import Stripe from 'stripe';
+    export async function POST(req){let event;try{event=await stripe.webhooks.constructEventAsync(await req.text(),signature,secret);}
+    catch{ return new Response('bad', {status:400}); }
+    if(event.type==='invoice.paid')markPaid(event.data.object.id);}` })
+  assert.deepEqual(hits, [])
+})
+
 describe('supabase.auth.getSession() on the server', () => {
   test('a server component that redirects on getSession() is certain', async () => {
     const list = await findings({ 'app/dashboard/page.tsx': `import { redirect } from 'next/navigation'

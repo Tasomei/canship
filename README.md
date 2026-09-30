@@ -12,7 +12,7 @@ npx canship .
 
 Requires Node.js ≥18; no runtime dependencies. Installation may use the network. Git checks read local history only; unavailable Git in a repository marks coverage incomplete.
 
-> Documentation for 0.5.0. `npx canship` runs the npm default version; use the corresponding Git tag for other releases.
+> This document describes the development branch, including unreleased changes. `npx canship` runs the npm default version; see the corresponding Git tag for release documentation.
 
 ## Checks
 
@@ -47,6 +47,8 @@ Recognises OpenAI, Anthropic, AWS, Stripe, GitHub, npm, and other credential for
 Supports route groups, workspace applications, local helper chains, identity aliases and destructuring, argument requirements, and bounded branch/exception analysis. Raw request input, Supabase `getSession()` results, constants, unawaited promises, or helper names alone do not establish local authentication.
 
 Recognised Next.js/Astro middleware may suppress covered findings; Server Functions require function-local checks. Local helpers, SvelteKit hooks, and Nuxt middleware may lower confidence but retain findings. SvelteKit page loads and remote functions are excluded.
+
+Input tracking follows handler-local assignments, destructuring, and string construction. Unknown sanitisation helpers remain `likely`; their names alone do not prove safety. Session and webhook checks require an enforced verification result, not merely a verification call elsewhere in the file. Custom verification may require manual review.
 
 `certain` and `likely` describe static evidence, not credential validity or runtime security. Default output shows only `certain`; hidden `likely` findings still affect exit status. Admin-client findings include operation, import, construction, and auth-helper locations.
 
@@ -192,7 +194,7 @@ SARIF upload requires `security-events: write` and code scanning support; fork P
 
 ## Privacy and limits
 
-- Static checks can miss issues or flag intentional configurations. They do not verify deployed behaviour, business authorisation, rate limiting, injection, or dependency vulnerabilities. No findings does not prove security.
+- Static checks can miss issues or flag intentional configurations. SQL and command checks cover supported handler-local input flows, not all injection classes. Deployed behaviour, business authorisation, rate limiting, and dependency vulnerabilities are not verified. No findings does not prove security.
 - Redaction covers recognised formats only. Unknown secrets may remain in excerpts; `--no-excerpts` removes excerpts and sets JSON `excerptsOmitted`. Paths, names, descriptions, and baselines are not anonymised.
 - Google/Firebase/Maps `AIza...` keys are treated as public identifiers, not leak evidence alone.
 - Supabase checks use local migrations and supported bucket configuration, not dashboard-only changes or policy conditions implied by omitted clauses.
@@ -206,6 +208,7 @@ SARIF upload requires `security-events: write` and code scanning support; fork P
 | Git history | 100 relevant revisions per file; 30 seconds per Git command |
 | Auth resolution | 8 hops; 128 symbols per route file |
 | Identity/control flow | 8 value hops; 4,000 expression characters; 512 assignments/conditional regions per function; 8 nested branch/exception regions |
+| Request-input tracking | 8 value hops; 512 assignments/control regions per function; 4,000 expression characters; 8 URL-analysis levels and 200 static-prefix characters |
 | Supabase policy/bucket parsing | 4,000 characters per statement |
 
 Exceeded scan/analysis limits report incomplete coverage. Evidence chains are capped at 24 steps and disclose truncation. Getter names and import relationships remain syntactic evidence, not runtime verification.

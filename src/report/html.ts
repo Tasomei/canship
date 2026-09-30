@@ -106,8 +106,8 @@ function keyOf(r){return st.g==='sev'?r.dataset.sev:st.g==='cat'?r.dataset.cat:r
 function label(k){return st.g==='sev'?k+' \\u00b7 '+({P0:'critical',P1:'high',P2:'medium'})[k]:(k||'repository')}
 function render(){
   if(!list)return;
-  var groups=[],index={};
-  rows.forEach(function(r){var k=keyOf(r);if(!(k in index)){index[k]=groups.length;groups.push({k:k,rows:[]})}groups[index[k]].rows.push(r)});
+  var groups=[],index=new Map();
+  rows.forEach(function(r){var k=keyOf(r);if(!index.has(k)){index.set(k,groups.length);groups.push({k:k,rows:[]})}groups[index.get(k)].rows.push(r)});
   if(st.g==='sev')groups.sort(function(a,c){return SEV.indexOf(a.k)-SEV.indexOf(c.k)});
   if(st.g==='cat')groups.sort(function(a,c){return CAT.indexOf(a.k)-CAT.indexOf(c.k)});
   list.textContent='';var shown=0;
@@ -364,8 +364,10 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
 <li>Firebase rules left open to anyone</li>
 <li>API routes and server actions that query your database with no sign-in check</li>
 <li>CORS that lets other sites act as your signed-in visitors</li>
+<li>Request input in SQL, commands, outbound URLs, and redirects within supported handlers</li>
+<li>Unverified Supabase sessions and Stripe webhook events</li>
 </ul>
-<p><strong>A clean result means those checks passed — not that your app is secure.</strong> Rate limiting and injection are not covered, and neither is whether the authorisation checks it did find are the right ones.</p>
+<p><strong>No findings means no matches in the selected scope — not that your app is secure.</strong> Checks are bounded and syntax-based. Request-input analysis stays within supported handlers; business authorisation, rate limiting and dependency vulnerabilities are not verified. Rule selection and exclusions are disclosed below.</p>
 </section>`
 
   // 无论是否发现问题，都披露未检查的内容。

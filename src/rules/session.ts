@@ -7,11 +7,59 @@ import type { Finding, Rule, ScanFile } from '../types.js'
 import { noiseMaskedOf, commentsMaskedOf } from '../mask.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { namePattern } from './bindings.js'
-import { delimiterPairs, functionBodies, routeOf, serverActionRoutes } from './apiauth.js'
-import { patternNames } from './request-input.js'
+import { routeOf, serverActionRoutes } from './apiauth.js'
+import { patternNames, destructuredKeys } from './request-input.js'
+import { authValuesOf, identityRequirement } from './auth-values.js'
+import { LocalVerification } from './verification.js'
 
 const GET_SESSION = /\.auth\s*\.\s*getSession\s*\(/g
-const VERIFIED = /\.auth\s*\.\s*(?:getUser|getClaims)\s*\(/
+
+/** 同一客户端的已等待验证结果必须用于失败退出，且之前未使用会话身份。 */
+function verifiedSession(file: ScanFile, context: LocalVerification, sessionAt: number, names: string[]): boolean {
+  const { code, pairs, bodies } = context
+  const body = context.owner(sessionAt)
+  if (!body) return false
+  const client = /([\w$.]+)\s*$/.exec(code.slice(body.start, sessionAt))?.[1]
+  if (!client) return false
+  const values = authValuesOf(file, body, bodies, pairs)
+  const reads = new RegExp(`(?<![\\w$.])(?:${namePattern(names)})(?![\\w$]|\\s*:)`, 'g')
+  const verification = /\b(?:const|let)\s+(\{[^;=]{1,500}\}|[A-Za-z_$][\w$]*)\s*=\s*await\s+([\w$.]+)\.auth\.(?:getUser|getClaims)\s*\(/g
+  for (const call of code.matchAll(verification)) {
+    if (call[2] !== client || context.owner(call.index) !== body) continue
+    const close = pairs.get(call.index + call[0].length - 1)
+    if (close === undefined) continue
+    // 显式令牌可能来自另一身份，不能证明 Cookie 中的当前会话已验证。
+    if (code.slice(call.index + call[0].length, close).trim() !== '') continue
+    const guardAt = context.skipSpace(code[close + 1] === ';' ? close + 2 : close + 1)
+    const condition = /^if\s*\(/.exec(code.slice(guardAt))
+    if (!condition) continue
+    const conditionClose = pairs.get(guardAt + condition[0].length - 1)
+    if (conditionClose === undefined) continue
+    const branchAt = context.skipSpace(conditionClose + 1)
+    const branchEnd = context.endOf(branchAt)
+    if (!context.exits(branchAt, branchEnd) || !context.enforcedBefore(call.index, guardAt)) continue
+    const test = code.slice(guardAt + condition[0].length, conditionClose).trim()
+    const errorNames = call[1]!.startsWith('{')
+      ? destructuredKeys(call[1]!).filter(k => k.key === 'error').map(k => k.local)
+      : [`${call[1]}.error`]
+    if (/&&|\?(?!\.)/.test(test) || !test.split('||').some(term => {
+      const t = term.trim()
+      return errorNames.includes(t) || (t.startsWith('!') && identityRequirement(values.value(t.slice(1), guardAt), false) !== null)
+    })) continue
+    const sessionClose = pairs.get(code.indexOf('(', sessionAt)) ?? code.indexOf(')', sessionAt)
+    // 会话存在性检查只拒绝缺失值，不应借此将后续身份使用视为已验证。
+    let before = code.slice(sessionClose + 1, branchEnd)
+    before = before.replace(/\bif\s*\(\s*!\s*([\w$.?]+)\s*\)\s*(?:return|throw|redirect)\b[^;\n]*/g, (text, subject: string) => {
+      const rest = text.slice(text.indexOf(')') + 1).replace(/\b[\w$]+\s*:/g, '')
+      return names.some(n => subject === n || subject.startsWith(`${n}.`)) && !new RegExp(reads.source).test(rest)
+        ? ' '.repeat(text.length) : text
+    })
+    if (new RegExp(reads.source).test(before)) continue
+    if (!context.enforcedBefore(guardAt, body.end - 1)) continue
+    return true
+  }
+  return false
+}
 
 /** 服务端文件：路由与 Server Function、中间件与 Proxy 及其辅助模块、Next.js 服务端组件、*.server 模块、server 目录。 */
 const SERVER_PATH = [
@@ -38,8 +86,8 @@ export const sessionRule: Rule = {
 
   check(file: ScanFile): Finding[] {
     const code = noiseMaskedOf(file)
-    const pairs = delimiterPairs(code)
-    const bodies = functionBodies(code, pairs)
+    const context = new LocalVerification(file)
+    const { pairs, bodies } = context
     const lineStarts = lineStartsOf(file.content)
     const findings: Finding[] = []
     for (const m of code.matchAll(GET_SESSION)) {
@@ -47,9 +95,6 @@ export const sessionRule: Rule = {
       const body = bodies.filter(b => b.start < m.index && m.index < b.end).sort((a, b) => b.start - a.start)[0]
       const start = body?.start ?? 0
       const end = body?.end ?? code.length
-      const region = code.slice(start, end)
-      // 随后又用 getUser 或 getClaims 验证的（如 Supabase SvelteKit 指南的 safeGetSession）不报告。
-      if (VERIFIED.test(region)) continue
 
       // 接收结果的变量：const { data: { session } } = await supabase.auth.getSession()
       const statement = code.slice(Math.max(start, m.index - 300), m.index)
@@ -69,6 +114,7 @@ export const sessionRule: Rule = {
       }
       const readsUser = new RegExp(`(?<![\\w$.])(?:${namePattern(names)})(?:\\??\\.\\s*(?:session|data))*\\??\\.\\s*user\\b`).test(after)
       if (!decides && !readsUser) continue
+      if (verifiedSession(file, context, m.index, names)) continue
 
       const line = lineNumberAt(lineStarts, m.index)
       findings.push({

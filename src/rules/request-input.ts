@@ -32,7 +32,7 @@ export interface ParamRoles {
   values: Map<string, number>
 }
 
-const MAX_PASSES = 8
+const MAX_VALUE_HOPS = 8
 const MAX_ASSIGNMENTS = 512
 const MAX_EXPRESSION = 4000
 
@@ -59,18 +59,16 @@ const H3_READERS = 'readBody|readFormData|readMultipartFormData|readRawBody|read
   'getRouterParams?|getValidatedRouterParams|getHeaders?|getRequestHeaders?|getCookie|parseCookies|getRequestURL'
 
 /**
- * 结果不再携带原始字符串的表达式：数值与布尔转换、长度、比较、转义函数、字面量三元及查表。
- * 查表如 COLUMNS[sort]，只能取到代码中预先写好的值。
+ * 结果不再携带原始字符串的表达式；未知处理函数不能仅凭名称豁免。
+ * 查表另行核对容器来源，不能将请求对象的索引访问视为安全。
  */
 const LITERAL = String.raw`(?:'[^']*'|"[^"]*"|\x60[^\x60$]*\x60|-?\d+(?:\.\d+)?|null|undefined|true|false)`
 const CLEAN_EXPRESSION = [
   /^(?:await\s+)?(?:Number|parseInt|parseFloat|Boolean|BigInt|isNaN|Math\s*\.\s*\w+|Number\s*\.\s*\w+)\s*\(/,
-  /^(?:await\s+)?(?:[\w$]+\s*\.\s*)*(?:[Ee]scape\w*|[Qq]uote\w*|[Ss]anitiz\w*|safe[A-Z_]\w*)\s*\(/,
   /\.\s*length\s*$/,
   /^(?:!|typeof\b)/,
   /\.\s*(?:includes|test|has|startsWith|endsWith|some|every)\s*\([^?]*\)\s*$/,
   new RegExp(String.raw`^[^?]*\?\s*${LITERAL}\s*:\s*${LITERAL}\s*$`),
-  new RegExp(String.raw`^[\w$.]+\s*\[[^\]]*\]\s*(?:(?:\?\?|\|\|)\s*${LITERAL})?\s*$`),
   // 带标签的模板由标签函数处理插值（Prisma.sql、sql、html），String.raw 除外。
   /^(?:await\s+)?(?!String\s*\.\s*raw\b)[\w$]+(?:\s*\.\s*[\w$]+)*\s*\x60/,
 ]
@@ -183,12 +181,15 @@ export function parametersOf(
 }
 
 /** 表达式终点：跳过括号，遇到分号、顶层逗号、所在代码块结束或不续行的换行即停。 */
-function expressionEnd(code: string, from: number, limit: number, pairs: Map<number, number>): number {
+function expressionEnd(code: string, from: number, limit: number, pairs: Map<number, number>, truncated: () => void): number {
   const stop = Math.min(limit, from + MAX_EXPRESSION)
   for (let i = from; i < stop; i++) {
     const ch = code[i]!
     const close = pairs.get(i)
-    if (close !== undefined) { i = close; continue }
+    if (close !== undefined) {
+      if (close >= stop) { truncated(); return stop }
+      i = close; continue
+    }
     if (ch === ';' || ch === ',' || ch === ')' || ch === ']' || ch === '}') return i
     if (ch === '\n') {
       const before = code.slice(from, i).trimEnd()
@@ -198,22 +199,50 @@ function expressionEnd(code: string, from: number, limit: number, pairs: Map<num
       return i
     }
   }
+  if (stop < limit && !/[;,)}\]\n]/.test(code[stop] ?? '')) truncated()
   return stop
 }
 
-interface Assignment { at: number; pattern: string; names: string[]; expr: string; exprAt: number; iterate: boolean; append: boolean }
+interface Span { start: number; end: number }
+interface Assignment { at: number; pattern: string; names: string[]; expr: string; exprAt: number; iterate: boolean; append: boolean; declaration?: boolean; scope?: Span; controls?: Span[] }
+
+/** 仅接受平坦字面量表，不接受展开、访问器、调用或动态属性。 */
+function literalTable(text: string): boolean {
+  const value = text.trim()
+  const item = new RegExp(`^${LITERAL}$`)
+  const property = new RegExp(`^(?:[A-Za-z_$][\\w$]*|'[^']*'|"[^"]*")\\s*:\\s*${LITERAL}$`)
+  if (!(value.startsWith('{') && value.endsWith('}')) && !(value.startsWith('[') && value.endsWith(']'))) return false
+  return parameterList(value.slice(1, -1)).every(part => (value[0] === '{' ? property : item).test(part))
+}
+
+/** 文件级常量表索引只建立一次；重复绑定或可见成员写入使豁免失效。 */
+function fixedTablesOf(code: string, source: string, pairs: Map<number, number>): Map<string, number> {
+  const result = new Map<string, number>()
+  const seen = new Set<string>()
+  for (const m of code.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*/g)) {
+    const name = m[1]!
+    if (seen.has(name)) { result.delete(name); continue }
+    seen.add(name)
+    const open = m.index + m[0].length
+    const close = pairs.get(open)
+    if (!m[0].startsWith('const') || close === undefined || close - open > MAX_EXPRESSION) continue
+    if (literalTable(source.slice(open, close + 1))) result.set(name, m.index)
+  }
+  for (const m of code.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)(?:\s*\.\s*[\w$]+|\s*\[[^\]]*\])?\s*(?:\+\+|--|[+*/%&|^-]?=(?![=>]))/g)) {
+    if (!/\bconst\s+$/.test(code.slice(Math.max(0, m.index - 20), m.index))) result.delete(m[1]!)
+  }
+  return result
+}
 
 /** 一个处理函数内请求输入的流向。 */
 export class InputFlow {
-  readonly names = new Map<string, Taint>()
-  /** 由请求输入拼接成的字符串变量及其全部拼接文本（含字符串内容），用于判断是否像 SQL。 */
-  readonly built = new Map<string, Taint & { text: string }>()
+  private readonly parameters = new Map<string, Taint>()
   limited = false
-  /** 每个变量全部赋值的原文，判断拼接出的字符串是否像 SQL 时包括不含输入的部分。 */
-  private readonly assigned = new Map<string, string[]>()
   private readonly assignmentList = new Map<string, Assignment[]>()
   private sourcePattern: RegExp | null
-  private namePatternCache: { key: string; regex: RegExp | null } = { key: '', regex: null }
+  private references: RegExp | null = null
+  private readonly values = new Map<string, Taint | null>()
+  private readonly strings = new Map<string, (Taint & { text: string }) | null>()
 
   constructor(
     private readonly code: string,
@@ -221,28 +250,65 @@ export class InputFlow {
     private readonly span: { start: number; end: number },
     private readonly pairs: Map<number, number>,
     roles: ParamRoles,
+    private readonly fixedTables: Map<string, number>,
   ) {
-    for (const [name, at] of roles.values) this.names.set(name, { level: 'direct', origin: at, names: new Set([name]), ownUrl: false })
+    for (const [name, at] of roles.values) this.parameters.set(name, { level: 'direct', origin: at, names: new Set([name]), ownUrl: false })
     this.sourcePattern = sourceRegex(roles)
-    this.propagate()
+    const assignments = this.assignments().sort((a, b) => a.at - b.at)
+    const region = code.slice(span.start, span.end)
+    const nested = functionBodies(region, delimiterPairs(region))
+    const scopes: Span[] = [span]
+    for (let i = span.start + 1; i < span.end; i++) {
+      const end = code[i] === '{' ? pairs.get(i) : undefined
+      if (end !== undefined) scopes.push({ start: i, end })
+    }
+    const controls: Span[] = []
+    for (const m of region.matchAll(/\b(?:if|for|while|switch|catch)\s*\(|\belse\b/g)) {
+      const open = span.start + m.index + m[0].length - 1
+      let start = m[0] === 'else' ? open + 1 : (pairs.get(open) ?? open) + 1
+      while (/\s/.test(code[start] ?? '')) start++
+      controls.push({ start, end: pairs.get(start) ?? expressionEnd(code, start, span.end, pairs, () => { this.limited = true }) })
+      if (controls.length >= MAX_ASSIGNMENTS) { this.limited = true; break }
+    }
+    for (const a of assignments) {
+      if (nested.some(body => body.declaration + span.start <= a.at && a.at < body.end + span.start)) continue
+      a.scope = scopes.filter(s => s.start < a.at && a.at < s.end).at(-1) ?? span
+      a.controls = controls.filter(s => s.start <= a.at && a.at <= s.end)
+      for (const name of a.names) {
+        const list = this.assignmentList.get(name) ?? []
+        if (!list.some(item => item.exprAt === a.exprAt)) list.push(a)
+        this.assignmentList.set(name, list)
+      }
+    }
+    const names = new Set([...this.parameters.keys(), ...this.assignmentList.keys()])
+    if (names.size) this.references = new RegExp(`(?<![\\w$.])(?:${namePattern(names)})(?![\\w$])`, 'g')
   }
 
   /** 表达式是否携带请求输入；已转换为数值、布尔或查表结果的不算。 */
-  taintOf(expr: string, exprAt: number): Taint | null {
+  taintOf(expr: string, exprAt: number, depth = 0): Taint | null {
+    if (expr.length > MAX_EXPRESSION) this.limited = true
     const text = expr.trim()
     if (text === '' || CLEAN_EXPRESSION.some(pattern => pattern.test(text)) || isComparison(text)) return null
+    const lookup = new RegExp(`^([A-Za-z_$][\\w$]*)\\s*\\[[^\\]]*\\]\\s*(?:(?:\\?\\?|\\|\\|)\\s*${LITERAL})?\\s*$`).exec(text)
+    if (lookup && this.isFixedTable(lookup[1]!, exprAt)) return null
+    // 字面量索引按同长属性访问处理，支持 req['body']，不猜测动态属性。
+    const observed = expr.replace(/\[\s*['"][^'"]*['"]\s*\]/g, (part, offset: number) => {
+      const raw = this.source.slice(exprAt + offset, exprAt + offset + part.length)
+      const key = /^\[\s*['"]([A-Za-z_$][\w$]*)['"]\s*\]$/.exec(raw)?.[1]
+      return key ? `.${key}`.padEnd(part.length) : part
+    })
     let found: Taint | null = null
     if (this.sourcePattern) {
       this.sourcePattern.lastIndex = 0
-      for (const m of expr.matchAll(this.sourcePattern)) {
-        const after = expr.slice(m.index + m[0].length)
+      for (const m of observed.matchAll(this.sourcePattern)) {
+        const after = observed.slice(m.index + m[0].length)
         const ownUrl = m[1] === 'url' || m[1] === 'nextUrl'
         if (ownUrl && URL_ORIGIN_ACCESS.test(after)) continue
         found = mergeTaint(found, { level: 'direct', origin: exprAt + m.index, names: new Set(),
           ownUrl: ownUrl && !URL_INPUT_ACCESS.test(after.slice(0, 40)) })
       }
     }
-    const refs = this.nameRegex()
+    const refs = this.references && new RegExp(this.references.source, 'g')
     if (refs) {
       refs.lastIndex = 0
       for (const m of expr.matchAll(refs)) {
@@ -250,7 +316,7 @@ export class InputFlow {
         const after = expr.slice(m.index + m[0].length)
         // 对象字面量的键不是引用。
         if (/^\s*:(?!:)/.test(after) && /[{,]$/.test(before)) continue
-        const t = this.names.get(m[0])
+        const t = this.valueOf(m[0], exprAt, depth)
         if (!t) continue
         // 本站 URL 的 origin、host 等不可控；取其查询或路径部分则成为可控输入。
         if (t.ownUrl && URL_ORIGIN_ACCESS.test(after)) continue
@@ -267,29 +333,99 @@ export class InputFlow {
   }
 
   /** 字符串拼接：无标签模板的插值或含字符串操作数的 + 拼接中携带请求输入。 */
-  builtOf(expr: string, exprAt: number): Taint | null {
+  builtOf(expr: string, exprAt: number, depth = 0): Taint | null {
+    if (expr.length > MAX_EXPRESSION) this.limited = true
     const text = expr.trim()
     const lead = expr.length - expr.trimStart().length
-    if (text.startsWith('\x60')) return this.interpolationTaint(exprAt + lead, exprAt + lead + text.length)
+    if (text.startsWith('\x60')) return this.interpolationTaint(exprAt + lead, exprAt + lead + text.length, depth)
     const operands = this.topLevelOperands(expr, exprAt)
     if (operands.length < 2 || !operands.some(o => /^['"\x60]/.test(o.text.trim()))) return null
     let found: Taint | null = null
     for (const operand of operands) {
       const t = operand.text.trim().startsWith('\x60')
-        ? this.interpolationTaint(operand.at, operand.at + operand.text.length)
-        : this.taintOf(operand.text, operand.at)
+        ? this.interpolationTaint(operand.at, operand.at + operand.text.length, depth)
+        : this.taintOf(operand.text, operand.at, depth)
       if (t) found = mergeTaint(found, t)
     }
     return found
   }
 
-  assignedText(name: string): string {
-    return (this.assigned.get(name) ?? []).join('\n')
+  /** 仅保留使用位置可见的赋值；无条件覆盖终止旧值，分支与追加赋值保留可能来源。 */
+  assignmentsFor(name: string, at: number): Assignment[] {
+    const list = this.assignmentList.get(name) ?? []
+    const contains = (s: Span, where: number): boolean => s.start < where && where < s.end
+    const bindingAt = (where: number): Assignment | undefined => list.filter(a => a.declaration &&
+      a.at <= where && contains(a.scope!, where)).sort((a, b) => b.scope!.start - a.scope!.start || b.at - a.at)[0]
+    const binding = bindingAt(at)
+    const result: Assignment[] = []
+    for (let i = list.length - 1; i >= 0; i--) {
+      const a = list[i]!
+      if (a.at >= at || a.exprAt + a.expr.length >= at) continue
+      if (a.declaration ? a !== binding : bindingAt(a.at) !== binding) continue
+      result.push(a)
+      if (!a.append && contains(a.scope!, at) && a.controls!.every(s => contains(s, at))) break
+    }
+    return result
   }
 
-  /** 变量的全部赋值，用于判断拼接结果的开头是否由输入决定。 */
-  assignmentsFor(name: string): ReadonlyArray<{ expr: string; exprAt: number; append: boolean }> {
-    return this.assignmentList.get(name) ?? []
+  valueOf(name: string, at: number, depth = 0): Taint | null {
+    const key = `${name}:${at}:${depth}`
+    if (this.values.has(key)) return this.values.get(key)!
+    const result = this.resolveValue(name, at, depth)
+    this.values.set(key, result)
+    return result
+  }
+
+  private resolveValue(name: string, at: number, depth: number): Taint | null {
+    if (depth >= MAX_VALUE_HOPS) { this.limited = true; return null }
+    const assignments = this.assignmentsFor(name, at)
+    if (!assignments.length) return this.parameters.get(name) ?? null
+    let found: Taint | null = null
+    for (const a of assignments) {
+      const taint = this.builtOf(a.expr, a.exprAt, depth + 1) ?? this.taintOf(a.expr, a.exprAt, depth + 1)
+      if (!taint) continue
+      const own = this.targetsOf(a, taint).find(([target]) => target === name)
+      if (own) found = mergeTaint(found, { ...taint, ownUrl: own[1], names: new Set([name, ...taint.names]) })
+    }
+    // 只有条件赋值时，原始参数仍可能到达使用处。
+    if (this.parameters.has(name) && assignments.every(a => a.append || !a.scope || a.scope.start !== this.span.start || a.controls!.length)) {
+      found = mergeTaint(found, this.parameters.get(name)!)
+    }
+    return found
+  }
+
+  /** 保留有效拼接及别名的 SQL 文本证据，不借用已被覆盖的旧查询。 */
+  builtValue(name: string, at: number, depth = 0): (Taint & { text: string }) | null {
+    const key = `${name}:${at}:${depth}`
+    if (this.strings.has(key)) return this.strings.get(key)!
+    const result = this.resolveBuiltValue(name, at, depth)
+    this.strings.set(key, result)
+    return result
+  }
+
+  private resolveBuiltValue(name: string, at: number, depth: number): (Taint & { text: string }) | null {
+    if (depth >= MAX_VALUE_HOPS) { this.limited = true; return null }
+    let found: Taint | null = null
+    let text = ''
+    const append = (part: string): void => {
+      if (text.length + part.length + 1 > MAX_EXPRESSION) this.limited = true
+      text = `${text}\n${part}`.slice(0, MAX_EXPRESSION)
+    }
+    for (const a of this.assignmentsFor(name, at)) {
+      append(this.source.slice(a.exprAt, a.exprAt + a.expr.length))
+      const alias = /^[A-Za-z_$][\w$]*$/.test(a.expr.trim()) ? this.builtValue(a.expr.trim(), a.exprAt, depth + 1) : null
+      const t = this.builtOf(a.expr, a.exprAt, depth + 1) ?? alias ?? (a.append ? this.taintOf(a.expr, a.exprAt, depth + 1) : null)
+      if (alias) append(alias.text)
+      if (t) found = mergeTaint(found, t)
+    }
+    return found ? { ...found, names: new Set([name, ...found.names]), text } : null
+  }
+
+  private isFixedTable(name: string, at: number): boolean {
+    const assignments = this.assignmentsFor(name, at)
+    if (assignments.length) return assignments.every(a => !a.append &&
+      literalTable(this.source.slice(a.exprAt, a.exprAt + a.expr.length))) && this.fixedTables.has(name)
+    return (this.fixedTables.get(name) ?? Infinity) < at && !this.parameters.has(name)
   }
 
   /** 顶层 + 拼接的各操作数；括号与模板插值内部的 + 不拆分。 */
@@ -323,13 +459,13 @@ export class InputFlow {
     return false
   }
 
-  private interpolationTaint(from: number, to: number): Taint | null {
+  private interpolationTaint(from: number, to: number, depth: number): Taint | null {
     let found: Taint | null = null
     for (let i = from; i < to - 1; i++) {
       if (this.code[i] !== '$' || this.code[i + 1] !== '{') continue
       const close = this.pairs.get(i + 1)
       if (close === undefined) continue
-      const t = this.taintOf(this.code.slice(i + 2, close), i + 2)
+      const t = this.taintOf(this.code.slice(i + 2, close), i + 2, depth)
       i = close
       if (t) found = mergeTaint(found, t)
     }
@@ -349,56 +485,6 @@ export class InputFlow {
     }
     result.push({ text: expr.slice(from), at: exprAt + from })
     return result
-  }
-
-  private nameRegex(): RegExp | null {
-    const key = [...this.names.keys()].sort().join(',')
-    if (key !== this.namePatternCache.key) {
-      this.namePatternCache = { key, regex: key === '' ? null : new RegExp(`(?<![\\w$.])(?:${namePattern(this.names.keys())})(?![\\w$])`, 'g') }
-    }
-    return this.namePatternCache.regex
-  }
-
-  /** 收集函数内的声明、重新赋值和 for...of，按轮次传播到不再变化或达到上限。 */
-  private propagate(): void {
-    const assignments = this.assignments()
-    for (const a of assignments) for (const name of a.names) {
-      const list = this.assigned.get(name) ?? []
-      if (list.length < 16) list.push(this.source.slice(a.exprAt, a.exprAt + a.expr.length))
-      this.assigned.set(name, list)
-      if (a.names.length === 1 && !a.iterate) {
-        const own = this.assignmentList.get(name) ?? []
-        if (own.length < 16) own.push(a)
-        this.assignmentList.set(name, own)
-      }
-    }
-    for (let pass = 0; pass < MAX_PASSES; pass++) {
-      let changed = false
-      for (const a of assignments) {
-        const built = a.iterate ? null : this.builtOf(a.expr, a.exprAt)
-        const taint = built ?? this.taintOf(a.expr, a.exprAt)
-        if (!taint) continue
-        for (const [name, own] of this.targetsOf(a, taint)) {
-          const previous = this.names.get(name)
-          if (!previous || (previous.level === 'derived' && taint.level === 'direct') || (previous.ownUrl && !own)) {
-            this.names.set(name, { level: taint.level, origin: taint.origin, names: new Set([name, ...taint.names]), ownUrl: own })
-            changed = true
-          }
-          const text = this.source.slice(a.exprAt, a.exprAt + a.expr.length)
-          const existing = this.built.get(name)
-          if (built && a.names.length === 1) {
-            if (!existing) {
-              this.built.set(name, { level: built.level, origin: built.origin, names: new Set([name, ...built.names]), ownUrl: built.ownUrl, text })
-              changed = true
-            } else if (!existing.text.includes(text)) {
-              existing.text += `\n${text}`
-            }
-          }
-        }
-      }
-      if (!changed) return
-      if (pass === MAX_PASSES - 1) this.limited = true
-    }
   }
 
   /**
@@ -443,15 +529,15 @@ export class InputFlow {
         const forOf = /^\s+of\s+/.exec(rest)
         if (forOf) {
           const exprAt = patternEnd + forOf[0].length
-          const end = expressionEnd(code, exprAt, span.end, pairs)
-          push({ at, pattern, names: patternNames(pattern), expr: code.slice(exprAt, end), exprAt, iterate: true, append: false })
+          const end = expressionEnd(code, exprAt, span.end, pairs, () => { this.limited = true })
+          push({ at, pattern, names: patternNames(pattern), expr: code.slice(exprAt, end), exprAt, iterate: true, append: false, declaration: true })
           break
         }
         const eq = /^\s*(?::[^=;]{0,200}?)?=(?![=>])/.exec(rest)
         if (!eq) break
         const exprAt = patternEnd + eq[0].length
-        const end = expressionEnd(code, exprAt, span.end, pairs)
-        push({ at, pattern, names: patternNames(pattern), expr: code.slice(exprAt, end), exprAt, iterate: false, append: false })
+        const end = expressionEnd(code, exprAt, span.end, pairs, () => { this.limited = true })
+        push({ at, pattern, names: patternNames(pattern), expr: code.slice(exprAt, end), exprAt, iterate: false, append: false, declaration: true })
         if (code[end] !== ',') break
         at = end + 1
         while (/\s/.test(code[at] ?? '')) at++
@@ -462,7 +548,7 @@ export class InputFlow {
       const before = region.slice(Math.max(0, m.index - 8), m.index)
       if (/\b(?:const|let|var)\s+$/.test(before)) continue
       const exprAt = span.start + m.index + m[0].length
-      const end = expressionEnd(code, exprAt, span.end, pairs)
+      const end = expressionEnd(code, exprAt, span.end, pairs, () => { this.limited = true })
       push({ at: span.start + m.index, pattern: m[1]!, names: [m[1]!], expr: code.slice(exprAt, end), exprAt, iterate: false, append: m[2] === '+=' })
     }
     return found
@@ -526,6 +612,7 @@ export function lowerBound(values: readonly number[], value: number): number {
  */
 export class HandlerFile {
   private readonly flows = new Map<HandlerCandidate, InputFlow>()
+  private readonly fixedTables: Map<string, number>
 
   constructor(
     readonly code: string,
@@ -533,7 +620,7 @@ export class HandlerFile {
     readonly pairs: Map<number, number>,
     readonly lineStarts: number[],
     private readonly candidates: HandlerCandidate[],
-  ) {}
+  ) { this.fixedTables = fixedTablesOf(code, source, pairs) }
 
   get limited(): boolean {
     for (const flow of this.flows.values()) if (flow.limited) return true
@@ -550,7 +637,7 @@ export class HandlerFile {
       if (first >= positions.length || positions[first]! >= body.end) continue
       let flow = this.flows.get(candidate)
       if (!flow) {
-        flow = new InputFlow(this.code, this.source, { start: body.start, end: body.end }, this.pairs, candidate.roles)
+        flow = new InputFlow(this.code, this.source, { start: body.start, end: body.end }, this.pairs, candidate.roles, this.fixedTables)
         this.flows.set(candidate, flow)
       }
       result.push({ route: candidate.route, body, flow })
@@ -604,5 +691,5 @@ export function handlerFileOf(file: ScanFile): HandlerFile | null {
 /** 追踪达到上限时记录一次扫描缺口；三条规则共用同一条记录，由引擎按规则与消息去重。 */
 export function reportInputLimit(ctx: ScanContext, file: ScanFile, analysed: HandlerFile): void {
   if (analysed.limited) ctx.reportIncomplete('request-input/tracking',
-    `${file.path} reached the request-input tracking limit (8 propagation passes, 512 assignments or 4000 expression characters per function)`)
+    `${file.path} reached the request-input tracking limit (8 value hops, 512 assignments or control regions, 4000 expression characters, or bounded URL analysis)`)
 }

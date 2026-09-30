@@ -75,7 +75,7 @@ export default async function handler(req, res) {
 }` }, [['injection/sql', 6, 'certain']])
   })
 
-  test('values reduced to numbers, booleans, fixed choices, or escaped are not reported', async () => {
+  test('numbers and fixed choices stay clean; an unverified escape helper remains likely', async () => {
     await expectHits(route(`const COLUMNS = { newest: 'created_at', name: 'name' }
 export async function GET(request) {
   const params = request.nextUrl.searchParams
@@ -88,7 +88,7 @@ export async function GET(request) {
   await pool.query(\`SELECT * FROM items ORDER BY \${COLUMNS[sort] ?? 'id'}\`)
   await pool.query(\`SELECT * FROM items WHERE name = \${mysql.escape(name)}\`)
   return new Response('ok')
-}`), [])
+}`), [['injection/sql', 11, 'likely']])
   })
 
   test('a content check or an intermediate call lowers the finding to likely', async () => {

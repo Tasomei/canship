@@ -310,9 +310,11 @@ function renderClean(result: ScanResult, opts: RenderOptions, width: number): st
     'Firebase rules left open to anyone',
     'API routes and server actions that query your database with no sign-in check',
     'CORS that lets other sites act as your signed-in visitors',
+    'Request input in SQL, commands, outbound URLs, and redirects within supported handlers',
+    'Unverified Supabase sessions and Stripe webhook events',
   ]) out.push(`${dim('  · ')}${item}`)
   out.push('')
-  out.push(dim('It does not check rate limiting, injection, or whether the checks it did find are the right ones.'))
+  out.push(dim('Input analysis is bounded and handler-local; business authorisation, rate limiting and dependency vulnerabilities are not verified.'))
   // 结束语必须保留隐藏、忽略和筛选信息。
   if (opts.hiddenLikely > 0) {
     out.push(dim('This is not a finding-free result. Review the hidden items with --all.'))
