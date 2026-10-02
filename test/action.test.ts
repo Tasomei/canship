@@ -29,7 +29,7 @@ function result(over: Partial<ScanResult> = {}): ScanResult {
   return { findings: [], filesScanned: 1, durationMs: 0, partial: false, errors: [], skipped: [],
     ignored: [], ignoredFindings: [], ruleSelection: null, vendored: 0, ...over }
 }
-function report(over: Partial<ScanResult> = {}, version = '0.5.0') {
+function report(over: Partial<ScanResult> = {}, version = '0.6.0') {
   return createJsonReport(result(over), {
     version, root: workspace, hiddenLikely: 0, baselineSuppressed: 0, baselineStale: 0,
   })
@@ -122,7 +122,7 @@ test('current Action defaults and pinned README defaults are checked independent
   const pinnedAction = { commit: '97c14d1f1e494a49adf716c455b597edf6ae1d88', version: '0.5.0' }
   const packageVersion = JSON.parse(readFileSync(join(repository, 'package.json'), 'utf8')).version
   const version = parseInputs(environment()).version
-  assert.equal(version, '0.5.0')
+  assert.equal(version, '0.6.0')
   assert.equal(parseInputs(environment({ INPUT_VERSION: '' })).version, version)
   const metadata = readFileSync(join(repository, 'action.yml'), 'utf8')
   const versionInput = /^  version:\r?\n(?:(?: {4}[^\r\n]*|)\r?\n)*/m.exec(metadata)?.[0]
@@ -172,18 +172,18 @@ test('explicitly choosing 0.2.1 still works with the old report format', () => {
   assert.equal(installed, true)
   assert.deepEqual(outcome, { findings: 0, blocking: 0, partial: false, failed: false })
 })
-test('the default install and report must both be 0.5.0; other report versions are rejected', () => {
+test('the default install and report must both be 0.6.0; other report versions are rejected', () => {
   let installs = 0
-  for (const version of ['0.5.0', '0.4.0']) {
+  for (const version of ['0.6.0', '0.5.0']) {
     const execute = () => runAction(environment(), {
       installScanner: options => {
-        assert.equal(options.version, '0.5.0')
+        assert.equal(options.version, '0.6.0')
         installs++
         return 'trusted-cli.js'
       },
       execute: () => ({ status: 0, stdout: JSON.stringify(report({}, version)) }),
     })
-    if (version === '0.5.0') assert.equal(execute().failed, false)
+    if (version === '0.6.0') assert.equal(execute().failed, false)
     else assert.throws(execute, (error: unknown) => {
       assert.equal(describeActionError(error).stage, 'report')
       return true
