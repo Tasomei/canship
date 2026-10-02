@@ -12,7 +12,7 @@ A local static scanner for JavaScript and TypeScript web apps. Checks exposed cr
 npx canship
 ```
 
-Scans the current directory; pass a path to scan another project. Requires Node.js ≥18; no runtime dependencies. Installation may use the network. Git checks read local history; inaccessible repository history marks coverage incomplete.
+Scans the current directory or a specified path. Requires Node.js ≥18; no runtime dependencies. Installation may use the network. Git checks cover locally tracked files and commit history without contacting remotes; inaccessible history marks coverage incomplete.
 
 Output examples — development build, sample data.
 
@@ -24,9 +24,9 @@ Output examples — development build, sample data.
 |---|:---:|---|
 | Credentials | `P0` | Hardcoded keys, private keys, password-bearing database URLs, public env exposure, Supabase admin keys, non-template `.env` files tracked by Git or present in history |
 | API access | `P0/P1` | Database operations without recognised authentication, server-side trust in Supabase `getSession()`, unverified Stripe webhooks |
-| Database rules | `P1/P2` | Supabase RLS, always-true policies, listable public buckets; Firebase open and date-based rules |
+| Database rules | `P1/P2` | Supabase tables without RLS, unconditional policies, public object listing in storage buckets; Firebase open rules and time-limited test rules |
 | CORS | `P1/P2` | Reflected or wildcard origins with credentials |
-| Request input | `P1/P2` | SQL and command construction, caller-chosen request hosts and redirect targets |
+| Request input | `P1/P2` | Request input in SQL or command construction, caller-chosen request hosts and redirect targets |
 
 Credential formats include OpenAI, Anthropic, AWS, Stripe, GitHub, and npm. Firebase covers Firestore, Storage, and Realtime Database. `--list-rules` lists rule IDs, scope, and limitations.
 
@@ -50,7 +50,7 @@ Reports are in English. The terminal groups findings by file; `--verbose` adds e
 
 ![HTML report](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
 
-`certain` indicates strong static evidence; `likely` requires review. Tests and examples are downgraded to `likely`. Default output shows only `certain`; `--all` includes both. Neither confidence level verifies credentials or runtime behaviour.
+`certain` indicates strong static evidence; `likely` requires review. Findings in tests and examples are downgraded to `likely`. Default output shows only `certain`; `--all` includes both. Confidence reflects static evidence, not credential validity or runtime verification.
 
 | Exit | Meaning |
 |---|---|
@@ -97,7 +97,9 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 
 A standalone `canship-ignore-file` comment excludes a file. `canship-ignore-next-line [rule]` suppresses the next line, optionally for one rule. Exclusions are disclosed and may reduce status to `0` without marking coverage incomplete. For untrusted projects, use `--no-config --no-ignore-markers`.
 
-Baselines accept existing findings without fixing them. Format v2 survives line moves but detects credential changes. Missing, invalid, or v1 baselines exit `3`. Default paths are relative to the scan directory; explicit paths are relative to the working directory. Read/write modes are mutually exclusive. A successful write exits `0`, with a warning for incomplete or selective scans.
+Baselines accept existing findings without fixing them. Format v2 tolerates line moves but reports credential changes.
+
+Default paths are relative to the scan directory; explicit paths are relative to the working directory. Read/write modes are mutually exclusive. Missing, invalid, or v1 baselines exit `3`. A successful write exits `0`, with a warning for incomplete or selective scans.
 
 ## GitHub Action
 
@@ -122,7 +124,7 @@ jobs:
           honor-ignore-markers: false
 ```
 
-The commit pins the wrapper; `version` selects the npm scanner, not development-branch source. The Action uses Node.js 22, does not install or run project dependencies, and writes a counts-only summary.
+The commit hash pins the Action implementation; `version` selects the npm scanner, not development-branch source. The Action uses Node.js 22, does not install or run project dependencies, and writes a counts-only summary.
 
 | Input | Default | Meaning |
 |---|---|---|
@@ -151,8 +153,8 @@ JSON uses [schemaVersion 1](./schemas/scan-report-v1.schema.json). Check `partia
 - Static checks may miss issues or flag intentional configurations. Business authorisation, rate limiting, dependency vulnerabilities, and deployed settings are not verified.
 - Redaction covers recognised formats only. Unknown secrets may remain in excerpts; `--no-excerpts` omits excerpts. Paths, names, and baseline descriptions remain visible.
 - Google/Firebase/Maps `AIza…` keys are treated as public identifiers, not leak evidence alone. Supabase checks use local migrations and supported bucket configuration.
-- Scanning is offline. Package installation, snapshot preparation, and optional SARIF upload may use the network.
-- Symbolic links are not followed; nested repositories and submodules need separate scans. In-scope skipped paths and analysis limits mark coverage incomplete; built-in dependency/build exclusions do not.
+- Evaluation snapshot downloads and optional SARIF uploads may use the network.
+- Symbolic links are not followed; nested repositories and submodules need separate scans. In-scope skipped paths and analysis limits mark coverage incomplete. Dependency and build directories excluded by default do not count as coverage gaps.
 
 | Limit | Bound |
 |---|---|
