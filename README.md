@@ -4,7 +4,7 @@ A local static scanner for JavaScript and TypeScript web apps. Checks exposed cr
 
 [简体中文](./README-zh-CN.md)
 
-> Development-branch documentation; some features are unreleased. `npx canship` uses the npm default version. Refer to the matching Git tag for release documentation.
+> Documentation for `0.6.0`. Check the installed version with `npx canship --version`.
 
 ## Quick start
 
@@ -14,7 +14,7 @@ npx canship
 
 Scans the current directory or a specified path. Requires Node.js ≥18; no runtime dependencies. Installation may use the network. Git checks cover locally tracked files and commit history without contacting remotes; inaccessible history marks coverage incomplete.
 
-Output examples — development build, sample data.
+Output examples use sample data from a pre-release development build.
 
 ![Terminal report](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/terminal.png)
 
@@ -120,7 +120,7 @@ jobs:
           persist-credentials: false
       - uses: Tasomei/canship@97c14d1f1e494a49adf716c455b597edf6ae1d88
         with:
-          version: '0.5.0'
+          version: '0.6.0'
           honor-ignore-markers: false
 ```
 

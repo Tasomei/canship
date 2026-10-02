@@ -4,7 +4,7 @@
 
 [English](./README.md)
 
-> 本文对应开发分支，含未发布功能。`npx canship` 使用 npm 默认版本；发行版文档请查阅对应 Git 标签。
+> 本文对应 `0.6.0`。使用 `npx canship --version` 确认已安装版本。
 
 ## 快速开始
 
@@ -14,7 +14,7 @@ npx canship
 
 默认扫描当前目录，也可指定路径。要求 Node.js ≥18，无运行时依赖，安装可能联网。Git 检查覆盖本地跟踪文件及提交历史，不访问远程仓库；历史无法读取时标记扫描不完整。
 
-输出示例：开发分支，示例数据。
+以下报告来自发布前开发构建，使用示例数据。
 
 ![终端报告](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/terminal.png)
 
@@ -120,7 +120,7 @@ jobs:
           persist-credentials: false
       - uses: Tasomei/canship@97c14d1f1e494a49adf716c455b597edf6ae1d88
         with:
-          version: '0.5.0'
+          version: '0.6.0'
           honor-ignore-markers: false
 ```
 

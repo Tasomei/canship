@@ -124,6 +124,38 @@ void code; void id;
   assert.equal(JSON.parse(report.stdout).excerptsOmitted, true)
   for (const text of [report.stdout, readFileSync(html, 'utf8'), readFileSync(sarif, 'utf8')]) assert.doesNotMatch(text, /PRIVATE_SMOKE_SENTINEL/)
   assert.equal(JSON.parse(readFileSync(sarif, 'utf8')).version, '2.1.0')
+  // 从实际安装包验收新增规则及终端视图，不执行样本代码。
+  const releaseCases = [
+    ['sql-input', 'app/api/items/route.ts',
+      "export async function GET(req){const id=req.nextUrl.searchParams.get('id');return prisma.$queryRawUnsafe('SELECT * FROM items WHERE id='+id);}",
+      'injection/sql', 'certain', 1],
+    ['shell-input', 'app/api/run/route.ts',
+      "import {exec} from 'node:child_process';export async function POST(req){const body=await req.json();exec('echo '+body.message);}",
+      'injection/command', 'certain', 1],
+    ['outbound-input', 'app/api/fetch/route.ts',
+      "export async function GET(req){return fetch(req.nextUrl.searchParams.get('url'));}",
+      'ssrf/request-url', 'likely', 2],
+    ['redirect-input', 'app/api/redirect/route.ts',
+      "import {redirect} from 'next/navigation';export async function GET(req){redirect(req.nextUrl.searchParams.get('next'));}",
+      'redirect/open', 'certain', 2],
+    ['session-trust', 'app/dashboard/page.tsx',
+      'export default async function Page(){const {data:{session}}=await supabase.auth.getSession();if(!session)return null;return session.user.id;}',
+      'auth/unverified-session', 'certain', 1],
+    ['webhook-trust', 'app/api/webhooks/route.ts',
+      "import Stripe from 'stripe';export async function POST(req){const event=await req.json();if(event.type==='invoice.paid')await markPaid(event.data.object.id);}",
+      'webhook/unverified-signature', 'certain', 1],
+  ]
+  for (const [name, path, source, rule, confidence, status] of releaseCases) {
+    const target = sample(name, { [path]: source })
+    const checked = cli([target, '--json', '--all'])
+    assert.equal(checked.status, status, name)
+    const output = JSON.parse(checked.stdout)
+    assert.equal(output.version, version, name)
+    assert.equal(output.partial, false, name)
+    assert.deepEqual(output.findings.map(f => [f.ruleId, f.confidence]), [[rule, confidence]], name)
+    const verbose = cli([target, '--all', '--verbose'])
+    assert.equal(verbose.status, status, name)
+  }
   console.log(JSON.stringify({ version, packageFiles: expected.length, runtimeDependencies: 0, smoke: 'passed' }))
 } finally {
   // 仅移除本次创建的隔离安装与样本目录。
