@@ -204,7 +204,8 @@ function expressionEnd(code: string, from: number, limit: number, pairs: Map<num
 }
 
 interface Span { start: number; end: number }
-interface Assignment { at: number; pattern: string; names: string[]; expr: string; exprAt: number; iterate: boolean; append: boolean; declaration?: boolean; scope?: Span; controls?: Span[] }
+interface LocalFunction extends FunctionBody { usedAt: number }
+interface Assignment { at: number; pattern: string; names: string[]; expr: string; exprAt: number; iterate: boolean; append: boolean; declaration?: boolean; scope?: Span; controls?: Span[]; owner?: LocalFunction; indirect?: boolean }
 
 /** 仅接受平坦字面量表，不接受展开、访问器、调用或动态属性。 */
 function literalTable(text: string): boolean {
@@ -263,6 +264,7 @@ export class InputFlow {
     this.sourcePattern = sourceRegex(roles)
     const assignments = this.assignments().sort((a, b) => a.at - b.at)
     const region = code.slice(span.start, span.end)
+    const functions = this.localFunctions(region, assignments)
     const scopes: Span[] = [span]
     for (let i = span.start + 1; i < span.end; i++) {
       const end = code[i] === '{' ? pairs.get(i) : undefined
@@ -277,8 +279,11 @@ export class InputFlow {
       if (controls.length >= MAX_ASSIGNMENTS) { this.limited = true; break }
     }
     for (const a of assignments) {
-      // 嵌套函数中的赋值以该函数为作用域：内部使用可见；对外层使用只作为可能来源，不视为覆盖。
+      // 函数内赋值不直接覆盖外层；跨函数影响须有引用证据，并降为待复核。
+      const owner = functions.filter(f => f.start < a.at && a.at < f.end).at(-1)
+      if (owner) a.owner = owner
       a.scope = scopes.filter(s => s.start < a.at && a.at < s.end).at(-1) ?? span
+      if (a.owner && a.owner.start > a.scope.start) a.scope = a.owner
       a.controls = controls.filter(s => s.start <= a.at && a.at <= s.end)
       for (const name of a.names) {
         const list = this.assignmentList.get(name) ?? []
@@ -288,6 +293,40 @@ export class InputFlow {
     }
     const names = new Set([...this.parameters.keys(), ...this.assignmentList.keys()])
     if (names.size) this.references = new RegExp(`(?<![\\w$.])(?:${namePattern(names)})(?![\\w$])`, 'g')
+  }
+
+  /** 只索引当前处理函数；未引用的具名闭包不影响外层值。 */
+  private localFunctions(region: string, assignments: Assignment[]): LocalFunction[] {
+    const offset = this.span.start
+    const bodies = functionBodies(region, delimiterPairs(region)).map(f => ({
+      declaration: f.declaration + offset, start: f.start + offset, end: f.end + offset,
+    }))
+    for (const m of region.matchAll(/=>\s*(?!\s*\{)/g)) {
+      const start = offset + m.index + m[0].length
+      const end = expressionEnd(this.code, start, this.span.end, this.pairs, () => { this.limited = true })
+      bodies.push({ declaration: offset + m.index, start: start - 1, end })
+    }
+    if (bodies.length > MAX_ASSIGNMENTS) this.limited = true
+    return bodies.slice(0, MAX_ASSIGNMENTS).sort((a, b) => a.start - b.start).map(f => {
+      const binding = assignments.filter(a => {
+        if (!a.declaration || a.exprAt > f.declaration || a.exprAt + a.expr.length < f.end) return false
+        const prefix = this.code.slice(a.exprAt, f.declaration).trim()
+        // 只把函数表达式自身绑定到变量，不能借用 run(callback) 的返回值变量。
+        return prefix === '' || prefix === 'async' || /^(?:async\s*)?(?:\([^;{}]*\)|[\w$]+)\s*(?::[^=;{}]*)?$/.test(prefix)
+      }).sort((a, b) => b.exprAt - a.exprAt)[0]
+      const declared = /^function\s*\*?\s*([\w$]+)\s*\(/.exec(this.code.slice(f.declaration, f.start))?.[1]
+      const before = this.code.slice(this.span.start, f.declaration).trimEnd().replace(/\basync$/, '').trimEnd()
+      // 具名函数表达式作为实参时已传出，内部名称无需再被引用。
+      const name = binding?.names.length === 1 ? binding.names[0] : /[;{}]$/.test(before) ? declared : undefined
+      if (/^\s*\)*\s*(?:\(|\.\s*(?:call|apply)\s*\()/.test(this.code.slice(f.end + 1, this.span.end))) {
+        return { ...f, usedAt: f.end }
+      }
+      if (!name) return { ...f, usedAt: f.end }
+      const start = binding?.at ?? f.declaration
+      const reference = new RegExp(`(?<![\\w$.])${namePattern([name])}(?![\\w$])`, 'g')
+      const use = [...region.matchAll(reference)].find(m => offset + m.index < start || offset + m.index > f.end)
+      return { ...f, usedAt: use ? offset + use.index : Infinity }
+    })
   }
 
   /** 表达式是否携带请求输入；已转换为数值、布尔或查表结果的不算。 */
@@ -368,8 +407,10 @@ export class InputFlow {
       const a = list[i]!
       if (a.at >= at || a.exprAt + a.expr.length >= at) continue
       if (a.declaration ? a !== binding : bindingAt(a.at) !== binding) continue
-      result.push(a)
-      if (!a.append && contains(a.scope!, at) && a.controls!.every(s => contains(s, at))) break
+      const indirect = a.owner !== undefined && !contains(a.owner, at)
+      if (indirect && a.owner!.usedAt >= at) continue
+      result.push(indirect ? { ...a, indirect: true } : a)
+      if (!indirect && !a.append && contains(a.scope!, at) && a.controls!.every(s => contains(s, at))) break
     }
     return result
   }
@@ -391,7 +432,7 @@ export class InputFlow {
       const taint = this.builtOf(a.expr, a.exprAt, depth + 1) ?? this.taintOf(a.expr, a.exprAt, depth + 1)
       if (!taint) continue
       const own = this.targetsOf(a, taint).find(([target]) => target === name)
-      if (own) found = mergeTaint(found, { ...taint, ownUrl: own[1], names: new Set([name, ...taint.names]) })
+      if (own) found = mergeTaint(found, { ...taint, level: a.indirect ? 'derived' : taint.level, ownUrl: own[1], names: new Set([name, ...taint.names]) })
     }
     // 只有条件赋值时，原始参数仍可能到达使用处。
     if (this.parameters.has(name) && assignments.every(a => a.append || !a.scope || a.scope.start !== this.span.start || a.controls!.length)) {
@@ -422,7 +463,7 @@ export class InputFlow {
       const alias = /^[A-Za-z_$][\w$]*$/.test(a.expr.trim()) ? this.builtValue(a.expr.trim(), a.exprAt, depth + 1) : null
       const t = this.builtOf(a.expr, a.exprAt, depth + 1) ?? alias ?? (a.append ? this.taintOf(a.expr, a.exprAt, depth + 1) : null)
       if (alias) append(alias.text)
-      if (t) found = mergeTaint(found, t)
+      if (t) found = mergeTaint(found, a.indirect ? { ...t, level: 'derived' } : t)
     }
     return found ? { ...found, names: new Set([name, ...found.names]), text } : null
   }
@@ -697,5 +738,5 @@ export function handlerFileOf(file: ScanFile): HandlerFile | null {
 /** 追踪达到上限时记录一次扫描缺口；三条规则共用同一条记录，由引擎按规则与消息去重。 */
 export function reportInputLimit(ctx: ScanContext, file: ScanFile, analysed: HandlerFile): void {
   if (analysed.limited) ctx.reportIncomplete('request-input/tracking',
-    `${file.path} reached the request-input tracking limit (8 value hops, 512 assignments or control regions, 4000 expression characters, or bounded URL analysis)`)
+    `${file.path} reached the request-input tracking limit (8 value hops, 512 assignments or control/function regions, 4000 expression characters, or bounded URL analysis)`)
 }

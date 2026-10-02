@@ -8,7 +8,6 @@ export class LocalVerification {
   readonly source: string
   readonly pairs: Map<number, number>
   readonly bodies: FunctionBody[]
-  private openers: Map<number, number> | null = null
 
   constructor(file: ScanFile) {
     this.code = noiseMaskedOf(file)
@@ -44,28 +43,47 @@ export class LocalVerification {
     let at = this.skipSpace(from)
     if (this.code[at] !== '{') return /^(?:return|throw)\b|^(?:redirect|notFound)\s*\(/.test(this.code.slice(at, to))
     const end = Math.min(to, this.pairs.get(at) ?? to)
-    for (let i = at + 1; i < end; i++) {
-      const close = this.pairs.get(i)
-      if (close !== undefined) { i = close; continue }
-      if (/[\w$.]/.test(this.code[i - 1] ?? '')) continue
-      if (!/^(?:(?:return|throw)\b|(?:redirect|notFound)\s*\()/.test(this.code.slice(i, i + 16))) continue
-      if (!this.controlled(i, at)) return true
+    at = this.skipSpace(at + 1)
+    while (at < end) {
+      if (/^(?:return|throw)\b|^(?:redirect|notFound)\s*\(/.test(this.code.slice(at, at + 32))) return true
+      const next = this.statementEnd(at, end)
+      if (next <= at) return false
+      at = this.skipSpace(next)
     }
     return false
   }
 
-  /** 语句是否受无花括号的 if/else/for/while 控制，如 if (x) return。 */
-  private controlled(statement: number, blockStart: number): boolean {
-    let before = statement - 1
-    while (before > blockStart && /\s/.test(this.code[before]!)) before--
-    if (/\belse$/.test(this.code.slice(Math.max(blockStart, before - 4), before + 1))) return true
-    if (this.code[before] !== ')') return false
-    if (!this.openers) {
-      this.openers = new Map()
-      for (const [open, close] of this.pairs) this.openers.set(close, open)
+  /** 跳过完整语句；分支、循环和函数内的退出不提升为外层退出。 */
+  private statementEnd(at: number, limit: number, depth = 0): number {
+    if (depth >= 64) return limit
+    if (this.code[at] === '{') return (this.pairs.get(at) ?? limit - 1) + 1
+    const control = /^(if|for(?:\s+await)?|while|with|switch)\s*\(/.exec(this.code.slice(at, at + 80))
+    if (control) {
+      const close = this.pairs.get(at + control[0].length - 1)
+      if (close === undefined) return limit
+      let end = this.statementEnd(this.skipSpace(close + 1), limit, depth + 1)
+      const next = this.skipSpace(end)
+      if (control[1] === 'if' && /^else\b/.test(this.code.slice(next, next + 5))) {
+        end = this.statementEnd(this.skipSpace(next + 4), limit, depth + 1)
+      }
+      return end
     }
-    const open = this.openers.get(before)
-    return open !== undefined && /\b(?:if|for|while|with)\s*$/.test(this.code.slice(Math.max(blockStart, open - 8), open))
+    // 不展开异常控制流或 do 循环，避免 finally、break 等改变退出效果。
+    if (/^(?:try|do)\b/.test(this.code.slice(at, at + 8))) return limit
+    for (let i = at; i < limit; i++) {
+      if (this.code[i] === ';') return i + 1
+      const close = this.pairs.get(i)
+      if (close !== undefined) { i = close; continue }
+      if (this.code[i] !== '\n') continue
+      const before = this.code.slice(at, i).trimEnd()
+      const after = this.code.slice(i + 1, limit).trimStart()
+      if (!before || /[=+\-*/%&|^!?:,.([{<>]$/.test(before)) continue
+      if (/^[.?+\-*/%&|^,:<>=([{`]/.test(after)) continue
+      // 箭头函数体以及声明头部允许换行，不能据此产生新语句。
+      if (/\b(?:const|let|var|function|async|await|new|yield)$/.test(before)) continue
+      return i + 1
+    }
+    return limit
   }
 
   /** 验证与使用须在同一函数，且不能依赖可选分支或被吞掉的异常。 */

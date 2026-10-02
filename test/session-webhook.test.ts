@@ -30,6 +30,24 @@ const summary = (list: Finding[]) => list.map(f => [f.ruleId, f.line, f.confiden
 const ADMIN = "import { createClient } from '@supabase/supabase-js'\n" +
   'const admin = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)\n'
 
+for (const exit of ["flag && redirect('/login');", "const unused = () => redirect('/login');", 'for await (const item of items) return null;']) {
+  test(`an optional exit cannot verify a session or webhook: ${exit}`, async () => {
+    const session = await findings({ 'app/dashboard/page.tsx': `export default async function Page(){
+      const {data:{session}}=await supabase.auth.getSession();
+      const {data:{user}}=await supabase.auth.getUser(); if(!user){${exit}}
+      if(!session)return null; return session.user.id;
+    }` })
+    assert.deepEqual(session.map(f => f.ruleId), ['auth/unverified-session'])
+    const webhook = await findings({ 'app/api/webhooks/route.ts': `import Stripe from 'stripe';
+      export async function POST(req){ const body=await req.text(); let event;
+        try { event=stripe.webhooks.constructEvent(body, req.headers.get('stripe-signature'), process.env.STRIPE_WEBHOOK_SECRET); }
+        catch(error) { ${exit} }
+        if(event.type==='invoice.paid') await markPaid(event.data.object.id);
+      }` })
+    assert.deepEqual(webhook.map(f => f.ruleId), ['webhook/unverified-signature'])
+  })
+}
+
 for (const check of [
   'const unused = () => supabase.auth.getUser();',
   'supabase.auth.getUser();',

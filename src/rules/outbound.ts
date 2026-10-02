@@ -89,7 +89,7 @@ function controlsStart(expr: string, at: number, flow: InputFlow, source: string
     for (const a of assignments) {
       const t = controlsStart(a.expr, a.exprAt, flow, source, kind, depth + 1)
       // 记下变量名，使用前对它的检查才能被识别。
-      if (t) return { ...t, names: new Set([...t.names, text]) }
+      if (t) return { ...t, level: a.indirect ? 'derived' : t.level, names: new Set([...t.names, text]) }
     }
     return null
   }

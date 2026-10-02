@@ -590,7 +590,7 @@ async function main(): Promise<void> {
       // 提示写入标准错误，避免破坏 JSON 或修复指令输出。
       if (args.open) {
         if (canOpen(process.env, process.stdout.isTTY === true)) {
-          openReport(target, message => process.stderr.write(`canship: ${cleanForOutput(message)}\n`))
+          openReport(target, message => process.stderr.write(`canship: ${cleanForOutput(message)}\n`), { root: args.root })
         } else {
           process.stderr.write('canship: not opening the report in CI or a non-interactive session\n')
         }

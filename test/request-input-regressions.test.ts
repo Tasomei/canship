@@ -9,6 +9,27 @@ import type { ProjectRule } from '../src/types.js'
 const path = 'app/api/items/route.ts'
 const sql = (prefix: string, value = 'id') => `export async function POST(req) { ${prefix}; return prisma.$queryRawUnsafe('SELECT * FROM items WHERE id = ' + ${value}); }`
 
+for (const [setup, confidence] of [
+  ['function unused() { id = req.body.id; }', null],
+  ['const unused = () => { id = req.body.id; };', null],
+  ['const unused = () => id = req.body.id;', null],
+  ['function unused() { id = req.body.id; unused(); }', null],
+  ['function update() { id = req.body.id; } update();', 'likely'],
+  ['const update = () => { id = req.body.id; }; update();', 'likely'],
+  ['const update = () => id = req.body.id; update();', 'likely'],
+  ['function update() { id = req.body.id; } run(update);', 'likely'],
+  ['await run(() => { id = req.body.id; });', 'likely'],
+  ['const result = run(() => { id = req.body.id; });', 'likely'],
+  ['const result = run(function update() { id = req.body.id; });', 'likely'],
+  ['(function update() { id = req.body.id; })();', 'likely'],
+] as const) {
+  test(`nested writes need a use outside their declaration: ${setup}`, async () => {
+    const result = await evaluateCase({ id: 'nested-write', origin: 'synthetic', files: { [path]: sql(`let id = 1; ${setup}`) },
+      expected: confidence ? [{ ruleId: 'injection/sql', file: path, severity: 'P1', confidence }] : [] })
+    assert.equal(result.passed, true, JSON.stringify(result))
+  })
+}
+
 for (const value of ["body['id']", 'body.ids[0]', "req['body']['id']"]) {
   test(`bracket access retains request input: ${value}`, async () => {
     const result = await evaluateCase({ id: 'bracket', origin: 'synthetic', files: { [path]: sql(`const body = await req.json(); const id = ${value}`) },
@@ -85,6 +106,29 @@ function analyse(content: string, rule: ProjectRule) {
     reportIncomplete(id) { incomplete.push(id) } })
   return { findings, incomplete }
 }
+
+for (const called of [false, true]) {
+  test(`outbound flow applies the same closure boundary: called=${called}`, async () => {
+    const { findings } = analyse(`export async function GET(req) {
+      let url = 'https://example.com'; function update(){ url=req.body.url; }
+      ${called ? 'update();' : ''} return fetch(url);
+    }`, ssrfRule)
+    assert.deepEqual((await findings).map(f => f.confidence), called ? ['likely'] : [])
+  })
+}
+
+test('an uncalled expression closure cannot sanitize the outer value', async () => {
+  const { findings } = analyse(sql('let id=req.body.id; const unused=()=>id=1;'), injectionRule)
+  assert.deepEqual((await findings).map(f => f.confidence), ['certain'])
+})
+
+test('a reference after the query does not make an earlier closure assignment visible', async () => {
+  const { findings } = analyse(`export async function POST(req) {
+    let id=1; function update(){id=req.body.id;}
+    await prisma.$queryRawUnsafe('SELECT * FROM items WHERE id='+id); update();
+  }`, injectionRule)
+  assert.deepEqual(await findings, [])
+})
 
 for (const [command, options, expected] of [
   ["'echo ' + body.message", '', 0],
