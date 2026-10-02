@@ -14,14 +14,9 @@ npx canship
 
 默认扫描当前目录，也可指定项目路径。要求 Node.js ≥18，无运行时依赖。安装可能联网；Git 检查仅读取本地历史，仓库历史无法读取时标记扫描不完整。
 
-<details>
-<summary>输出示例：开发分支，示例数据</summary>
+输出示例：开发分支，示例数据。
 
 ![终端报告](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/terminal.png)
-
-![HTML 报告](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
-
-</details>
 
 ## 检测范围
 
@@ -52,6 +47,8 @@ npx canship
 ## 结果
 
 报告正文为英文。终端按文件分组，`--verbose` 展开摘录、说明、证据和修复步骤。HTML 为自包含离线报告，支持筛选、分组、人工操作清单及修复提示复制。
+
+![HTML 报告](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
 
 `certain` 表示静态证据充分，`likely` 需人工审阅；测试和示例中的结果降为 `likely`。默认仅展示 `certain`，`--all` 显示全部。置信度不验证凭据有效性或运行时行为。
 

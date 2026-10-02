@@ -14,14 +14,9 @@ npx canship
 
 Scans the current directory; pass a path to scan another project. Requires Node.js ≥18; no runtime dependencies. Installation may use the network. Git checks read local history; inaccessible repository history marks coverage incomplete.
 
-<details>
-<summary>Output examples — development build, sample data</summary>
+Output examples — development build, sample data.
 
 ![Terminal report](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/terminal.png)
-
-![HTML report](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
-
-</details>
 
 ## Checks
 
@@ -52,6 +47,8 @@ SvelteKit page loads, remote functions, and standalone Express/Hono/Fastify hand
 ## Results
 
 Reports are in English. The terminal groups findings by file; `--verbose` adds excerpts, explanations, evidence, and fixes. HTML is a self-contained offline report with filters, grouping, manual steps, and copyable fix prompts.
+
+![HTML report](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
 
 `certain` indicates strong static evidence; `likely` requires review. Tests and examples are downgraded to `likely`. Default output shows only `certain`; `--all` includes both. Neither confidence level verifies credentials or runtime behaviour.
 
