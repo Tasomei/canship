@@ -118,7 +118,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@97c14d1f1e494a49adf716c455b597edf6ae1d88
+      - uses: Tasomei/canship@7dfebc9502b786edd5c7fd71266e4926d0ad764b
         with:
           version: '0.6.0'
           honor-ignore-markers: false
@@ -128,7 +128,7 @@ The commit hash pins the Action implementation; `version` selects the npm scanne
 
 | Input | Default | Meaning |
 |---|---|---|
-| `version` | `0.5.0` | Exact npm scanner version |
+| `version` | `0.6.0` | Exact npm scanner version |
 | `fail-on` | `blocking` | `blocking`: certain P0/P1; `any`: all findings; `none`: report only |
 
 Incomplete scans and tool errors always fail. Project configuration and SARIF upload are disabled by default. Inputs and outputs: [action.yml](./action.yml).
