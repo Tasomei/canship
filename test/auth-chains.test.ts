@@ -63,14 +63,18 @@ test('a shadowed delegate does not borrow the imported guard', async () => {
   assert.equal(finding.confidence, 'certain')
 })
 
-test('overlong delegation is disclosed and remains blocking', async () => {
+// 解析上限只影响置信度，不会隐藏结果，因此在结果上附注，而不把整次扫描标为不完整。
+const LIMIT_NOTE = /stopped following local helpers in this file at its limit/
+
+test('overlong delegation is noted on the finding and remains blocking', async () => {
   const modules: Record<string, string> = { 'lib/entry.ts': "export {step as guard} from './step0';" }
   for (let i = 0; i < 10; i++) modules[`lib/step${i}.ts`] = i === 9
     ? base.replace('checkSession', 'step')
     : `import {step as next} from './step${i + 1}';export async function step(){await next();}`
   const { finding, errors } = await analyze(modules)
   assert.equal(finding.confidence, 'certain')
-  assert.ok(errors.some(message => message.includes('authentication resolution limit')))
+  assert.ok(finding.why.some(paragraph => LIMIT_NOTE.test(paragraph)))
+  assert.deepEqual(errors, [])
 })
 
 test('an eight-function delegation chain is accepted at the depth boundary', async () => {
@@ -87,7 +91,7 @@ test('an eight-function delegation chain is accepted at the depth boundary', asy
   assert.deepEqual(errors, [])
 })
 
-test('wide re-export graphs stop at the symbol budget', async () => {
+test('wide re-export graphs stop at the per-helper symbol budget', async () => {
   const modules: Record<string, string> = { 'lib/entry.ts': '' }
   for (let i = 0; i < 140; i++) {
     modules['lib/entry.ts'] += `export * from './stub${i}';\n`
@@ -95,8 +99,47 @@ test('wide re-export graphs stop at the symbol budget', async () => {
   }
   const { finding, errors } = await analyze(modules)
   assert.equal(finding.confidence, 'certain')
-  assert.equal(errors.length, 1)
-  assert.match(errors[0]!, /128 symbols/)
+  assert.ok(finding.why.some(paragraph => LIMIT_NOTE.test(paragraph) && /64 symbols per helper/.test(paragraph)))
+  assert.deepEqual(errors, [])
+})
+
+/** 一个只做业务的辅助函数，经宽重导出图解析，会耗尽一个辅助函数的预算。 */
+function heavyHelpers(count: number): Record<string, string> {
+  const modules: Record<string, string> = { 'lib/heavy.ts': '' }
+  for (let h = 0; h < count; h++) modules['lib/heavy.ts'] += `export * from './wide${h}';\n`
+  for (let h = 0; h < count; h++) {
+    modules[`lib/wide${h}.ts`] = Array.from({ length: 80 }, (_, i) => `export * from './leaf${h}_${i}';`).join('\n')
+    for (let i = 0; i < 80; i++) modules[`lib/leaf${h}_${i}.ts`] = 'export const value=1;'
+  }
+  return modules
+}
+
+test('business helpers resolved first do not use up the budget of the real guard', async () => {
+  const names = Array.from({ length: 20 }, (_, i) => `trackSale${i}`)
+  const { finding, errors } = await analyze({
+    ...heavyHelpers(20),
+    'lib/entry.ts': "import {checkSession} from './base';export async function checkAccess(){await checkSession();}",
+    'app/api/items/route.ts': `import {db} from '../../../lib/db';import {${names.join(',')}} from '../../../lib/heavy';` +
+      "import {checkAccess} from '../../../lib/entry';" +
+      `export async function DELETE(){${names.map(name => `await ${name}();`).join('')}await checkAccess();await db.from('items').delete();}`,
+  })
+  assert.equal(finding.confidence, 'likely')
+  assert.ok(finding.evidence?.some(step => step.kind === 'auth-helper' && step.file === 'lib/entry.ts'))
+  assert.deepEqual(errors, [])
+})
+
+test('a wrapper around the exported handler is resolved before other calls', async () => {
+  const names = Array.from({ length: 20 }, (_, i) => `syncData${i}`)
+  const { finding, errors } = await analyze({
+    ...heavyHelpers(20),
+    'lib/entry.ts': "import {checkSession} from './base';" +
+      'export function withTeam(handler){return async (...args)=>{await checkSession();return handler(...args);};}',
+    'app/api/items/route.ts': `import {db} from '../../../lib/db';import {${names.join(',')}} from '../../../lib/heavy';` +
+      "import {withTeam} from '../../../lib/entry';" +
+      `export const DELETE = withTeam(async () => {${names.map(name => `await ${name}();`).join('')}await db.from('items').delete();});`,
+  })
+  assert.equal(finding.confidence, 'likely')
+  assert.deepEqual(errors, [])
 })
 
 for (const declaration of ['const', 'let']) {

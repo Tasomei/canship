@@ -1292,27 +1292,49 @@ function delegatedGuard(file: ScanFile, candidate: GuardCandidate, allFiles: Sca
   return selected ? { ...candidate.definition, requiredArgs, chain: [selected, ...(selected.chain ?? [])] } : null
 }
 
-/** 仅为实际调用位置提供间接鉴权提示，不删除原始发现。 */
-function indirectGuardOperations(route: Route, ctx: ScanContext): Map<number, GuardDefinition> {
-  const state: GuardResolution = { remaining: 128, truncated: false }
+/** 每个被调用名称单独的解析预算，以及每个路由文件的总量上限；业务函数不会耗尽真正鉴权函数的预算。 */
+const HELPER_BUDGET = 64
+const ROUTE_BUDGET = 1024
+
+/** 最可能承担鉴权的名称：名称含鉴权相关词，或 with 开头的包装函数。 */
+const AUTH_HELPER_NAME = /auth|session|user|admin|guard|protect|verify|require|permission|role|access|owner|member|login|sign[_-]?in|token|^with[A-Z]/i
+
+/** 包住导出处理函数的包装函数：export const POST = withAdmin(…)、export default withAuth(…)。 */
+const EXPORT_WRAPPER = /\bexport\s+(?:const\s+(?:[A-Za-z_$][\w$]*|\{[^{}]{0,500}\})\s*(?::[^=;]{0,200})?=|default)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*(?:<[^()]{0,200}>\s*)?\(/g
+
+interface IndirectGuards { ops: Map<number, GuardDefinition>; truncated: boolean }
+
+/**
+ * 仅为实际调用位置提供间接鉴权提示，不删除原始发现。解析结果只影响证据与置信度，
+ * 达到上限不会隐藏结果，因此由调用方在结果上附注，而不把整次扫描标为不完整。
+ */
+function indirectGuardOperations(route: Route, ctx: ScanContext): IndirectGuards {
   const { called } = guardBindings(route.file)
+  const wrappers = new Set([...noiseMaskedOf(route.file).matchAll(EXPORT_WRAPPER)].map(m => m[1]!))
+  const rank = (name: string): number => wrappers.has(name) ? 0 : AUTH_HELPER_NAME.test(name) ? 1 : 2
+  // 稳定排序：同一档内保持源码中的调用顺序。
+  const ordered = [...called].sort((a, b) => rank(a) - rank(b))
   const names = new Map<string, GuardDefinition>()
-  for (const name of called) {
-    if (state.remaining <= 0) { state.truncated = true; break }
+  let total = ROUTE_BUDGET
+  let truncated = false
+  for (const name of ordered) {
+    if (total <= 0) { truncated = true; break }
+    const budget = Math.min(HELPER_BUDGET, total)
+    const state: GuardResolution = { remaining: budget, truncated: false }
     const definition = namedGuard(route.file, name, ctx.files, route.scope, state, 0, new Set())
+    total -= budget - Math.max(0, state.remaining)
+    if (state.truncated) truncated = true
     if (definition) names.set(name, definition)
   }
-  if (state.truncated) ctx.reportIncomplete('api/db-access-without-auth',
-    `${route.file.path} reached the authentication resolution limit (8 hops or 128 symbols); unresolved guards were not accepted`)
   const protectedOps = new Map<number, GuardDefinition>()
-  if (names.size === 0) return protectedOps
+  if (names.size === 0) return { ops: protectedOps, truncated }
   unguardedOperations(route.file, unguardedOpsOf(route.file), {
     guards: new Set([...names].filter(([, definition]) => !definition.wrapper).map(([name]) => name)),
     wrappers: new Set([...names].filter(([, definition]) => definition.wrapper).map(([name]) => name)),
     requirements: new Map([...names].map(([name, guard]) => [name, guard.requiredArgs ?? []])),
     onGuard: (index, name) => { const definition = names.get(name); if (definition) protectedOps.set(index, definition) },
   })
-  return protectedOps
+  return { ops: protectedOps, truncated }
 }
 
 // 识别实际数据操作。
@@ -1821,18 +1843,19 @@ export const apiAuthRule: ProjectRule = {
     const adminModules = ctx.files.filter(buildsAdminClient)
     const sessionModules = ctx.files.filter(buildsSessionClient)
     const findings: Finding[] = []
-    const indirectByFile = new Map<ScanFile, Map<number, GuardDefinition>>()
+    const indirectByFile = new Map<ScanFile, IndirectGuards>()
 
     for (const route of routes) {
       const reachable = route.reachable
       const unguarded = unguardedOpsOf(route.file)
       let ops = reachable === undefined ? unguarded : operationsInRange(unguarded, reachable.start, reachable.end)
       if (ops.length === 0) continue
-      let indirectOps = indirectByFile.get(route.file)
-      if (!indirectOps) {
-        indirectOps = indirectGuardOperations(route, ctx)
-        indirectByFile.set(route.file, indirectOps)
+      let indirectGuards = indirectByFile.get(route.file)
+      if (!indirectGuards) {
+        indirectGuards = indirectGuardOperations(route, ctx)
+        indirectByFile.set(route.file, indirectGuards)
       }
+      const indirectOps = indirectGuards.ops
       const unprotected = ops.filter(op => !indirectOps.has(op.index))
       if (unprotected.length > 0) ops = unprotected
 
@@ -1853,6 +1876,10 @@ export const apiAuthRule: ProjectRule = {
       if (/\.auth\s*\.\s*getSession\s*\(/.test(handlerCode)) globalNote.push(
         'This handler checks supabase.auth.getSession(). On the server that reads the session from the cookie without ' +
           'verifying it, so a forged cookie passes; it is not counted as authentication. Use supabase.auth.getClaims() or getUser() instead.')
+
+      if (indirectGuards.truncated) globalNote.push(
+        'The scan stopped following local helpers in this file at its limit (8 hops, 64 symbols per helper, 1,024 per file). ' +
+          'Unfollowed helpers cannot hide a finding, but if one of them enforces authentication for this operation, treat this as a finding to review.')
 
       const admin = usesAdminClient(route, adminModules, ctx.files)
       // 存在写操作时优先用其作为证据。

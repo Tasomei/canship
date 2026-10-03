@@ -154,7 +154,7 @@ JSON uses [schemaVersion 1](./schemas/scan-report-v1.schema.json). Check `partia
 - Redaction covers recognised formats only. Unknown secrets may remain in excerpts; `--no-excerpts` omits excerpts. Paths, names, and baseline descriptions remain visible.
 - Google/Firebase/Maps `AIza…` keys are treated as public identifiers, not leak evidence alone. Supabase checks use local migrations and supported bucket configuration.
 - Evaluation snapshot downloads and optional SARIF uploads may use the network.
-- Symbolic links are not followed; nested repositories and submodules need separate scans. In-scope skipped paths and analysis limits mark coverage incomplete. Dependency and build directories excluded by default do not count as coverage gaps.
+- Symbolic links are not followed; nested repositories and submodules need separate scans. In-scope skipped paths and analysis limits mark coverage incomplete; auth helper resolution limits are noted on the affected finding instead, because they cannot hide findings. Dependency and build directories excluded by default do not count as coverage gaps.
 
 | Limit | Bound |
 |---|---|
@@ -162,7 +162,7 @@ JSON uses [schemaVersion 1](./schemas/scan-report-v1.schema.json). Check `partia
 | Directory discovery | 50,000 entries; 16 levels |
 | Findings | 100 per file, prioritising severity and confidence |
 | Git history | 100 relevant revisions per file; 30 seconds per command |
-| Auth resolution | 8 hops; 128 symbols per route file |
+| Auth helper resolution | 8 hops; 64 symbols per helper, 1,024 per route file |
 | Identity/control flow | 8 value hops; 4,000 expression characters; 512 assignments/regions per function; 8 nested regions |
 | Request-input tracking | 8 value hops; 512 assignments/regions; 64 KiB per expression; 8 URL-analysis levels; 200 static-prefix characters |
 | Supabase policy/bucket parsing | 4,000 characters per statement |

@@ -68,7 +68,7 @@ test('a helper returning an unused denial response still blocks in the CLI', () 
   assert.equal(report.findings[0].confidence, 'certain')
 })
 
-test('resolution limits survive JSON and SARIF output and obey rule selection', () => {
+test('resolution limits are noted on the finding without marking JSON or SARIF output incomplete', () => {
   const files: Record<string, string> = { 'lib/auth.ts': "export {step as guard} from './step0';" }
   for (let i = 0; i < 10; i++) files[`lib/step${i}.ts`] = i === 9 ? `export async function step(){${body}}`
     : `import {step as next} from './step${i + 1}';export async function step(){await next();}`
@@ -76,10 +76,12 @@ test('resolution limits survive JSON and SARIF output and obey rule selection', 
   const sarif = join(sandbox, 'limit.sarif')
   const { status, report } = run(root, '--all', `--sarif=${sarif}`)
   assert.equal(status, 1)
-  assert.equal(report.partial, true)
-  assert.ok(report.errors.some((error: { message: string }) => error.message.includes('authentication resolution limit')))
+  assert.equal(report.partial, false)
+  assert.deepEqual(report.errors, [])
+  assert.ok(report.findings.some((finding: { why: string[] }) =>
+    finding.why.some(paragraph => paragraph.includes('stopped following local helpers in this file at its limit'))))
   const invocation = JSON.parse(readFileSync(sarif, 'utf8')).runs[0].invocations[0]
-  assert.equal(invocation.executionSuccessful, false)
+  assert.equal(invocation.executionSuccessful, true)
   const excluded = run(root, '--only=secrets')
   assert.equal(excluded.status, 0)
   assert.equal(excluded.report.partial, false)
