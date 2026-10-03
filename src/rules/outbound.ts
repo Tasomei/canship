@@ -6,7 +6,7 @@ import type { Finding, ProjectRule, ScanContext, ScanFile } from '../types.js'
 import { lineNumberAt } from './offsets.js'
 import { argumentExpressions } from './auth-values.js'
 import type { Route } from './apiauth.js'
-import { handlerFileOf, lowerBound, reportInputLimit, type HandlerFile, type InputFlow, type Taint } from './request-input.js'
+import { MAX_EXPRESSION, handlerFileOf, lowerBound, reportInputLimit, type HandlerFile, type InputFlow, type Taint } from './request-input.js'
 
 /** 服务端 HTTP 客户端：fetch、Nuxt 的 $fetch/ofetch、axios、got、ky、needle 及 Node http(s)。 */
 const FETCH_CALL = /(?<![\w$.])(?:fetch|\$fetch|ofetch|axios|got|ky|needle)\s*(?:<[^()]{0,200}>\s*)?\(/g
@@ -46,8 +46,18 @@ function controlsStart(expr: string, at: number, flow: InputFlow, source: string
   const start = at + lead
   if (text === '') return null
   if (depth >= 8) { flow.limited = true; return null }
-  if (text.length > 4000) { flow.limited = true; return null }
+  if (text.length > MAX_EXPRESSION) { flow.limited = true; return null }
   const open = (prefix: string): boolean => HOST_OPEN.test(prefix) || (kind === 'redirect' && REDIRECT_OPEN.test(prefix))
+
+  // a ? b : c、a ?? b、a || b：目标可能是任一分支，逐个判断；条件本身不是目标。
+  const branches = alternativesOf(text)
+  if (branches) {
+    for (const branch of branches) {
+      const t = controlsStart(branch.text, start + branch.at, flow, source, kind, depth + 1)
+      if (t) return t
+    }
+    return null
+  }
 
   // new URL(input, base)：输入为绝对地址或 // 开头时基址被忽略。
   const url = /^new\s+URL\s*\(/.exec(text)
@@ -61,7 +71,7 @@ function controlsStart(expr: string, at: number, flow: InputFlow, source: string
       return first === undefined ? null : controlsStart(first, argsStart, flow, source, 'redirect', depth + 1)
     }
   }
-  if (text.startsWith('\x60')) return templateStart(text, start, flow, source, open)
+  if (text.startsWith('\x60')) return templateStart(text, start, flow, source, open, kind, depth)
 
   const operands = flow.operandsOf(text, start)
   if (operands.length > 1) {
@@ -70,7 +80,7 @@ function controlsStart(expr: string, at: number, flow: InputFlow, source: string
       const inner = operand.text.trim()
       if (/^['"]/.test(inner)) { prefix += source.slice(operand.at + operand.text.indexOf(inner) + 1, operand.at + operand.text.indexOf(inner) + inner.length - 1); continue }
       const t = inner.startsWith('\x60')
-        ? templateStart(inner, operand.at + operand.text.indexOf(inner), flow, source, open)
+        ? templateStart(inner, operand.at + operand.text.indexOf(inner), flow, source, open, kind, depth)
         : controlsStart(inner, operand.at + operand.text.indexOf(inner), flow, source, kind, depth + 1)
       if (t) return open(prefix) ? t : null
       prefix += 'X'
@@ -87,6 +97,12 @@ function controlsStart(expr: string, at: number, flow: InputFlow, source: string
       return t && !t.ownUrl ? t : null
     }
     for (const a of assignments) {
+      // 解构或遍历得到的是右侧的一部分，按统一的取值规则判断（含未知函数返回值的字段）。
+      if (a.iterate || /^[{[]/.test(a.pattern.trim())) {
+        const t = flow.valueOf(text, at)
+        if (t && !t.ownUrl) return t
+        continue
+      }
       const t = controlsStart(a.expr, a.exprAt, flow, source, kind, depth + 1)
       // 记下变量名，使用前对它的检查才能被识别。
       if (t) return { ...t, level: a.indirect ? 'derived' : t.level, names: new Set([...t.names, text]) }
@@ -98,8 +114,50 @@ function controlsStart(expr: string, at: number, flow: InputFlow, source: string
   return t && !t.ownUrl ? t : null
 }
 
+/**
+ * 顶层三元表达式的两个结果分支，或 ?? 与 || 的各操作数；不含这些运算时返回空值。
+ * 文本已屏蔽字符串内容，括号内部及可选链 ?. 不参与拆分。
+ */
+function alternativesOf(text: string): Array<{ text: string; at: number }> | null {
+  const top: number[] = []
+  let depth = 0
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!
+    if ('([{'.includes(ch)) depth++
+    else if (')]}'.includes(ch)) depth--
+    else if (depth === 0) top.push(i)
+  }
+  const at = (i: number): string => (top.includes(i) ? text[i]! : '')
+  // 三元：第一个顶层 ?（不是 ?. 或 ??），再找同层配对的 :。
+  for (const i of top) {
+    if (text[i] !== '?' || text[i + 1] === '.' || text[i + 1] === '?' || text[i - 1] === '?') continue
+    let nested = 0
+    for (const j of top) {
+      if (j <= i) continue
+      if (text[j] === '?' && text[j + 1] !== '.' && text[j + 1] !== '?' && text[j - 1] !== '?') nested++
+      else if (text[j] === ':' && nested-- === 0) {
+        return [{ text: text.slice(i + 1, j), at: i + 1 }, { text: text.slice(j + 1), at: j + 1 }]
+      }
+    }
+    return null
+  }
+  const parts: Array<{ text: string; at: number }> = []
+  let from = 0
+  for (const i of top) {
+    const pair = at(i) + at(i + 1)
+    if ((pair === '??' || pair === '||') && i >= from) {
+      parts.push({ text: text.slice(from, i), at: from })
+      from = i + 2
+    }
+  }
+  if (parts.length === 0) return null
+  parts.push({ text: text.slice(from), at: from })
+  return parts
+}
+
 /** 模板：静态文本取原文，非输入插值记作 X，遇到第一个输入插值时按已有前缀判断。 */
-function templateStart(text: string, start: number, flow: InputFlow, source: string, open: (prefix: string) => boolean): Taint | null {
+function templateStart(text: string, start: number, flow: InputFlow, source: string, open: (prefix: string) => boolean,
+  kind: Kind, depth: number): Taint | null {
   let prefix = ''
   for (let i = 1; i < text.length; i++) {
     if (text[i] === '\x60') return null
@@ -107,7 +165,11 @@ function templateStart(text: string, start: number, flow: InputFlow, source: str
       const close = matchingBrace(text, i + 1)
       if (close === null) return null
       const t = flow.taintOf(text.slice(i + 2, close), start + i + 2)
-      if (t && !t.ownUrl) return open(prefix) ? t : null
+      if (t && !t.ownUrl) {
+        if (!open(prefix)) return null
+        // 模板以该插值开头时，目标的开头就是插值自身的开头，如 `${base}&token=…` 中 base 以固定路径开头。
+        return prefix === '' ? controlsStart(text.slice(i + 2, close), start + i + 2, flow, source, kind, depth + 1) : t
+      }
       prefix += 'X'
       i = close
       continue
@@ -235,6 +297,8 @@ function check(ctx: ScanContext, kind: Kind): Finding[] {
     const positions = calls.map(call => call.at)
     const reported = new Set<number>()
     for (const { route, body, flow } of analysed.handlersAround(positions)) {
+      // Server Function 只能由页面脚本以 POST 调用并受 Origin 校验，链接无法替他人触发其中的跳转。
+      if (kind === 'redirect' && route.action !== undefined) continue
       // 只看落在该函数内的调用。
       for (let i = lowerBound(positions, body.start + 1); i < calls.length && calls[i]!.at < body.end; i++) {
         const call = calls[i]!

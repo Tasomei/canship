@@ -148,9 +148,10 @@ for (const [command, options, expected] of [
   })
 }
 
+// 上限为 64 KiB：超过后才报告扫描不完整，普通的长回调不触发。
 test('long expressions disclose truncation', async () => {
   const content = 'export async function POST(req) { const id = req.body.id; const query = `SELECT * FROM items WHERE note = "' +
-    'x'.repeat(4100) + '" AND id = ${id}`; return prisma.$queryRawUnsafe(query); }'
+    'x'.repeat(66000) + '" AND id = ${id}`; return prisma.$queryRawUnsafe(query); }'
   const { incomplete } = analyse(content, injectionRule)
   assert.deepEqual(incomplete, ['request-input/tracking'])
 })

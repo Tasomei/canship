@@ -22,6 +22,11 @@ export interface Taint {
    * 注入仍按输入处理；判断请求能否改变外部请求或跳转的目标主机时不算。
    */
   ownUrl: boolean
+  /**
+   * 值是未知函数的返回结果（如用输入查询数据库得到的行）。整体使用仍保留待复核；
+   * 取其属性或解构出的字段是函数产出的数据，不再视为请求输入。
+   */
+  opaque?: boolean
 }
 
 /** 处理函数参数的角色：请求对象、URL 对象、Cookie 对象，或本身即为调用方可控的值。 */
@@ -34,7 +39,11 @@ export interface ParamRoles {
 
 const MAX_VALUE_HOPS = 8
 const MAX_ASSIGNMENTS = 512
-const MAX_EXPRESSION = 4000
+/**
+ * 单条表达式的分析上限。表达式终点靠括号配对跳转查找，开销与长度近似线性；
+ * 现代代码中包含长回调的调用很常见，上限过低会把普通文件误报为扫描不完整。
+ */
+export const MAX_EXPRESSION = 65536
 
 /** 常见请求对象参数名：Next.js、Remix、Astro 的 request/context，Pages Router 的 req，Nuxt/h3 的 event。 */
 const REQUEST_OBJECT_NAMES = /^(?:req|request|event|evt|ctx|context)$/
@@ -73,11 +82,78 @@ const CLEAN_EXPRESSION = [
   /^(?:await\s+)?(?!String\s*\.\s*raw\b)[\w$]+(?:\s*\.\s*[\w$]+)*\s*\x60/,
 ]
 
+/** 返回值与传入数据相同的校验和复制函数；其余未知函数的返回值视为函数自己产出的数据。 */
+const MIRROR_CALLS = new Set([
+  'parse', 'safeParse', 'parseAsync', 'safeParseAsync', 'validate', 'validateSync', 'validateAsync', 'cast',
+  'structuredClone', 'clone', 'assign',
+])
+
+/** 不改变值内容的成员访问：对返回值调用这些仍等于使用返回值本身。 */
+const VALUE_MEMBERS = /^\s*\??\.\s*(?:toString|valueOf|href|trim|trimStart|trimEnd|toLowerCase|toUpperCase|normalize)\b/
+
+/** 请求的 Host 头：路由到本站的主机名，按本站地址处理。 */
+const HOST_HEADER = /^\s*(?:\??\.\s*get\s*\(\s*['"](?:x-forwarded-)?host['"]\s*\)|\??\.\s*host\b|\[\s*['"](?:x-forwarded-)?host['"]\s*\])/i
+
 /** 请求自身 URL 中调用方可控的部分；主机、协议等部分由本站决定。 */
 const URL_INPUT_ACCESS = /\??\.\s*(?:searchParams|pathname|search|hash)\b/
 const URL_INPUT_KEYS = new Set(['searchParams', 'pathname', 'search', 'hash'])
 const URL_ORIGIN_ACCESS = /^\s*\??\.\s*(?:origin|host|hostname|protocol|port)\b/
 const URL_ORIGIN_KEYS = new Set(['origin', 'host', 'hostname', 'protocol', 'port'])
+
+/** 从 open 处的括号起找到配对的右括号；文本已屏蔽字符串内容。 */
+function closeOf(text: string, open: number): number {
+  const pairs: Record<string, string> = { '(': ')', '[': ']', '{': '}' }
+  const stack: string[] = []
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i]!
+    if (pairs[ch]) stack.push(pairs[ch])
+    else if (ch === stack[stack.length - 1]) { stack.pop(); if (stack.length === 0) return i }
+  }
+  return -1
+}
+
+/**
+ * 表达式整体是否为一次调用：可带 await、new、外层括号及调用后的成员访问，如 (await db.find(id)).url。
+ * 返回最后一次调用的函数名，以及调用之后是否还有成员访问；其他形式返回空值。
+ */
+function callResultOf(expression: string): { callee: string; members: boolean } | null {
+  const text = expression.trim().replace(/\s+as\s+[\w$.<>[\]| ]+$/, '').replace(/^(?:(?:await|new)\s+)+/, '')
+  let i = 0
+  let callee: string | null = null
+  let members = false
+  if (text[0] === '(') {
+    const close = closeOf(text, 0)
+    if (close === -1) return null
+    const inner = callResultOf(text.slice(1, close))
+    if (!inner || inner.members) return null
+    callee = inner.callee
+    i = close + 1
+  } else {
+    const head = /^[A-Za-z_$][\w$]*/.exec(text)
+    if (!head) return null
+    i = head[0].length
+  }
+  let last = callee === null ? text.slice(0, i) : callee
+  while (i < text.length) {
+    const rest = text.slice(i)
+    const member = /^\s*(?:\??\.)\s*([A-Za-z_$][\w$]*)/.exec(rest)
+    if (member) { last = member[1]!; if (callee !== null) members = true; i += member[0].length; continue }
+    const open = /^\s*(?:\?\.)?\s*([([])/.exec(rest)
+    if (open) {
+      const at = i + open[0].length - 1
+      const close = closeOf(text, at)
+      if (close === -1) return null
+      if (open[1] === '(') { callee = last; members = false }
+      else if (callee !== null) members = true
+      i = close + 1
+      continue
+    }
+    if (/^\s*!/.test(rest) && !/^\s*!=/.test(rest)) { i += rest.indexOf('!') + 1; continue }
+    if (rest.trim() === '') break
+    return null
+  }
+  return callee === null ? null : { callee, members }
+}
 
 /** 顶层比较运算，排除箭头函数与三元条件中的比较。 */
 function isComparison(expr: string): boolean {
@@ -349,8 +425,10 @@ export class InputFlow {
         const after = observed.slice(m.index + m[0].length)
         const ownUrl = m[1] === 'url' || m[1] === 'nextUrl'
         if (ownUrl && URL_ORIGIN_ACCESS.test(after)) continue
+        const hostAt = exprAt + m.index + m[0].length
+        const hostHeader = m[1] === 'headers' && HOST_HEADER.test(this.source.slice(hostAt, hostAt + 80))
         found = mergeTaint(found, { level: 'direct', origin: exprAt + m.index, names: new Set(),
-          ownUrl: ownUrl && !URL_INPUT_ACCESS.test(after.slice(0, 40)) })
+          ownUrl: hostHeader || (ownUrl && !URL_INPUT_ACCESS.test(after.slice(0, 40))) })
       }
     }
     const refs = this.references && new RegExp(this.references.source, 'g')
@@ -363,6 +441,8 @@ export class InputFlow {
         if (/^\s*:(?!:)/.test(after) && /[{,]$/.test(before)) continue
         const t = this.valueOf(m[0], exprAt, depth)
         if (!t) continue
+        // 未知函数返回值的属性、元素或方法调用结果是函数产出的数据；toString、href 等只改变形式，仍是返回值本身。
+        if (t.opaque && /^\s*(?:\??\.\s*[\w$]|\?\.\s*\[|\[)/.test(after) && !VALUE_MEMBERS.test(after)) continue
         // 本站 URL 的 origin、host 等不可控；取其查询或路径部分则成为可控输入。
         if (t.ownUrl && URL_ORIGIN_ACCESS.test(after)) continue
         found = mergeTaint(found, t.ownUrl && URL_INPUT_ACCESS.test(after.slice(0, 40)) ? { ...t, ownUrl: false } : t)
@@ -374,6 +454,12 @@ export class InputFlow {
     // JSON.parse 只改变形式；schema.parse 等校验调用使结果降为 derived。
     const calls = [...text.replace(/\bJSON\s*\.\s*parse\s*\(/g, '(').matchAll(/([\w$]+)\s*\(/g)].map(m => m[1]!)
     if (calls.some(name => !TRANSPARENT_CALLS.has(name))) found.level = 'derived'
+    // 整个表达式是一次未知函数调用：结果整体保留待复核，取其属性则不再是请求输入。
+    const call = callResultOf(text)
+    if (call && !TRANSPARENT_CALLS.has(call.callee) && !MIRROR_CALLS.has(call.callee)) {
+      if (call.members) return null
+      found.opaque = true
+    }
     return found
   }
 
@@ -431,6 +517,8 @@ export class InputFlow {
     for (const a of assignments) {
       const taint = this.builtOf(a.expr, a.exprAt, depth + 1) ?? this.taintOf(a.expr, a.exprAt, depth + 1)
       if (!taint) continue
+      // 从未知函数返回值中解构或遍历得到的是其产出的数据。
+      if (taint.opaque && (a.iterate || /^[{[]/.test(a.pattern.trim()))) continue
       const own = this.targetsOf(a, taint).find(([target]) => target === name)
       if (own) found = mergeTaint(found, { ...taint, level: a.indirect ? 'derived' : taint.level, ownUrl: own[1], names: new Set([name, ...taint.names]) })
     }
@@ -624,7 +712,9 @@ function sourceRegex(roles: ParamRoles): RegExp | null {
 
 /** 合并两处来源：任一处经过其他调用即整体降为 derived。 */
 function mergeTaint(found: Taint | null, t: Taint): Taint {
-  if (!found) return { level: t.level, origin: t.origin, names: new Set(t.names), ownUrl: t.ownUrl }
+  if (!found) return { level: t.level, origin: t.origin, names: new Set(t.names), ownUrl: t.ownUrl, ...(t.opaque ? { opaque: true } : {}) }
+  // 只有每一部分都是未知函数返回值时，合并结果才整体视为返回值。
+  if (found.opaque && !t.opaque) delete found.opaque
   if (t.level === 'derived') found.level = 'derived'
   // 任一部分是可控输入，合并结果即为可控输入；来源位置取可控的那一处。
   if (found.ownUrl && !t.ownUrl) { found.ownUrl = false; found.origin = t.origin }
@@ -738,5 +828,5 @@ export function handlerFileOf(file: ScanFile): HandlerFile | null {
 /** 追踪达到上限时记录一次扫描缺口；三条规则共用同一条记录，由引擎按规则与消息去重。 */
 export function reportInputLimit(ctx: ScanContext, file: ScanFile, analysed: HandlerFile): void {
   if (analysed.limited) ctx.reportIncomplete('request-input/tracking',
-    `${file.path} reached the request-input tracking limit (8 value hops, 512 assignments or control/function regions, 4000 expression characters, or bounded URL analysis)`)
+    `${file.path} reached the request-input tracking limit (8 value hops, 512 assignments or control/function regions, 64 KiB expressions, or bounded URL analysis)`)
 }

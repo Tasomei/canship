@@ -164,7 +164,7 @@ JSON uses [schemaVersion 1](./schemas/scan-report-v1.schema.json). Check `partia
 | Git history | 100 relevant revisions per file; 30 seconds per command |
 | Auth resolution | 8 hops; 128 symbols per route file |
 | Identity/control flow | 8 value hops; 4,000 expression characters; 512 assignments/regions per function; 8 nested regions |
-| Request-input tracking | 8 value hops; 512 assignments/regions; 4,000 expression characters; 8 URL-analysis levels; 200 static-prefix characters |
+| Request-input tracking | 8 value hops; 512 assignments/regions; 64 KiB per expression; 8 URL-analysis levels; 200 static-prefix characters |
 | Supabase policy/bucket parsing | 4,000 characters per statement |
 
 Evidence traces are capped at 24 steps and disclose truncation.

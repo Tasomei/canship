@@ -14,7 +14,8 @@ const STRIPE_EVENT = /(?:\bcase\s*|\.type\s*[!=]==?\s*)['"`]((?:checkout\.sessio
 function verifiedEvent(context: LocalVerification, name: string, at: number): boolean {
   const assignment = context.assignment(name, at)
   if (!assignment || assignment.member || !context.enforcedBefore(assignment.at, at)) return false
-  const call = /^(?:(await)\s+)?[\w$.]+\.(constructEvent(?:Async)?|retrieve|parseEventNotification)\s*\(/.exec(assignment.expression)
+  // 接收方可以是工厂函数或方法的返回值，如 getStripe().webhooks、this.stripe.webhooks。
+  const call = /^(?:(await)\s+)?(?:[\w$]+(?:\s*\([^()]*\))?\s*\??\.\s*)+(constructEvent(?:Async)?|retrieve|parseEventNotification)\s*\(/.exec(assignment.expression)
   if (!call || (call[2] !== 'constructEvent' && !call[1])) return false
   if (call[2] === 'retrieve' && !/\.events\s*\.\s*retrieve/.test(call[0])) return false
   const close = context.pairs.get(assignment.from + call[0].length - 1)
