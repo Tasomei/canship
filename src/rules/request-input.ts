@@ -6,7 +6,8 @@ import type { ScanContext, ScanFile } from '../types.js'
 import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
 import { namePattern } from './bindings.js'
 import { lineStartsOf } from './offsets.js'
-import { delimiterPairs, functionBodies, routeOf, serverActionRoutes, type FunctionBody, type Route } from './apiauth.js'
+import { delimiterPairs, functionBodies, type FunctionBody, type Route } from './apiauth.js'
+import { serverRoutesOf } from './express.js'
 
 /** direct：请求值经赋值、解构或字符串拼接原样到达；derived：中途经过其他调用，无法确认是否已校验。 */
 export type InputLevel = 'direct' | 'derived'
@@ -786,20 +787,26 @@ export class HandlerFile {
 const handlerCache = new WeakMap<ScanFile, HandlerFile | null>()
 
 /** 路由文件中接收请求的函数；不是路由或没有接收请求的函数时返回空值。结果按文件对象缓存，生命周期随扫描结束。 */
-export function handlerFileOf(file: ScanFile): HandlerFile | null {
+export function handlerFileOf(file: ScanFile, files: ScanFile[]): HandlerFile | null {
   const cached = handlerCache.get(file)
   if (cached !== undefined) return cached
   let result: HandlerFile | null = null
   if (/\.[mc]?[jt]sx?$/.test(file.path)) {
-    const route = routeOf(file)
-    const routes = route === null ? serverActionRoutes(file) : [route]
+    const routes = serverRoutesOf(file, files)
     if (routes.length > 0) {
       const code = noiseMaskedOf(file)
       const source = commentsMaskedOf(file)
       const pairs = delimiterPairs(code)
       const openers = new Map<number, number>()
       for (const [open, close] of pairs) openers.set(close, open)
-      const bodies = functionBodies(code, pairs).sort((a, b) => a.start - b.start)
+      const bodies = functionBodies(code, pairs)
+      // Express 的表达式箭头处理函数没有函数体，以 => 起的整个表达式作为处理范围。
+      for (const r of routes) {
+        if (r.framework === 'express' && r.reachable && code.startsWith('=>', r.reachable.start)) {
+          bodies.push({ declaration: r.reachable.start, start: r.reachable.start, end: r.reachable.end })
+        }
+      }
+      bodies.sort((a, b) => a.start - b.start)
       const starts = bodies.map(body => body.start)
       const candidates: HandlerCandidate[] = []
       for (const r of routes) {

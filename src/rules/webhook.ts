@@ -2,9 +2,9 @@
  * Stripe webhook 路由处理事件却不验证签名。不验证时任何人都能伪造事件，触发发货、开通权限或修改记录。
  * 来源：https://docs.stripe.com/webhooks （Verify events are sent from Stripe）
  */
-import type { Finding, Rule, ScanFile } from '../types.js'
+import type { Finding, Rule, ScanContext, ScanFile } from '../types.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
-import { routeOf } from './apiauth.js'
+import { serverRoutesOf } from './express.js'
 import { LocalVerification } from './verification.js'
 
 /** 按事件类型分支：case 'checkout.session.completed' 或 event.type === 'invoice.paid'。 */
@@ -41,18 +41,22 @@ export const webhookRule: Rule = {
   severity: 'P1',
 
   appliesTo(file: ScanFile): boolean {
-    return /stripe/i.test(file.content) && routeOf(file) !== null
+    return /stripe/i.test(file.content)
   },
 
-  check(file: ScanFile): Finding[] {
-    const route = routeOf(file)
-    if (!route) return []
+  check(file: ScanFile, ctx: ScanContext): Finding[] {
+    const routes = serverRoutesOf(file, ctx.files)
+    if (routes.length === 0) return []
+    // 一个文件可有多条 Express 路由：取包含该事件分支的那一条。
+    const routeAt = (at: number) => routes.find(r => !r.reachable || (r.reachable.start <= at && at <= r.reachable.end))
     const context = new LocalVerification(file)
     const { source, code } = context
     const findings: Finding[] = []
     const reported = new Set<number>()
     for (const event of source.matchAll(new RegExp(STRIPE_EVENT.source, 'g'))) {
       if (code[event.index] !== source[event.index]) continue
+      const route = routeAt(event.index)
+      if (!route) continue
       const owner = context.owner(event.index)
       const name = eventName(context, event)
       if (name && verifiedEvent(context, name, event.index)) continue

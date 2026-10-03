@@ -204,7 +204,7 @@ export const injectionRule: ProjectRule = {
   check(ctx: ScanContext): Finding[] {
     const findings: Finding[] = []
     for (const file of ctx.files) {
-      const analysed = handlerFileOf(file)
+      const analysed = handlerFileOf(file, ctx.files)
       if (!analysed) continue
       const { code, source, pairs, lineStarts } = analysed
       const sinks = sinksIn(code, pairs, commandCallees(file))

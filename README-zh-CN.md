@@ -39,10 +39,11 @@ npx canship
 | Nuxt | `server/api`、`server/routes` |
 | Remix / React Router | `app/routes` 中的 `loader`、`action` 导出 |
 | Astro | `src/pages` 中的端点 |
+| Express | `app`/`Router` 路由，含 `.route()` 链、挂载的子路由和其他文件中的控制器 |
 
-已识别的 Next.js/Astro 中间件可抑制覆盖范围内的鉴权结果；Server Function 需在函数内检查。本地辅助函数、SvelteKit hooks、Nuxt 中间件可降低置信度，但保留结果。输入分析追踪可见的赋值、解构和字符串构造，不以辅助函数名称证明安全。
+已识别的 Next.js/Astro 中间件可抑制覆盖范围内的鉴权结果；Server Function 需在函数内检查。Express 中间件只有解析到拒绝未认证请求的代码或已知鉴权库时才抑制鉴权结果；名称像鉴权但无法解析的中间件降低置信度。本地辅助函数、SvelteKit hooks、Nuxt 中间件可降低置信度，但保留结果。输入分析追踪可见的赋值、解构和字符串构造，不以辅助函数名称证明安全。
 
-路由分析不覆盖 SvelteKit 页面 load、remote function，以及独立的 Express/Hono/Fastify 处理函数；凭据、CORS 等内容规则仍适用。
+路由分析不覆盖 SvelteKit 页面 load、remote function、Express 委托给 service 模块的写入，以及 Hono/Fastify 处理函数；凭据、CORS 等内容规则仍适用。
 
 ## 结果
 

@@ -3,11 +3,11 @@
  * 伪造的 Cookie 同样能通过；服务端应使用 getClaims() 或 getUser()。
  * 来源：https://supabase.com/docs/guides/auth/server-side/nextjs
  */
-import type { Finding, Rule, ScanFile } from '../types.js'
+import type { Finding, Rule, ScanContext, ScanFile } from '../types.js'
 import { noiseMaskedOf, commentsMaskedOf } from '../mask.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { namePattern } from './bindings.js'
-import { routeOf, serverActionRoutes } from './apiauth.js'
+import { serverRoutesOf } from './express.js'
 import { patternNames, destructuredKeys } from './request-input.js'
 import { authValuesOf, identityRequirement } from './auth-values.js'
 import { LocalVerification } from './verification.js'
@@ -69,11 +69,11 @@ const SERVER_PATH = [
   /(?:^|\/)server\/.+\.[mc]?[jt]s$/,
 ]
 
-function isServerFile(file: ScanFile): boolean {
+function isServerFile(file: ScanFile, files: ScanFile[]): boolean {
   if (!/\.[mc]?[jt]sx?$/.test(file.path)) return false
   // 'use client' 组件在浏览器运行，那里的 getSession 只用于界面状态。
   if (/^\s*(?:(?:'use strict'|"use strict");?\s*)?['"]use client['"]/.test(commentsMaskedOf(file))) return false
-  return SERVER_PATH.some(pattern => pattern.test(file.path)) || routeOf(file) !== null || serverActionRoutes(file).length > 0
+  return SERVER_PATH.some(pattern => pattern.test(file.path)) || serverRoutesOf(file, files).length > 0
 }
 
 export const sessionRule: Rule = {
@@ -81,10 +81,12 @@ export const sessionRule: Rule = {
   severity: 'P1',
 
   appliesTo(file: ScanFile): boolean {
-    return file.content.includes('getSession') && isServerFile(file)
+    return file.content.includes('getSession')
   },
 
-  check(file: ScanFile): Finding[] {
+  check(file: ScanFile, ctx: ScanContext): Finding[] {
+    // 是否为服务端代码需要全部文件：Express 处理函数可能在不导入 express 的控制器文件中。
+    if (!isServerFile(file, ctx.files)) return []
     const code = noiseMaskedOf(file)
     const context = new LocalVerification(file)
     const { pairs, bodies } = context

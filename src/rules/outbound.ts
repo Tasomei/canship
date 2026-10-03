@@ -38,6 +38,9 @@ function callsIn(code: string, pairs: Map<number, number>): Call[] {
 const HOST_OPEN = /^(?:X?|[a-z][\w+.-]*:\/\/[^/?#\\]*)$/i
 /** 跳转还接受相对形式：/ 后接输入可构成 //evil.example，// 或 \\ 开头同样由输入决定主机。 */
 const REDIRECT_OPEN = /^(?:\/|[/\\]{2}[^/?#\\]*)$/
+/** 仍可能延伸成上述开头的前缀；不满足时后续输入不再决定目标，可提前结束。 */
+const HOST_OPENABLE = /^(?:X?|[a-z][\w+.-]*(?::(?:\/(?:\/[^/?#\\]*)?)?)?)$/i
+const REDIRECT_OPENABLE = /^(?:[/\\](?:[/\\][^/?#\\]*)?)?$/
 
 /** 判断表达式开头是否由请求输入决定；返回决定开头的输入。 */
 function controlsStart(expr: string, at: number, flow: InputFlow, source: string, kind: Kind, depth = 0): Taint | null {
@@ -175,6 +178,7 @@ function templateStart(text: string, start: number, flow: InputFlow, source: str
       continue
     }
     prefix += source[start + i]
+    if (!HOST_OPENABLE.test(prefix) && !(kind === 'redirect' && REDIRECT_OPENABLE.test(prefix))) return null
     if (prefix.length > 200) { flow.limited = true; return null }
   }
   return null
@@ -290,7 +294,7 @@ function redirectFinding(route: Route, file: ScanFile, line: number, originLine:
 function check(ctx: ScanContext, kind: Kind): Finding[] {
   const findings: Finding[] = []
   for (const file of ctx.files) {
-    const analysed = handlerFileOf(file)
+    const analysed = handlerFileOf(file, ctx.files)
     if (!analysed) continue
     const calls = callsIn(analysed.code, analysed.pairs).filter(call => call.kind === kind).sort((a, b) => a.at - b.at)
     if (calls.length === 0) continue

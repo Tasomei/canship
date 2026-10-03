@@ -55,6 +55,27 @@ ${filler}
     assert.equal(result.partial, false)
     assert.deepEqual(summary(result.findings), [['injection/sql', 'app/api/items/route.ts', 205, 'certain']])
   })
+
+  test('a long fixed address before the input is settled without reaching a limit', async () => {
+    const path = Array.from({ length: 40 }, (_, i) => `segment${i}`).join('/')
+    const result = await run({ 'app/api/proxy/route.ts': `export async function GET(request: Request) {
+  const id = new URL(request.url).searchParams.get('id')
+  const res = await fetch(\`https://api.example.com/${path}?id=\${id}\`)
+  return Response.json(await res.json())
+}` })
+    assert.equal(result.partial, false, JSON.stringify(result.errors))
+    assert.deepEqual(summary(result.findings), [])
+  })
+
+  test('a long scheme-like prefix still reaches the limit instead of guessing', async () => {
+    // 前缀仍可能延伸成协议加主机，不能提前判定安全。
+    const result = await run({ 'app/api/proxy/route.ts': `export async function GET(request: Request) {
+  const host = new URL(request.url).searchParams.get('host')
+  const res = await fetch(\`${'a'.repeat(240)}://\${host}/data\`)
+  return Response.json(await res.json())
+}` })
+    assert.equal(result.partial, true)
+  })
 })
 
 describe('redirect targets', () => {

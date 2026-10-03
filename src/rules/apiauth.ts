@@ -9,6 +9,7 @@ import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { JWT_SOURCE, SB_SECRET_SOURCE } from './patterns.js'
 import { bindingsOf, namePattern } from './bindings.js'
 import { authValuesOf, argumentExpressions, identityRequirement, identityFlowLimited } from './auth-values.js'
+import { middlewareDefinition, serverRoutesOf } from './express.js'
 
 // 识别各框架可被直接请求的服务端路由。
 
@@ -52,13 +53,16 @@ const ASTRO_ENDPOINT = /^(.*?\/)?src\/pages\/(.+)\.[mc]?[jt]s$/
 const ASTRO_EXPORT =
   /\bexport\s+(?:async\s+)?function\s+(?:GET|POST|PUT|PATCH|DELETE|ALL)\b|\bexport\s+const\s+(?:GET|POST|PUT|PATCH|DELETE|ALL)\b/
 
-type Framework = 'next' | 'astro' | 'sveltekit' | 'nuxt' | 'remix'
+type Framework = 'next' | 'astro' | 'sveltekit' | 'nuxt' | 'remix' | 'express'
 
 /** 按 HTTP 方法导出且没有默认导出的脚本是 Astro 端点。 */
 function isAstroEndpoint(file: ScanFile): boolean {
   const code = noiseMaskedOf(file)
   return ASTRO_EXPORT.test(code) && !/\bexport\s+default\b/.test(code)
 }
+
+/** Express 路由上的一个中间件实参，以及它所在的文件（路由文件或挂载它的文件）。 */
+export interface MiddlewareRef { text: string; at: number; file: ScanFile }
 
 /** 一个可被直接请求的服务端路由。 */
 export interface Route {
@@ -71,6 +75,10 @@ export interface Route {
   reachable?: { start: number; end: number }
   /** Next.js Server Function 的函数名；没有独立 URL，中间件不能证明其受保护。 */
   action?: string
+  /** Express：路由参数中的中间件，以及同一实例上更早注册的 use() 中间件。 */
+  middleware?: MiddlewareRef[]
+  /** Express：每处挂载该 Router 时经过的中间件；所有挂载都受保护时路由才算受保护。 */
+  mounts?: MiddlewareRef[][]
 }
 
 /**
@@ -140,7 +148,7 @@ function startsWithDirective(source: string, from: number, directive: string): b
 }
 
 /** 函数声明的名称及是否直接导出；无法识别时为空。 */
-function declarationOf(
+export function declarationOf(
   code: string,
   body: FunctionBody,
   openers: Map<number, number>,
@@ -313,8 +321,12 @@ const PROVIDER_CALLBACK = /^(?:\/api)?\/(?:auth|oauth|login|sign-?in)\/[^/]+\/ca
 /** nuxt-auth-utils 的 OAuth 处理函数本身就是登录入口。 */
 const OAUTH_HANDLER = /\bdefineOAuth\w*EventHandler\s*\(/
 
+/** Express 路由常把登录、注册等入口放在任意前缀下，按最后一段路径判断。 */
+const EXPRESS_AUTH_PATH = /\/(?:sign[-_]?(?:in|up|out)|log[-_]?(?:in|out)|register|forgot[-_]?password|reset[-_]?password|verify(?:[-_]?email)?|confirm(?:[-_]?email)?|magic[-_]?link|otp|callback|refresh(?:[-_]?token)?)\/?$/i
+
 function isAuthEndpoint(route: Route): boolean {
   if (route.action !== undefined) return AUTH_ACTION_NAMES.test(route.action)
+  if (route.framework === 'express') return EXPRESS_AUTH_PATH.test(route.url)
   // 不按任意捕获路径豁免，仅识别明确的认证处理方式。
   return AUTH_ENDPOINT_NAMES.test(route.url) || AUTH_CALLBACK.test(route.url) ||
     PROVIDER_CALLBACK.test(route.url) || OAUTH_HANDLER.test(noiseMaskedOf(route.file))
@@ -1211,7 +1223,7 @@ function curriedOuterArrow(code: string, arrow: number, openers: Map<number, num
 }
 
 /** 本地模块唯一可定位时才解析符号；路径别名遵循当前应用范围。 */
-function bindingModule(spec: string, file: ScanFile, allFiles: ScanFile[], scope: string): ScanFile | null {
+export function bindingModule(spec: string, file: ScanFile, allFiles: ScanFile[], scope: string): ScanFile | null {
   const target = normalizeSpec(spec, file.path)
   if (!target) return null
   const keys = target.alias ? [`${scope}${target.key}`, `${scope}src/${target.key}`, `${scope}app/${target.key}`] : [target.key]
@@ -1334,7 +1346,7 @@ const HELPER_BUDGET = 64
 const ROUTE_BUDGET = 1024
 
 /** 最可能承担鉴权的名称：名称含鉴权相关词，或 with 开头的包装函数。 */
-const AUTH_HELPER_NAME = /auth|session|user|admin|guard|protect|verify|require|permission|role|access|owner|member|login|sign[_-]?in|token|^with[A-Z]/i
+const AUTH_HELPER_NAME = /auth|session|user|admin|guard|protect|verify|require|permission|role|access|owner|member|login|sign[_-]?in|token|jwt|^with[A-Z]/i
 
 /** 包住导出处理函数的包装函数：export const POST = withAdmin(…)、export default withAuth(…)。 */
 const EXPORT_WRAPPER = /\bexport\s+(?:const\s+(?:[A-Za-z_$][\w$]*|\{[^{}]{0,500}\})\s*(?::[^=;]{0,200})?=|default)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*(?:<[^()]{0,200}>\s*)?\(/g
@@ -1395,7 +1407,7 @@ const PRISMA_WRITES = /^(?:create|createMany|update|updateMany|upsert|delete|del
 
 const DRIZZLE_OP = /\bdb\s*\.\s*(select|insert|update|delete)\s*\(/g
 const MONGO_OP =
-  /\.(?:deleteMany|deleteOne|updateMany|updateOne|insertMany|insertOne|findOneAndDelete|findOneAndUpdate)\s*\(/g
+  /\.(?:deleteMany|deleteOne|updateMany|updateOne|insertMany|insertOne|findOneAndDelete|findOneAndUpdate|findOneAndReplace|replaceOne|bulkWrite|findByIdAndUpdate|findByIdAndDelete|findByIdAndRemove)\s*\(/g
 const RAW_SQL = /\b(?:sql|query|execute)\s*(?:`|\(\s*['"`])\s*(select|insert|update|delete|drop|truncate)\b/gi
 const RAW_SQL_WRITES = /^(?:insert|update|delete|drop|truncate)$/i
 
@@ -1836,6 +1848,90 @@ function containsAuthCheck(file: ScanFile): boolean {
 /** 识别摘录中需提前遮蔽的长凭据形状。 */
 const SECRET_SHAPED = /['"`]([A-Za-z0-9_\-.]{32,})['"`]/g
 
+/**
+ * 已知鉴权库的中间件：包名与调用形式。clerkMiddleware、passport.initialize 等只附加身份、不拒绝请求，不在此列。
+ * 来源：各库官方文档中的"保护路由"用法。
+ */
+const AUTH_LIBRARIES: Array<[RegExp, RegExp]> = [
+  [/^passport$/, /\.\s*authenticate\s*\((?!\s*['"]anonymous['"])/],
+  [/^express-jwt$/, /^[A-Za-z_$][\w$]*\s*\(/],
+  [/^express-openid-connect$/, /^requiresAuth\s*\(/],
+  [/^express-oauth2-jwt-bearer$/, /^(?:auth|requiredScopes|claimCheck|claimEquals|claimIncludes)\s*\(/],
+  [/^@clerk\/(?:express|clerk-sdk-node)$/, /^(?:requireAuth|ClerkExpressRequireAuth)\s*\(/],
+  [/^connect-ensure-login$/, /^(?:ensureLoggedIn|[A-Za-z_$][\w$]*\s*\.\s*ensureLoggedIn)\s*\(/],
+  [/^express-basic-auth$/, /^[A-Za-z_$][\w$]*\s*\(/],
+]
+
+/** 只附加身份或处理其他安全问题、从不拒绝未认证请求的常见中间件包。 */
+const NON_AUTH_MIDDLEWARE = /^(?:express-session|cookie-session|cookie-parser|lusca|helmet|cors|csurf|express-rate-limit|body-parser|multer|compression|morgan|connect-flash|express-flash|connect-mongo|express-validator)$/
+
+/** 拒绝请求：重定向（通常到登录页）、401/403，或把鉴权错误交给 next。 */
+const DENIES_REQUEST =
+  /\bres(?:ponse)?\s*\.\s*(?:redirect\s*\(|sendStatus\s*\(\s*40[13]\b|status\s*\(\s*40[13]\b)|\bnext\s*\(\s*(?:new\s+)?[\w$.]*(?:Unauthori[sz]ed|Forbidden|Auth)\w*/
+
+/** 先放行后拒绝：if (req.isAuthenticated()) return next()，分支之后重定向登录页或返回 401/403。 */
+function passesOnlyAuthenticated(code: string): boolean {
+  for (const m of code.matchAll(/\bif\s*\(/g)) {
+    const open = m.index + m[0].length - 1
+    const close = closingDelimiter(code, open, '(', ')')
+    if (close === null) continue
+    const condition = code.slice(open + 1, close)
+    if (condition.trimStart().startsWith('!') || !AUTH_CONDITION.test(condition)) continue
+    const rest = code.slice(close + 1)
+    const pass = /^\s*\{?\s*(?:return\s+)?next\s*\(\s*\)\s*;?\s*\}?/.exec(rest)
+    if (pass && DENIES_REQUEST.test(rest.slice(pass[0].length))) return true
+  }
+  return false
+}
+
+/** 中间件代码是否拒绝未认证请求：条件分支中按缺失身份返回或抛出，先放行已认证请求再拒绝，已知鉴权调用，或验证令牌后对失败返回 401/403。 */
+function middlewareRejects(code: string): boolean {
+  if (hasConditionalAuthGuard(code) || passesOnlyAuthenticated(code) || AUTH_ENFORCING_CALL.test(code)) return true
+  return /\b(?:jwt\s*\.\s*verify|jwtVerify|verifyToken|verifyJwt|verifyIdToken|verifyAccessToken)\s*\(/.test(code) &&
+    /\b(?:sendStatus|status)\s*\(\s*40[13]\b|\bstatus(?:Code)?\s*:\s*40[13]\b/.test(code)
+}
+
+type MiddlewareStatus = 'guard' | 'unconfirmed' | 'none'
+
+function middlewareStatus(ref: MiddlewareRef, files: ScanFile[]): { status: MiddlewareStatus; name: string } {
+  const { name, range, spec } = middlewareDefinition(ref, files)
+  if (spec) {
+    const known = AUTH_LIBRARIES.find(([pkg]) => pkg.test(spec))
+    if (known && known[1].test(ref.text)) return { status: 'guard', name }
+    // 鉴权库的其他调用（passport.session()、passport.initialize()）只附加身份。
+    if (known || NON_AUTH_MIDDLEWARE.test(spec)) return { status: 'none', name }
+  } else if (range) {
+    const code = noiseMaskedOf(range.file).slice(range.start, range.end + 1)
+    if (middlewareRejects(code)) return { status: 'guard', name }
+    // 初始化为库中间件的本地变量，如 const auth = passport.authenticate('jwt')。
+    const initializer = commentsMaskedOf(range.file).slice(range.start, range.end + 1).trim()
+    if (initializer !== ref.text && /^[A-Za-z_$][\w$.]*\s*\(/.test(initializer)) {
+      const inner = middlewareStatus({ text: initializer, at: range.start, file: range.file }, files)
+      if (inner.status === 'guard') return { status: 'guard', name }
+    }
+  }
+  return { status: AUTH_HELPER_NAME.test(name) ? 'unconfirmed' : 'none', name }
+}
+
+/** Express 路由是否受中间件保护：路由自身的中间件中有一个确认的鉴权，或每一处挂载都经过确认的鉴权。 */
+function expressGuardStatus(route: Route, files: ScanFile[]): { guarded: boolean; unconfirmed: string[] } {
+  const unconfirmed = new Set<string>()
+  const scan = (refs: MiddlewareRef[]): boolean => {
+    let guarded = false
+    for (const ref of refs) {
+      const { status, name } = middlewareStatus(ref, files)
+      if (status === 'guard') guarded = true
+      else if (status === 'unconfirmed') unconfirmed.add(name)
+    }
+    return guarded
+  }
+  if (scan(route.middleware ?? [])) return { guarded: true, unconfirmed: [] }
+  const mounts = route.mounts ?? []
+  const mounted = mounts.map(scan)
+  if (mounted.length > 0 && mounted.every(Boolean)) return { guarded: true, unconfirmed: [] }
+  return { guarded: false, unconfirmed: [...unconfirmed] }
+}
+
 /** 从完整源码行生成摘录，保留上下文。 */
 function excerptFor(file: ScanFile, line: number): string {
   const raw = (file.lines[line - 1] ?? '').trim()
@@ -1855,10 +1951,7 @@ export const apiAuthRule: ProjectRule = {
 
   check(ctx: ScanContext): Finding[] {
     // 示例路由仍参与检查，由引擎降低置信度。
-    const routes = ctx.files.flatMap((file) => {
-      const route = routeOf(file)
-      return route === null ? serverActionRoutes(file) : [route]
-    })
+    const routes = ctx.files.flatMap((file) => serverRoutesOf(file, ctx.files))
     if (routes.length === 0) return []
 
     // 每个中间件只校验一次匹配器。
@@ -1901,6 +1994,13 @@ export const apiAuthRule: ProjectRule = {
       // Next.js 与 Astro 的中间件逐路由判断保护范围。
       if ((route.framework === 'next' || route.framework === 'astro') && route.action === undefined &&
           middlewareCovers(ctx, route)) continue
+      // Express：能确认会拒绝未认证请求的中间件使路由受保护；名称像鉴权但无法确认的降低置信度。
+      let unconfirmedMiddleware: string[] = []
+      if (route.framework === 'express') {
+        const status = expressGuardStatus(route, ctx.files)
+        if (status.guarded) continue
+        unconfirmedMiddleware = status.unconfirmed
+      }
       const globalGuard = globalGuardFor(ctx, route)
       const globalNote = globalGuard === null ? [] : [
         `${globalGuard} contains an authentication check that may cover ${url}. Its path conditions are ` +
@@ -1913,6 +2013,10 @@ export const apiAuthRule: ProjectRule = {
       if (/\.auth\s*\.\s*getSession\s*\(/.test(handlerCode)) globalNote.push(
         'This handler checks supabase.auth.getSession(). On the server that reads the session from the cookie without ' +
           'verifying it, so a forged cookie passes; it is not counted as authentication. Use supabase.auth.getClaims() or getUser() instead.')
+
+      for (const name of unconfirmedMiddleware) globalNote.push(
+        `The route goes through ${name}, which looks like authentication but could not be followed to code that rejects ` +
+          `unauthenticated requests, so this finding is reported at lower confidence. Confirm ${name} rejects requests without a valid user.`)
 
       if (indirectGuards.truncated) globalNote.push(
         'The scan stopped following local helpers in this file at its limit (8 hops, 64 symbols per helper, 1,024 per file). ' +
@@ -1940,8 +2044,8 @@ export const apiAuthRule: ProjectRule = {
           evidence: evidence.slice(0, 24),
           evidenceTruncated: trace.evidenceTruncated || evidence.length > 24,
           severity: 'P0',
-          // 管理员客户端缺少鉴权时使用确定置信度；可能受全局鉴权覆盖时降为疑似。
-          confidence: globalGuard === null && !indirect ? 'certain' : 'likely',
+          // 管理员客户端缺少鉴权时使用确定置信度；可能受全局鉴权或未确认的中间件覆盖时降为疑似。
+          confidence: globalGuard === null && !indirect && unconfirmedMiddleware.length === 0 ? 'certain' : 'likely',
           title: indirect ? `Review indirect authentication for admin database access in ${url}`
             : `Anyone can call ${url} and it queries your database as admin`,
           file: route.file.path,
