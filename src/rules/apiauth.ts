@@ -1118,9 +1118,20 @@ function guardDefinitions(file: ScanFile): GuardDefinitions {
   for (const body of bodies) {
     if (body.start < until) continue
     until = body.end
-    const declaration = declarationOf(code, body, openers)
+    let declaration = declarationOf(code, body, openers)
+    let declaredAt = body.declaration
+    // 柯里化包装器：withAdmin = (handler) => async (req) => {…}，外层箭头函数直接返回处理请求的函数。
+    let curried = false
+    if (!declaration && code.startsWith('=>', body.declaration)) {
+      let outer = curriedOuterArrow(code, body.declaration, openers)
+      for (let level = 0; outer !== null && level < 3; level++) {
+        declaration = declarationOf(code, { declaration: outer, start: body.start, end: body.end }, openers)
+        if (declaration) { declaredAt = outer; curried = true; break }
+        outer = curriedOuterArrow(code, outer, openers)
+      }
+    }
     if (!declaration) continue
-    const returned = /\breturn\s+(?:async\s+)?(?:function\b|(?:\([^)]{0,200}\)|[A-Za-z_$][\w$]*)\s*=>)/.exec(code.slice(body.start + 1, body.end))
+    const returned = curried ? null : /\breturn\s+(?:async\s+)?(?:function\b|(?:\([^)]{0,200}\)|[A-Za-z_$][\w$]*)\s*=>)/.exec(code.slice(body.start + 1, body.end))
     const nestedAt = returned ? body.start + 1 + returned.index +
       (returned[0].includes('=>') ? returned[0].lastIndexOf('=>') : returned[0].lastIndexOf('function')) : -1
     const target = byDeclaration.get(nestedAt) ?? body
@@ -1144,10 +1155,10 @@ function guardDefinitions(file: ScanFile): GuardDefinitions {
       const close = pairs.get(i)
       if (close !== undefined) i = close
     }
-    const definition = { file, line: lineNumberAt(lineStartsCached(file), body.declaration),
-      wrapper: target !== body }
+    const definition = { file, line: lineNumberAt(lineStartsCached(file), declaredAt),
+      wrapper: curried || target !== body }
     const exported = !declaration.exported ? null
-      : /\bexport\s+default\s+(?:async\s+)?$/.test(code.slice(Math.max(0, body.declaration - 80), body.declaration))
+      : /\bexport\s+default\s+(?:async\s+)?$/.test(code.slice(Math.max(0, declaredAt - 80), declaredAt))
         ? 'default' : declaration.name
     candidates.push({ name: declaration.name, exported, definition, at, start: target.start })
   }
@@ -1171,6 +1182,32 @@ function guardDefinitions(file: ScanFile): GuardDefinitions {
   }
   definitionsCache.set(file, result)
   return result
+}
+
+/**
+ * 箭头函数 arrow（=> 的位置）若是另一个箭头函数的表达式函数体，返回外层 => 的位置，否则返回空值。
+ * 例如 (handler) => async (req) => {…} 中，由内层 => 找到外层 =>；参数列表借助括号配对一步跳过。
+ */
+function curriedOuterArrow(code: string, arrow: number, openers: Map<number, number>): number | null {
+  let i = arrow - 1
+  while (i >= 0 && /\s/.test(code[i]!)) i--
+  // 可选的返回类型标注，如 (req): Promise<Response> =>。
+  const window = code.slice(Math.max(0, arrow - 200), arrow)
+  const close = window.lastIndexOf(')')
+  if (close !== -1 && /^\s*(?::[^=;{()]*)?$/.test(window.slice(close + 1))) {
+    const open = openers.get(arrow - window.length + close)
+    if (open === undefined) return null
+    i = open - 1
+  } else {
+    if (!/[\w$]/.test(code[i] ?? '')) return null
+    while (i >= 0 && /[\w$]/.test(code[i]!)) i--
+  }
+  while (i >= 0 && /\s/.test(code[i]!)) i--
+  if (code.slice(i - 4, i + 1) === 'async' && !/[\w$]/.test(code[i - 5] ?? '')) {
+    i -= 5
+    while (i >= 0 && /\s/.test(code[i]!)) i--
+  }
+  return code[i] === '>' && code[i - 1] === '=' ? i - 1 : null
 }
 
 /** 本地模块唯一可定位时才解析符号；路径别名遵循当前应用范围。 */

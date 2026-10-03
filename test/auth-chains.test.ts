@@ -177,3 +177,20 @@ test('a nested same-named declaration cannot use the outer arrow guard', async (
   })
   assert.equal(finding.confidence, 'certain')
 })
+
+// 柯里化包装器：外层箭头函数直接返回处理请求的内层函数，如 withAdmin = (handler) => async (req) => {…}。
+const curriedRoute = "import {db} from '../../../lib/db';import {withTeam} from '../../../lib/entry';" +
+  "export const DELETE = withTeam(async () => {await db.from('items').delete();});"
+for (const [label, wrapper, expected] of [
+  ['delegated guard', "import {checkSession} from './base';export const withTeam = (handler) => async (...args) => {await checkSession();return handler(...args);};", 'likely'],
+  ['inline session check', "export const withTeam = (handler, { roles = [] } = {}) =>\n  async (req, ctx) => {\n    const session = await getServerSession();\n    if (!session?.user) {\n      return new Response('Unauthorized', { status: 401 });\n    }\n    return handler({ req, session });\n  };", 'likely'],
+  ['two-level currying', "import {checkSession} from './base';export const withTeam = (options) => (handler) => async (req) => {await checkSession();return handler(req);};", 'likely'],
+  ['no check', "export const withTeam = (handler) => async (...args) => {log('request');return handler(...args);};", 'certain'],
+] as const) {
+  test(`a curried wrapper around the exported handler is recognised: ${label}`, async () => {
+    const { finding, errors } = await analyze({ 'lib/entry.ts': wrapper, 'app/api/items/route.ts': curriedRoute })
+    assert.equal(finding.confidence, expected)
+    assert.equal(finding.evidence?.some(step => step.kind === 'auth-helper' && step.file === 'lib/entry.ts') ?? false, expected === 'likely')
+    assert.deepEqual(errors, [])
+  })
+}
