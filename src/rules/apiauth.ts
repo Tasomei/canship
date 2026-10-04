@@ -339,6 +339,44 @@ function isAuthEndpoint(route: Route): boolean {
 const AUTH_ENFORCING_CALL =
   /\b(?:NextAuth|require(?:Auth|User|Session|Admin)\w*|withAuth|verifyAuth|ensureAuth|assertAuth(?:enticated)?|verifyIdToken|constructEvent)\s*\(/i
 
+/**
+ * 失败时抛错的 webhook 验签调用，按导入来源识别，项目里同名的业务函数不算：
+ * Polar validateEvent（同步）、Clerk verifyWebhook（异步）、Svix 与 Standard Webhooks 的 new Webhook(secret).verify（同步）。
+ * 来源：https://polar.sh/docs/integrate/webhooks/delivery 、https://clerk.com/docs/webhooks/sync-data 、
+ * https://docs.svix.com/receiving/verifying-payloads/how
+ */
+const WEBHOOK_VERIFIERS: Array<{ spec: RegExp; imported: string; sync: boolean; instance: boolean }> = [
+  { spec: /^@polar-sh\/sdk\/webhooks$/, imported: 'validateEvent', sync: true, instance: false },
+  { spec: /^@clerk\/[\w-]+(?:\/webhooks)?$/, imported: 'verifyWebhook', sync: false, instance: false },
+  { spec: /^(?:svix|standardwebhooks)$/, imported: 'Webhook', sync: true, instance: true },
+]
+
+const webhookVerifierCache = new WeakMap<ScanFile, { call: RegExp; sync: RegExp } | null>()
+
+/** 文件中可用的验签调用：导入的函数名（含别名），或由导入的 Webhook 类创建的实例上的 verify。 */
+function webhookVerifiersOf(file: ScanFile): { call: RegExp; sync: RegExp } | null {
+  if (webhookVerifierCache.has(file)) return webhookVerifierCache.get(file)!
+  const calls: string[] = []
+  const syncCalls: string[] = []
+  for (const binding of bindingsOf(file).imports) {
+    const verifier = WEBHOOK_VERIFIERS.find(v => binding.spec && v.spec.test(binding.spec) && binding.imported === v.imported)
+    if (!verifier) continue
+    const local = binding.local.replace(/\$/g, '\\$')
+    const names = verifier.instance
+      ? [...noiseMaskedOf(file).matchAll(new RegExp(`\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*new\\s+${local}\\s*\\(`, 'g'))]
+        .map(m => `${m[1]!.replace(/\$/g, '\\$')}\\s*\\.\\s*verify`)
+      : [local]
+    calls.push(...names)
+    if (verifier.sync) syncCalls.push(...names)
+  }
+  const result = calls.length === 0 ? null : {
+    call: new RegExp(`^(?:${calls.join('|')})\\s*\\(`),
+    sync: new RegExp(`^(?:${syncCalls.length ? syncCalls.join('|') : '(?!)'})\\s*\\(`),
+  }
+  webhookVerifierCache.set(file, result)
+  return result
+}
+
 /** 鉴权条件必须涉及身份、凭据或验证调用。 */
 const AUTH_CONDITION =
   /\b(?:session|token|user|userid|user_id|authorization|bearer|jwt|auth|signature|CRON_SECRET|WEBHOOK_SECRET|REVALIDATE_SECRET|ADMIN_SECRET)\b|\blocals\s*\.\s*user\b|\b(?:getUser|getSession|getServerSession|currentUser|getAuth|isAuthenticated|checkAuth|verifyAuth|ensureAuth|verifyIdToken|timingSafeEqual)\s*\(/i
@@ -672,6 +710,7 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
   const functionStarts = new Set(bodies.map(body => body.start))
   const bodiesByStart = new Map(bodies.map(body => [body.start, body]))
   const localNames = localAuthNames(file)
+  const webhookVerifiers = webhookVerifiersOf(file)
   const guardEnds = new Map<number, number>()
   const guardNames = new Map<number, string>()
   const guardRequirements = new Map<number, number[]>()
@@ -781,6 +820,11 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
           const value = values.value(subject, i)
           const dependencies = identityRequirement(value, !!observe)
           if (dependencies) { dependencies.forEach(index => required.add(index)); return true }
+          // 自定义会话或凭据校验的结果只凭名称识别：分支须抛出、跳转或明确返回 401/403，return null 之类不算。
+          if (value.kind === 'claimed') {
+            const branch = code.slice(i, end)
+            return rejectsMissingIdentity(term, true) && (/\b(?:throw|redirect)\b/.test(branch) || DENIED_STATUS.test(branch))
+          }
           // 未绑定的框架上下文沿用原有模式；已知不可信来源不能借名称通过。
           // Express/Hono/Fastify 的请求与上下文对象由框架传入，req.user、c.get('user') 等由服务器端中间件设置；
           // 请求输入（body、query、headers 等）在取值时已归为输入，不会走到这里。
@@ -804,7 +848,9 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
         continue
       }
       const indirectCall = i > 0 && /[\w$.]/.test(code[i - 1]!) ? null : extraCalls?.exec(code.slice(i, i + 100))
-      const call = indirectCall ?? AUTH_ENFORCING_CALL.exec(code.slice(i, i + 100))
+      const enforcing = AUTH_ENFORCING_CALL.exec(code.slice(i, i + 100))
+      const verifier = enforcing?.index === 0 ? null : webhookVerifiers?.call.exec(code.slice(i, i + 100)) ?? null
+      const call = indirectCall ?? verifier ?? enforcing
       const callName = call?.[0].replace(/\s*\($/, '')
       if (!indirectCall && call?.index === 0 && callName && localNames.has(callName)) continue
       // 构造一个包装后的处理函数并不鉴权当前请求；只在包围操作时认它。
@@ -817,7 +863,7 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
         if (/(?:&&|\|\||\?|:)\s*$/.test(code.slice(owner.start + 1, prefixStart))) continue
         const awaited = /^(?:await|(?:const|let|var)\s+[\w${},:\s]+?=\s*await)(?:\s+[\w$.]+\.)?$/.test(prefix) ||
           (requireThrow && /^return(?:\s+await)?$/.test(prefix))
-        const synchronous = /^(?:assertAuth(?:enticated)?|constructEvent)\b/i.test(call[0]) &&
+        const synchronous = (/^(?:assertAuth(?:enticated)?|constructEvent)\b/i.test(call[0]) || (verifier !== null && webhookVerifiers!.sync.test(call[0]))) &&
           /^(?:(?:const|let|var)\s+[\w$]+\s*=\s*)?(?:[\w$]+\.)*$/.test(prefix)
         if (!awaited && !synchronous) continue
         const close = pairs.get(i + call[0].length - 1)

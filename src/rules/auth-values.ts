@@ -4,7 +4,8 @@ import { commentsMaskedOf, noiseMaskedOf, maskJsNoise } from '../mask.js'
 
 export interface FunctionSpan { declaration: number; start: number; end: number }
 export interface AuthValue {
-  kind: 'identity' | 'envelope' | 'data' | 'input' | 'literal' | 'promise' | 'secret' | 'parameter' | 'unknown' | 'opaque'
+  /** claimed：项目自定义的会话或凭据校验结果，只凭名称判断，须配合明确的拒绝才算守卫。 */
+  kind: 'identity' | 'claimed' | 'envelope' | 'data' | 'input' | 'literal' | 'promise' | 'secret' | 'parameter' | 'unknown' | 'opaque'
   parameters?: number[]
   /** Supabase 结果中承载身份的字段：getUser 为 user，getClaims 为 claims。 */
   field?: 'user' | 'claims'
@@ -32,6 +33,45 @@ export function isServerSecretExpression(expression: string): boolean {
   if (SERVER_ENV.test(text)) return true
   const template = /^`[^`$]*\$\{([^{}`]{1,200})\}[^`$]*`$/.exec(text)
   return template !== null && SERVER_ENV.test(template[1]!.trim())
+}
+
+/**
+ * 自定义的会话获取或凭据校验：getUserId(request)、getCurrentUser()、validateSessionToken(token)、
+ * lucia.validateSession(sessionId)、verifyApiKey(key)。decode 只解码不验证，不在此列。
+ */
+const CLAIMED_IDENTITY = new RegExp(
+  '^(?:get|validate|verify|authenticate|authorize|require|check|resolve|read|load|fetch)' +
+  '(?:Current|Session|Authenticated|LoggedIn|Request|Auth|Api|Access|Bearer|Jwt)?' +
+  '(?:User|UserId|Session|SessionToken|SessionCookie|Auth|AuthToken|Token|AccessToken|Jwt|Claims|Identity|Principal|Viewer|Account|ApiKey|Key|Credentials)' +
+  '(?:From[A-Z]\\w*|OrThrow|OrNull)?$')
+/** 会话、令牌一类的标识符可以作为实参，其他以 Id 结尾的标识符说明是在按 ID 查数据。 */
+const CREDENTIAL_ID = /^(?:session|token|apiKey|key|auth|access|refresh)(?:Id|_id)$/i
+
+/**
+ * 返回布尔值的签名校验：QStash 的 receiver.verify、Octokit 的 webhooks.verify、verifySignature 等。
+ * 这类接口多为异步，未 await 时得到的 Promise 恒为真值，校验形同虚设，因此必须 await。
+ * 来源：https://upstash.com/docs/qstash/howto/signature
+ */
+const SIGNATURE_CHECK = /^(?:verify|verify\w*Signature|validate\w*Signature|check\w*Signature|isValid\w*Signature)$/
+
+/** 表达式整体是一次自定义的身份获取或凭据校验调用，且实参不是路由参数、请求体或数据 ID；签名校验须 await，实参不限。 */
+function claimedIdentityCall(expr: string): boolean {
+  const call = /^(?:await\s+)?(?:[A-Za-z_$][\w$]*\s*\.\s*)*([A-Za-z_$][\w$]*)\s*\(/.exec(expr)
+  if (!call) return false
+  const signature = SIGNATURE_CHECK.test(call[1]!)
+  if (signature ? !/^await\s/.test(expr) : !CLAIMED_IDENTITY.test(call[1]!)) return false
+  const masked = maskJsNoise(expr)
+  let depth = 1, end = call[0].length
+  for (; end < masked.length && depth > 0; end++) {
+    if (masked[end] === '(') depth++
+    else if (masked[end] === ')') depth--
+  }
+  if (depth !== 0 || masked.slice(end).trim() !== '') return false
+  // 签名校验的实参本来就是请求体与签名头。
+  if (signature) return true
+  const args = masked.slice(call[0].length, end - 1)
+  if (/\.\s*(?:params|query|body|searchParams)\b|\bparams\b|\bid\b/.test(args)) return false
+  return ![...args.matchAll(/\b[A-Za-z_$][\w$]*(?:[a-z]Id|_id)\b/g)].some(m => !CREDENTIAL_ID.test(m[0]))
 }
 
 interface Assignment { at: number; expression: string; projection: string[] | null; overLimit: boolean }
@@ -222,6 +262,7 @@ class AuthValues {
       if (envelope) return { kind: 'envelope', field: envelope === 'getUser' ? 'user' : 'claims' }
       return { kind: 'identity' }
     }
+    if (claimedIdentityCall(expr)) return { kind: 'claimed' }
     if (/\.(?:body|query|headers|cookies|searchParams)\b|\.(?:json|text|formData)\s*\(/.test(expr)) return { kind: 'input' }
     // 参数对象上按键取值（Hono 的 c.get('user')）与成员访问同样沿用参数来源，由调用方按框架判断是否可信。
     const keyed = /^([A-Za-z_$][\w$]*)\s*\.\s*get\s*\(\s*['"][\w$.-]+['"]\s*\)$/.exec(expr)
