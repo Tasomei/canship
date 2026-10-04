@@ -556,6 +556,54 @@ function importedFunction(target: ImportTarget, member: string | null): CodeRang
   return target.name === 'default' ? defaultExport(ta) : findFunction(ta, target.name)
 }
 
+/**
+ * 模块中按名称导出的函数，允许重新导出：export { name } from、export * from、
+ * const { name } = require(…) 后再导出，以及 module.exports = { ...require(…) } 之类的展开。
+ */
+function exportedMember(file: ScanFile, name: string, files: ScanFile[], depth: number): CodeRange | null {
+  const t = analyse(file)
+  const own = findFunction(t, name)
+  if (own || depth >= 3) return own
+  const escaped = name.replace(/\$/g, '\\$')
+  for (const m of t.source.matchAll(/\bexport\s*\{([^{}]*)\}\s*from\s*['"]([^'"]+)['"]/g)) {
+    for (const part of m[1]!.split(',')) {
+      const names = new RegExp(`^\\s*(?:type\\s+)?([A-Za-z_$][\\w$]*)\\s*(?:as\\s+${escaped})?\\s*$`).exec(part)
+      if (!names || (names[1] !== name && !part.includes(' as '))) continue
+      const module = moduleFor(m[2]!, file, files)
+      if (module) return exportedMember(module, names[1]!, files, depth + 1)
+    }
+  }
+  const spreads = [
+    ...[...t.source.matchAll(/\bexport\s*\*\s*from\s*['"]([^'"]+)['"]/g)].map(m => moduleFor(m[1]!, file, files)),
+    ...[...t.source.matchAll(/\.\.\.\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)/g)].map(m => moduleFor(m[1]!, file, files)),
+    ...[...t.code.matchAll(/\.\.\.\s*([A-Za-z_$][\w$]*)\s*[,}]/g)].map(m => importOf(t, m[1]!, files)?.file ?? null),
+  ]
+  for (const module of spreads) {
+    const found = module && module !== file ? exportedMember(module, name, files, depth + 1) : null
+    if (found) return found
+  }
+  const imported = importOf(t, name, files)
+  return imported && imported.file !== file
+    ? exportedMember(imported.file, imported.name === 'default' ? name : imported.name, files, depth + 1)
+    : null
+}
+
+/**
+ * 调用处的被调函数定义：同文件的函数、导入的函数，或导入模块与对象上的方法（svc.deleteUser()、Workspace.delete()）。
+ * 只解析项目内模块，外部包与无法定位的调用返回空值。
+ */
+export function calleeDefinition(file: ScanFile, name: string, member: string | null, files: ScanFile[]): CodeRange | null {
+  const a = analyse(file)
+  if (member === null) {
+    const local = findFunction(a, name)
+    if (local) return local
+  }
+  const target = importOf(a, name, files)
+  if (!target || target.file === file) return null
+  if (member === null && target.name === 'default') return defaultExport(analyse(target.file))
+  return exportedMember(target.file, member ?? target.name, files, 0)
+}
+
 /** 处理函数位置：函数表达式本身，或同文件、其他文件中按名称找到的函数；asyncHandler(fn) 之类先拆开包装。 */
 function handlerOf(a: Analysed, arg: Arg, files: ScanFile[], depth = 0): CodeRange | null {
   const text = arg.text
@@ -1034,5 +1082,14 @@ export function middlewareDefinition(ref: MiddlewareRef, files: ScanFile[]): {
   const local = member === null ? findFunction(a, root) : null
   if (local) return { name: callee, range: local, spec: null, inline }
   const target = importOf(a, root, files)
-  return { name: callee, range: target ? importedFunction(target, member) : null, spec: null, inline }
+  const range = target ? importedFunction(target, member) ?? (member ? propertyValue(analyse(target.file), member) : null) : null
+  return { name: callee, range, spec: null, inline }
+}
+
+/** 对象属性的值为调用表达式时的范围：const auth = { required: jwt({ … }) } 中的 jwt({ … })。 */
+function propertyValue(a: Analysed, name: string): CodeRange | null {
+  const m = new RegExp(`(?<![\\w$.])${name.replace(/\$/g, '\\$')}\\s*:\\s*(?=[A-Za-z_$][\\w$.]*\\s*\\()`).exec(a.code)
+  if (!m) return null
+  const from = m.index + m[0].length
+  return { file: a.file, start: from, end: expressionEnd(a, from) - 1 }
 }

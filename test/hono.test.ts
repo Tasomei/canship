@@ -86,6 +86,7 @@ describe('Hono sign-in endpoints', () => {
       `auth.post('${path}', async (c) => {\n  await prisma.auditLog.create({ data: { type: 'SIGN_IN_FAIL' } })\n  return c.json({ ok: false }, 401)\n})\n`
     assert.deepEqual(summary(await findings({ 'src/auth.ts': route('/email-password/authorize') })), [])
     assert.deepEqual(summary(await findings({ 'src/auth.ts': route('/passkey/authorize') })), [])
+    assert.deepEqual(summary(await findings({ 'src/auth.ts': route('/callback/oidc/org/:orgUrl') })), [])
     assert.deepEqual(summary(await findings({ 'src/auth.ts': route('/documents/:id/authorize') })), [['api/db-write-without-auth', 'src/auth.ts', 6, 'likely']])
   })
 
@@ -168,6 +169,8 @@ describe('Hono middleware', () => {
       "app.post('/cron/cleanup', async (c) => {\n  if (c.req.header('Authorization') !== `Bearer ${" + secret + "}`) return c.text('Unauthorized', 401)\n" +
       "  await prisma.session.deleteMany({})\n  return c.text('ok')\n})\n"
     assert.deepEqual(summary(await findings({ 'src/index.ts': route('c.env.CRON_SECRET') })), [])
+    // 先取出环境配置对象再读密钥。
+    assert.deepEqual(summary(await findings({ 'src/index.ts': route('c.env.CRON_SECRET').replace("  if (c.req.header", "  const config = env()\n  if (c.req.header").replace('c.env.CRON_SECRET', 'config.CRON_SECRET') })), [])
     // 与请求自身的值比较不构成保护。
     assert.deepEqual(summary(await findings({ 'src/index.ts': route("c.req.query('key')") })), [['api/db-write-without-auth', 'src/index.ts', 7, 'likely']])
   })
@@ -177,6 +180,16 @@ describe('Hono middleware', () => {
       "app.post('/wipe', requireSession(), async (c) => {\n  await admin.from('logs').delete().neq('id', 0)\n  return c.text('ok')\n})\n" })
     assert.deepEqual(summary(list), [['api/admin-db-access-without-auth', 'src/index.ts', 7, 'likely']])
     assert.ok(list[0]!.why.some(p => /requireSession/.test(p) && /could not be followed/.test(p)))
+  })
+})
+
+describe('guards inside Hono handlers', () => {
+  test('a check on c.get(\'user\') set by middleware protects the write; a check on request input does not', async () => {
+    const route = (read: string) => HONO + PRISMA + 'const app = new Hono()\n' +
+      `app.delete('/items/:id', async (c) => {\n  const user = ${read}\n  if (!user) return c.json({ error: 'unauthorized' }, 401)\n` +
+      "  await prisma.item.delete({ where: { id: c.req.param('id') } })\n  return c.body(null, 204)\n})\n"
+    assert.deepEqual(summary(await findings({ 'src/index.ts': route("c.get('user')") })), [])
+    assert.deepEqual(summary(await findings({ 'src/index.ts': route("c.req.query('user')") })), [['api/db-write-without-auth', 'src/index.ts', 8, 'likely']])
   })
 })
 

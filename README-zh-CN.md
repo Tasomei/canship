@@ -45,7 +45,7 @@ npx canship
 
 已识别的 Next.js/Astro 中间件可抑制覆盖范围内的鉴权结果；Server Function 需在函数内检查。Express、Hono、Fastify 的中间件与钩子只有解析到拒绝未认证请求的代码或已知鉴权库时才抑制鉴权结果；名称像鉴权但无法解析的中间件降低置信度。本地辅助函数、SvelteKit hooks、Nuxt 中间件可降低置信度，但保留结果。输入分析追踪可见的赋值、解构和字符串构造，不以辅助函数名称证明安全。
 
-路由分析不覆盖 SvelteKit 页面 load、remote function、Hono 的 `app.openapi()` 路由，以及 Express/Hono/Fastify 委托给 service 模块的写入；凭据、CORS 等内容规则仍适用。
+Express、Hono、Fastify 路由会跟进被调项目函数中的写入，最多两层（处理函数 → service → model）；文件约定路由只报告路由文件内的写入。路由分析不覆盖 SvelteKit 页面 load、remote function 和 Hono 的 `app.openapi()` 路由；凭据、CORS 等内容规则仍适用。
 
 ## 结果
 
@@ -166,6 +166,7 @@ JSON 使用 [schemaVersion 1](./schemas/scan-report-v1.schema.json)。须独立�
 | 结果 | 每文件 100 条，优先保留高严重度、高置信度结果 |
 | Git 历史 | 每文件 100 个相关版本；单条命令 30 秒 |
 | 鉴权辅助函数解析 | 8 跳；每个辅助函数 64 个符号，每个路由文件共 1,024 个 |
+| 委托写入 | 调用 2 层；每个文件 256 个被调函数；超出部分的写入不报告 |
 | 身份/控制流 | 值解析 8 步；表达式 4,000 字符；每函数 512 个赋值/区域；区域嵌套 8 层 |
 | 请求输入追踪 | 值解析 8 步；512 个赋值/区域；单条表达式 64 KiB；URL 分析 8 层、静态前缀 200 字符 |
 | Supabase 策略/存储桶解析 | 单条语句 4,000 字符 |

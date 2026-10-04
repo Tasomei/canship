@@ -23,6 +23,8 @@ function project(value: AuthValue, path: string[]): AuthValue {
 
 /** 服务器环境变量：process.env.X，Hono/Workers 绑定 c.env.X，以及 env.X、env().X 之类的环境配置对象。 */
 const SERVER_ENV = /^(?:process\s*\.\s*env|(?:[A-Za-z_$][\w$]*\s*\.\s*)?env(?:\s*\(\s*\))?)\s*\.\s*[A-Z_][A-Z0-9_]*$/
+/** 环境配置对象本身：process.env、c.env、env、env()。 */
+const SERVER_ENV_OBJECT = /^(?:process\s*\.\s*env|(?:[A-Za-z_$][\w$]*\s*\.\s*)?env(?:\s*\(\s*\))?)$/
 
 /** 服务器密钥，或只插入一个服务器密钥的模板（如 `Bearer ${process.env.CRON_SECRET}`）。 */
 export function isServerSecretExpression(expression: string): boolean {
@@ -221,6 +223,11 @@ class AuthValues {
       return { kind: 'identity' }
     }
     if (/\.(?:body|query|headers|cookies|searchParams)\b|\.(?:json|text|formData)\s*\(/.test(expr)) return { kind: 'input' }
+    // 参数对象上按键取值（Hono 的 c.get('user')）与成员访问同样沿用参数来源，由调用方按框架判断是否可信。
+    const keyed = /^([A-Za-z_$][\w$]*)\s*\.\s*get\s*\(\s*['"][\w$.-]+['"]\s*\)$/.exec(expr)
+    if (keyed && this.parameters.has(keyed[1]!) && !this.assignments.has(keyed[1]!)) {
+      return { kind: 'parameter', parameters: [this.parameters.get(keyed[1]!)!] }
+    }
     const access = /^([A-Za-z_$][\w$]*)((?:\??\.[A-Za-z_$][\w$]*)*)$/.exec(expr)
     if (!access) return { kind: 'opaque' }
     const name = access[1]!
@@ -232,6 +239,10 @@ class AuthValues {
     if (assignment) {
       if (assignment.overLimit) { limited.add(this.file); return { kind: 'opaque' } }
       if (this.conditions.some(range => range.start <= assignment.at && assignment.at <= range.end && !(range.start <= at && at <= range.end))) return { kind: 'opaque' }
+      // 先取出环境配置对象再读密钥：const config = env(); config.CRON_SECRET，以及 const { CRON_SECRET } = env()。
+      const key = [...(assignment.projection ?? []), ...access[2]!.split(/\??\./).filter(Boolean)]
+      if (assignment.projection !== null && key.length === 1 && /^[A-Z_][A-Z0-9_]*$/.test(key[0]!) &&
+          SERVER_ENV_OBJECT.test(assignment.expression)) return { kind: 'secret' }
       value = this.value(assignment.expression, assignment.at, depth + 1)
       value = assignment.projection === null ? { kind: 'opaque' } : project(value, assignment.projection)
     } else if (this.parameters.has(name)) value = { kind: 'parameter', parameters: [this.parameters.get(name)!] }

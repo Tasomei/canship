@@ -45,7 +45,7 @@ Credential formats include OpenAI, Anthropic, AWS, Stripe, GitHub, and npm. Fire
 
 Recognised Next.js/Astro middleware may suppress covered auth findings; Server Functions need local checks. Express, Hono, and Fastify middleware and hooks suppress auth findings only when they resolve to code that rejects unauthenticated requests or to a known auth library; auth-like middleware that cannot be followed lowers confidence. Local helpers, SvelteKit hooks, and Nuxt middleware may lower confidence without suppressing findings. Input analysis follows visible assignments, destructuring, and string construction; helper names alone do not prove sanitisation.
 
-SvelteKit page loads, remote functions, Hono `app.openapi()` routes, and Express/Hono/Fastify writes delegated to service modules are outside route analysis. Content-based checks, including credentials and CORS, still apply.
+For Express, Hono, and Fastify routes, writes inside called project functions are followed two levels (handler → service → model); file-based routes report writes in the route file only. SvelteKit page loads, remote functions, and Hono `app.openapi()` routes are outside route analysis. Content-based checks, including credentials and CORS, still apply.
 
 ## Results
 
@@ -166,6 +166,7 @@ JSON uses [schemaVersion 1](./schemas/scan-report-v1.schema.json). Check `partia
 | Findings | 100 per file, prioritising severity and confidence |
 | Git history | 100 relevant revisions per file; 30 seconds per command |
 | Auth helper resolution | 8 hops; 64 symbols per helper, 1,024 per route file |
+| Delegated writes | 2 call levels; 256 callees per file; writes beyond these limits are not reported |
 | Identity/control flow | 8 value hops; 4,000 expression characters; 512 assignments/regions per function; 8 nested regions |
 | Request-input tracking | 8 value hops; 512 assignments/regions; 64 KiB per expression; 8 URL-analysis levels; 200 static-prefix characters |
 | Supabase policy/bucket parsing | 4,000 characters per statement |

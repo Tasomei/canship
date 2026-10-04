@@ -191,6 +191,17 @@ describe('Express middleware', () => {
   })
 })
 
+describe('guards inside Express handlers', () => {
+  test('a check on req.user set by middleware protects the write; a check on request input does not', async () => {
+    const route = (condition: string) => "const express = require('express')\nconst app = express()\n" + PRISMA +
+      `app.delete('/items/:id', async (req, res) => {\n  if (${condition}) return res.sendStatus(401)\n  await prisma.item.delete({ where: { id: req.params.id } })\n  res.end()\n})\n`
+    assert.deepEqual(summary(await findings({ 'server.js': route('!req.user') })), [])
+    assert.deepEqual(summary(await findings({ 'server.js': route('!req.session?.userId') })), [])
+    assert.deepEqual(summary(await findings({ 'server.js': route('!req.body.user') })), [['api/db-write-without-auth', 'server.js', 7, 'likely']])
+    assert.deepEqual(summary(await findings({ 'server.js': route('!req.params.id') })), [['api/db-write-without-auth', 'server.js', 7, 'likely']])
+  })
+})
+
 describe('request-input rules in Express handlers', () => {
   test('SQL, redirects, server requests, and Mongoose writes are checked', async () => {
     const list = await findings({ 'server.js': "const express = require('express')\nconst axios = require('axios')\nconst app = express()\n" +

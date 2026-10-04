@@ -9,7 +9,7 @@ import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { JWT_SOURCE, SB_SECRET_SOURCE } from './patterns.js'
 import { bindingsOf, namePattern } from './bindings.js'
 import { authValuesOf, argumentExpressions, identityRequirement, identityFlowLimited, isServerSecretExpression } from './auth-values.js'
-import { NODE_FRAMEWORKS, authCompositionOf, middlewareDefinition, serverRoutesOf } from './routers.js'
+import { NODE_FRAMEWORKS, authCompositionOf, calleeDefinition, middlewareDefinition, serverRoutesOf } from './routers.js'
 
 // 识别各框架可被直接请求的服务端路由。
 
@@ -322,11 +322,12 @@ const PROVIDER_CALLBACK = /^(?:\/api)?\/(?:auth|oauth|login|sign-?in)\/[^/]+\/ca
 const OAUTH_HANDLER = /\bdefineOAuth\w*EventHandler\s*\(/
 
 /** Express/Hono/Fastify 路由常把登录、注册等入口放在任意前缀下，按最后一段路径判断。 */
-const NODE_AUTH_PATH = /\/(?:sign[-_]?(?:in|up|out)|log[-_]?(?:in|out)|register|forgot[-_]?password|reset[-_]?password|verify(?:[-_]?email)?|confirm(?:[-_]?email)?|magic[-_]?link|otp|callback|refresh(?:[-_]?token)?|(?:[\w-]*(?:password|passkey|webauthn|credentials)|oauth|sso)\/authori[sz]e|oauth\/(?:token|revoke|introspect|register))\/?$/i
+const NODE_AUTH_PATH = /\/(?:sign[-_]?(?:in|up|out)|log[-_]?(?:in|out)|register|forgot[-_]?password|reset[-_]?password|verify(?:[-_]?email)?|confirm(?:[-_]?email)?|magic[-_]?link|otp|callback|refresh(?:[-_]?token)?|(?:[\w-]*(?:password|passkey|webauthn|credentials)|oauth|sso)\/authori[sz]e|oauth\/(?:token|revoke|introspect|register)|request[-_]?token)\/?$/i
 
 function isAuthEndpoint(route: Route): boolean {
   if (route.action !== undefined) return AUTH_ACTION_NAMES.test(route.action)
-  if (NODE_FRAMEWORKS.has(route.framework)) return NODE_AUTH_PATH.test(route.url)
+  // OAuth/OIDC 回调可带提供方与租户段：/callback/oidc/org/:orgUrl。
+  if (NODE_FRAMEWORKS.has(route.framework)) return NODE_AUTH_PATH.test(route.url) || /\/callback(?:\/|$)/i.test(route.url)
   // 不按任意捕获路径豁免，仅识别明确的认证处理方式。
   return AUTH_ENDPOINT_NAMES.test(route.url) || AUTH_CALLBACK.test(route.url) ||
     PROVIDER_CALLBACK.test(route.url) || OAUTH_HANDLER.test(noiseMaskedOf(route.file))
@@ -582,10 +583,18 @@ function statementEnd(code: string, start: number, limit: number, pairs: Map<num
  * 每个操作的判断互不依赖，先对全部操作判断、再按路由范围筛选，与先筛选后判断的结果相同。
  */
 const unguardedCache = new WeakMap<ScanFile, DataHit[]>()
-function unguardedOpsOf(file: ScanFile): DataHit[] {
+/** 含 Express/Hono/Fastify 处理函数的文件：其中函数参数是框架传入的请求或上下文对象。 */
+const nodeRouteFiles = new WeakSet<ScanFile>()
+
+function unguardedOpsOf(file: ScanFile, files: ScanFile[]): DataHit[] {
   let hit = unguardedCache.get(file)
   if (hit === undefined) {
-    hit = unguardedOperations(file, findDataOps(file))
+    // 路由文件自身的操作；Express/Hono/Fastify 路由再加上调用其他项目函数完成的写入（记在调用处）。
+    // 文件约定路由（Next.js 等）普遍以包装函数鉴权，暂不跟进。
+    const node = serverRoutesOf(file, files).some(route => NODE_FRAMEWORKS.has(route.framework))
+    if (node) nodeRouteFiles.add(file)
+    const ops = [...findDataOps(file), ...(node ? delegatedWrites(file, files) : [])].sort((a, b) => a.index - b.index)
+    hit = unguardedOperations(file, ops)
     unguardedCache.set(file, hit)
   }
   return hit
@@ -773,7 +782,11 @@ function unguardedOperations(file: ScanFile, ops: DataHit[], extra?: ExtraGuards
           const dependencies = identityRequirement(value, !!observe)
           if (dependencies) { dependencies.forEach(index => required.add(index)); return true }
           // 未绑定的框架上下文沿用原有模式；已知不可信来源不能借名称通过。
-          return !observe && value.kind === 'unknown' && rejectsMissingIdentity(term, DENIED_STATUS.test(code.slice(i, end)))
+          // Express/Hono/Fastify 的请求与上下文对象由框架传入，req.user、c.get('user') 等由服务器端中间件设置；
+          // 请求输入（body、query、headers 等）在取值时已归为输入，不会走到这里。
+          const frameworkContext = value.kind === 'parameter' && nodeRouteFiles.has(file) &&
+            !/\.\s*(?:params|param|query|queries|body|headers?|cookies|raw|url|originalUrl|path|ip|ips|hostname|files?)\b/.test(subject)
+          return !observe && (value.kind === 'unknown' || frameworkContext) && rejectsMissingIdentity(term, DENIED_STATUS.test(code.slice(i, end)))
         })
         if (end <= owner.end && accepted) { guardRequirements.set(owner.start, [...required]); return end }
         const other = skipSpace(end)
@@ -1396,7 +1409,7 @@ function indirectGuardOperations(route: Route, ctx: ScanContext): IndirectGuards
   }
   const protectedOps = new Map<number, GuardDefinition>()
   if (names.size === 0) return { ops: protectedOps, truncated }
-  unguardedOperations(route.file, unguardedOpsOf(route.file), {
+  unguardedOperations(route.file, unguardedOpsOf(route.file, ctx.files), {
     guards: new Set([...names].filter(([, definition]) => !definition.wrapper).map(([name]) => name)),
     wrappers: new Set([...names].filter(([, definition]) => definition.wrapper).map(([name]) => name)),
     requirements: new Map([...names].map(([name, guard]) => [name, guard.requiredArgs ?? []])),
@@ -1411,6 +1424,82 @@ interface DataHit {
   index: number
   /** 是否修改数据，决定疑似结果是否需要报告。 */
   writes: boolean
+  /** 写入发生在被调函数中时，从调用处到实际写入的各层位置。 */
+  via?: Delegation[]
+}
+
+/** 被调函数中的一处位置：委托链上的下一层调用，或最终的写入。 */
+interface Delegation { file: ScanFile; index: number }
+
+/** 委托写入最多跟进两层（处理函数 → service → model）；每个文件最多解析 256 个不同的被调名称。 */
+const DELEGATE_DEPTH = 2
+const DELEGATE_BUDGET = 256
+const NOT_CALLEE = /^(?:if|for|while|switch|catch|function|return|typeof|await|new|super|this|import|require|async|void|delete|in|of)$/
+
+const directUnguardedCache = new WeakMap<ScanFile, DataHit[]>()
+function directUnguardedOps(file: ScanFile): DataHit[] {
+  let hit = directUnguardedCache.get(file)
+  if (hit === undefined) {
+    hit = unguardedOperations(file, findDataOps(file))
+    directUnguardedCache.set(file, hit)
+  }
+  return hit
+}
+
+const delegatedCache = new WeakMap<ScanFile, Map<number, DataHit[]>>()
+
+/**
+ * 调用其他项目函数完成的写入：被调函数中存在未受保护的写入（在被调函数自身的守卫分析之后），
+ * 或它再调用的函数中存在，就在调用处记一次写操作，由调用处所在函数的守卫判断是否受保护。
+ */
+function delegatedWrites(file: ScanFile, files: ScanFile[], depth = 0): DataHit[] {
+  let byDepth = delegatedCache.get(file)
+  if (!byDepth) { byDepth = new Map(); delegatedCache.set(file, byDepth) }
+  const cached = byDepth.get(depth)
+  if (cached) return cached
+  byDepth.set(depth, [])
+  const code = noiseMaskedOf(file)
+  const pairs = delimiterPairs(code)
+  const chains = new Map<string, { range: { start: number; end: number } | null; chain: Delegation[] } | null>()
+  const hits: DataHit[] = []
+  for (const m of code.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)(?:\s*\??\.\s*([A-Za-z_$][\w$]*))?\s*\(/g)) {
+    const name = m[1]!
+    const member = m[2] ?? null
+    if (NOT_CALLEE.test(name)) continue
+    // 函数声明与方法定义不是调用：function name(…)、name(…) { … }。
+    if (/\bfunction\s*\*?\s*$|\b(?:get|set|static)\s+$/.test(code.slice(Math.max(0, m.index - 12), m.index))) continue
+    const close = pairs.get(m.index + m[0].length - 1)
+    if (close !== undefined && /^\s*(?::[^{;=]{0,200})?\{/.test(code.slice(close + 1, close + 220))) continue
+    const key = `${name}.${member ?? ''}`
+    let resolved = chains.get(key)
+    if (resolved === undefined) {
+      resolved = chains.size < DELEGATE_BUDGET ? writeChain(file, name, member, files, depth) : null
+      chains.set(key, resolved)
+    }
+    // 函数内部对自身的调用（递归）不构成新的写入路径。
+    if (!resolved || (resolved.range && resolved.range.start <= m.index && m.index <= resolved.range.end)) continue
+    hits.push({ index: m.index, writes: true, via: resolved.chain })
+  }
+  byDepth.set(depth, hits)
+  return hits
+}
+
+/**
+ * 被调函数中第一处未受保护的写入，以及到达它的委托链；没有时返回空值。
+ * range 只在被调函数与调用处同文件时给出，用于排除递归调用。
+ */
+function writeChain(file: ScanFile, name: string, member: string | null, files: ScanFile[], depth: number):
+  { range: { start: number; end: number } | null; chain: Delegation[] } | null {
+  const range = calleeDefinition(file, name, member, files)
+  if (!range) return null
+  // 鉴权函数与 withXxx 包装中的写入（刷新会话、记录用量）是鉴权过程本身，不是调用方驱动的写操作。
+  if (/^with[A-Z]/.test(member ?? name) || middlewareRejects(noiseMaskedOf(range.file).slice(range.start, range.end + 1))) return null
+  const local = range.file === file ? { start: range.start, end: range.end } : null
+  const own = operationsInRange(directUnguardedOps(range.file), range.start, range.end).find(op => op.writes)
+  if (own) return { range: local, chain: [{ file: range.file, index: own.index }] }
+  if (depth + 1 >= DELEGATE_DEPTH) return null
+  const nested = operationsInRange(delegatedWrites(range.file, files, depth + 1), range.start, range.end)[0]
+  return nested ? { range: local, chain: [{ file: range.file, index: nested.index }, ...nested.via!] } : null
 }
 
 /** 匹配 Supabase 表访问及后续操作。 */
@@ -1877,9 +1966,10 @@ const SECRET_SHAPED = /['"`]([A-Za-z0-9_\-.]{32,})['"`]/g
  */
 const AUTH_LIBRARIES: Array<[RegExp, RegExp]> = [
   [/^passport$/, /\.\s*authenticate\s*\((?!\s*['"]anonymous['"])/],
-  [/^express-jwt$/, /^[A-Za-z_$][\w$]*\s*\(/],
+  // credentialsRequired: false / authRequired: false 时只解析令牌、不拒绝请求。
+  [/^express-jwt$/, /^(?![\s\S]*\bcredentialsRequired\s*:\s*false\b)[A-Za-z_$][\w$]*\s*\(/],
   [/^express-openid-connect$/, /^requiresAuth\s*\(/],
-  [/^express-oauth2-jwt-bearer$/, /^(?:auth|requiredScopes|claimCheck|claimEquals|claimIncludes)\s*\(/],
+  [/^express-oauth2-jwt-bearer$/, /^(?![\s\S]*\bauthRequired\s*:\s*false\b)(?:auth|requiredScopes|claimCheck|claimEquals|claimIncludes)\s*\(/],
   [/^@clerk\/(?:express|clerk-sdk-node)$/, /^(?:requireAuth|ClerkExpressRequireAuth)\s*\(/],
   [/^connect-ensure-login$/, /^(?:ensureLoggedIn|[A-Za-z_$][\w$]*\s*\.\s*ensureLoggedIn)\s*\(/],
   [/^express-basic-auth$/, /^[A-Za-z_$][\w$]*\s*\(/],
@@ -2113,7 +2203,7 @@ export const apiAuthRule: ProjectRule = {
 
     for (const route of routes) {
       const reachable = route.reachable
-      const unguarded = unguardedOpsOf(route.file)
+      const unguarded = unguardedOpsOf(route.file, ctx.files)
       let ops = reachable === undefined ? unguarded : operationsInRange(unguarded, reachable.start, reachable.end)
       if (ops.length === 0) continue
       let indirectGuards = indirectByFile.get(route.file)
@@ -2170,10 +2260,21 @@ export const apiAuthRule: ProjectRule = {
         description: 'Local authentication helper in the recognized delegation chain; verify runtime behaviour and caller coverage.' })) : []
       if (indirect) globalNote.push('A local authentication helper or wrapper was recognized before this operation. ' +
         'This finding is retained for review because indirect control flow is not a proof of authorization.')
+      // 写入发生在被调函数中：列出从调用处到实际写入的位置。
+      const delegated = (hit.via ?? []).map(step => ({ file: step.file.path, line: lineNumberAt(lineStartsCached(step.file), step.index) }))
+      const delegatedEvidence: EvidenceStep[] = delegated.map((step, i) => ({
+        kind: 'operation', file: step.file, line: step.line,
+        description: i === delegated.length - 1 ? 'Database write reached from this handler.' : 'Project function on the call path to the write.' }))
+      if (delegated.length > 0) {
+        const target = delegated.at(-1)!
+        globalNote.push(`The write itself happens in ${target.file}:${target.line}, reached from this call` +
+          (delegated.length > 1 ? ` through ${delegated.slice(0, -1).map(step => `${step.file}:${step.line}`).join(', ')}` : '') +
+          '. The scan followed the call into project code and found no authentication check on the way.')
+      }
 
       if (admin) {
         const trace = adminEvidence(route, adminModules, ctx.files, line)
-        const evidence = [...(trace.evidence ?? []), ...indirectEvidence]
+        const evidence = [...(trace.evidence ?? []), ...delegatedEvidence, ...indirectEvidence]
         findings.push({
           ruleId: 'api/admin-db-access-without-auth',
           ...trace,
@@ -2226,8 +2327,9 @@ export const apiAuthRule: ProjectRule = {
           file: route.file.path,
           line,
           excerpt,
-          ...(indirect ? { evidence: [{ kind: 'operation' as const, file: route.file.path, line,
-            description: 'Data write using a local authentication helper.' }, ...indirectEvidence] } : {}),
+          ...(indirect || delegated.length > 0 ? { evidence: [{ kind: 'operation' as const, file: route.file.path, line,
+            description: indirect ? 'Data write using a local authentication helper.' : 'Call that leads to a database write.' },
+          ...delegatedEvidence, ...indirectEvidence] } : {}),
           why: [
             ...globalNote,
             indirect
