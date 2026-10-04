@@ -43,7 +43,7 @@ npx canship
 | Hono | `app.get()` 等路由、链式调用、`basePath`，以及 `app.route()` 挂载的子应用 |
 | Fastify | 简写与 `route()` 声明、`register()` 前缀与封装作用域、`@fastify/autoload` 目录 |
 
-已识别的 Next.js/Astro 中间件可抑制覆盖范围内的鉴权结果；Server Function 需在函数内检查。Express、Hono、Fastify 的中间件与钩子只有解析到拒绝未认证请求的代码或已知鉴权库时才抑制鉴权结果；名称像鉴权但无法解析的中间件降低置信度。项目自定义的会话或凭据校验（如 `validateSessionToken`）及 webhook 验签（Stripe、Polar、Clerk、Svix，以及 QStash `receiver.verify` 这类须 await 的校验）只有在失败分支抛出、跳转或返回 401/403 时才算鉴权。本地辅助函数、SvelteKit hooks、Nuxt 中间件可降低置信度，但保留结果。输入分析追踪可见的赋值、解构和字符串构造，不以辅助函数名称证明安全。
+已识别的 Next.js/Astro 中间件可抑制覆盖范围内的鉴权结果；Server Function 需在函数内检查。Express、Hono、Fastify 的中间件与钩子只有解析到拒绝未认证请求的代码或已知鉴权库时才抑制鉴权结果；名称像鉴权但无法解析的中间件降低置信度。项目自定义的会话或凭据校验（如 `validateSessionToken`）及 webhook 验签（Stripe、Polar、Clerk、Svix，以及 QStash `receiver.verify` 这类须 await 的校验）只有在失败分支抛出、跳转或返回 401/403 时才算鉴权。本地辅助函数、含鉴权逻辑的项目包装函数（如 `withWorkspace`）、SvelteKit hooks、Nuxt 中间件可降低置信度或将结果标为待复核，但保留结果。输入分析追踪可见的赋值、解构和字符串构造，不以辅助函数名称证明安全。
 
 Express、Hono、Fastify 路由会跟进被调项目函数中的写入，最多两层（处理函数 → service → model）；文件约定路由只报告路由文件内的写入。路由分析不覆盖 SvelteKit 页面 load、remote function 和 Hono 的 `app.openapi()` 路由；凭据、CORS 等内容规则仍适用。
 

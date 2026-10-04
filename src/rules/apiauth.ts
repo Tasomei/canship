@@ -9,7 +9,7 @@ import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { JWT_SOURCE, SB_SECRET_SOURCE } from './patterns.js'
 import { bindingsOf, namePattern } from './bindings.js'
 import { authValuesOf, argumentExpressions, identityRequirement, identityFlowLimited, isServerSecretExpression } from './auth-values.js'
-import { NODE_FRAMEWORKS, authCompositionOf, calleeDefinition, middlewareDefinition, serverRoutesOf } from './routers.js'
+import { NODE_FRAMEWORKS, authCompositionOf, calleeDefinition, functionParams, middlewareDefinition, serverRoutesOf } from './routers.js'
 
 // 识别各框架可被直接请求的服务端路由。
 
@@ -1431,6 +1431,51 @@ const EXPORT_WRAPPER = /\bexport\s+(?:const\s+(?:[A-Za-z_$][\w$]*|\{[^{}]{0,500}
 
 interface IndirectGuards { ops: Map<number, GuardDefinition>; truncated: boolean }
 
+/** 明确的拒绝：401/403 状态、Unauthorized/Forbidden 错误或错误码、跳转到登录页。在保留字符串的文本上匹配。 */
+const AUTH_DENIAL = /\b(?:status(?:Code)?\s*[:(=]\s*|code\s*\(\s*|,\s*)40[13]\b|\b\w*(?:Unauthori[sz]ed|Forbidden)\w*|['"](?:unauthorized|forbidden)['"]|redirect\s*\(\s*['"`][^'"`]*(?:login|sign-?in|auth)/i
+/** 身份或凭据信号。 */
+const AUTH_SIGNAL = /\b(?:session|token|apiKey|api_key|authorization|bearer|jwt|auth|credentials?|currentUser)\b|\b(?:getServerSession|getSession|getUser|getClaims|verifyIdToken|authenticate)\s*\(/i
+
+/**
+ * 带鉴权证据的包装函数（如 dub 的 withWorkspace、inbox-zero 的 withEmailAccount、langfuse 的 createAuthedProjectAPIRoute）：
+ * 函数自身，或它引用、但不接收其参数（处理函数）的项目函数中，同时出现身份或凭据信号与明确的拒绝，最多跟进两层。
+ * 接收处理函数的通用组合函数（withMiddleware(handler, …)）自身的代码不计，避免把只做错误处理的包装当成鉴权。
+ * 只作为间接鉴权：被包住的操作仍报告并标为待复核，不能据此证明受保护。
+ */
+function evidenceWrapper(file: ScanFile, name: string, files: ScanFile[]): GuardDefinition | null {
+  const definition = calleeDefinition(file, name, null, files)
+  if (!definition) return null
+  const queue: Array<{ range: { file: ScanFile; start: number; end: number }; depth: number }> = [{ range: definition, depth: 0 }]
+  const seen = new Set<string>()
+  for (let i = 0; i < queue.length && i < 24; i++) {
+    const { range, depth } = queue[i]!
+    const key = `${range.file.path}\0${range.start}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    const text = commentsMaskedOf(range.file).slice(range.start, range.end + 1)
+    if (AUTH_DENIAL.test(text) && AUTH_SIGNAL.test(text)) {
+      return { file: definition.file, line: lineNumberAt(lineStartsCached(definition.file), definition.start), wrapper: true }
+    }
+    if (depth >= 2) continue
+    const code = noiseMaskedOf(range.file).slice(range.start, range.end + 1)
+    const params = new Set(functionParams({ file: range.file, start: range.start, end: range.end }))
+    const pairs = delimiterPairs(code)
+    for (const m of code.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*(?:<[^()]{0,200}>\s*)?\(|(?<=[(,]\s*)([A-Za-z_$][\w$]*)\s*(?=[,)])/g)) {
+      const callee = m[1] ?? m[2]!
+      if (NOT_CALLEE.test(callee) || params.has(callee)) continue
+      // 实参中带有本函数参数（处理函数）的调用是组合函数，只跟进它的其他实参。
+      if (m[1]) {
+        const close = pairs.get(m.index + m[0].length - 1)
+        const args = close === undefined ? '' : code.slice(m.index + m[0].length, close)
+        if ([...params].some(p => new RegExp(`(?<![\\w$.])${p.replace(/\$/g, '\\$')}(?![\\w$])`).test(args))) continue
+      }
+      const target = calleeDefinition(range.file, callee, null, files)
+      if (target) queue.push({ range: target, depth: depth + 1 })
+    }
+  }
+  return null
+}
+
 /**
  * 仅为实际调用位置提供间接鉴权提示，不删除原始发现。解析结果只影响证据与置信度，
  * 达到上限不会隐藏结果，因此由调用方在结果上附注，而不把整次扫描标为不完整。
@@ -1444,6 +1489,8 @@ function indirectGuardOperations(route: Route, ctx: ScanContext): IndirectGuards
   const names = new Map<string, GuardDefinition>()
   let total = ROUTE_BUDGET
   let truncated = false
+  // 带鉴权证据的包装函数只在可能承担鉴权的名称上尝试，每个路由文件最多 16 个。
+  let evidenceBudget = 16
   for (const name of ordered) {
     if (total <= 0) { truncated = true; break }
     const budget = Math.min(HELPER_BUDGET, total)
@@ -1452,6 +1499,10 @@ function indirectGuardOperations(route: Route, ctx: ScanContext): IndirectGuards
     total -= budget - Math.max(0, state.remaining)
     if (state.truncated) truncated = true
     if (definition) names.set(name, definition)
+    else if (rank(name) <= 1 && evidenceBudget-- > 0) {
+      const wrapper = evidenceWrapper(route.file, name, ctx.files)
+      if (wrapper) names.set(name, wrapper)
+    }
   }
   const protectedOps = new Map<number, GuardDefinition>()
   if (names.size === 0) return { ops: protectedOps, truncated }
@@ -2258,8 +2309,13 @@ export const apiAuthRule: ProjectRule = {
         indirectByFile.set(route.file, indirectGuards)
       }
       const indirectOps = indirectGuards.ops
+      // 间接鉴权之后的委托写入不再单独报告；路由里直接的写入仍按待复核报告。
+      ops = ops.filter(op => !(op.via && indirectOps.has(op.index)))
+      if (ops.length === 0) continue
       const unprotected = ops.filter(op => !indirectOps.has(op.index))
-      if (unprotected.length > 0) ops = unprotected
+      // 优先报告没有任何鉴权的操作；但未受保护的只有读取时，非管理员路由仍应报告间接鉴权后的写入，不能被读取挤掉。
+      if (unprotected.length > 0 && (unprotected.some(op => op.writes) || !ops.some(op => op.writes) ||
+          usesAdminClient(route, adminModules, ctx.files))) ops = unprotected
 
       const url = route.url
       if (isAuthEndpoint(route)) continue

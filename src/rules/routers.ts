@@ -439,6 +439,20 @@ function expressionEnd(a: Analysed, from: number): number {
 
 export interface CodeRange { file: ScanFile; start: number; end: number; arrow?: boolean }
 
+/**
+ * 泛型箭头函数 <T extends A, U>(…) => … 的泛型参数列表不是括号对，其中的逗号会让表达式提前结束；
+ * 从 < 起跳过到配对的 >（不计 =>），返回其后的位置。不以 < 开头时原样返回。
+ */
+function skipGenerics(code: string, from: number): number {
+  if (code[from] !== '<') return from
+  let depth = 0
+  for (let i = from; i < Math.min(code.length, from + 2000); i++) {
+    if (code[i] === '<') depth++
+    else if (code[i] === '>' && code[i - 1] !== '=' && --depth === 0) return i + 1
+  }
+  return from
+}
+
 /** 实参中的函数表达式：有函数体时取函数体，表达式箭头函数取 => 起的整个表达式。 */
 function functionAt(a: Analysed, from: number, to: number): CodeRange | null {
   const body = a.bodies.find(b => b.declaration >= from && b.start < to)
@@ -471,7 +485,7 @@ function findFunction(a: Analysed, name: string, depth = 0): CodeRange | null {
       const target = findFunction(a, alias[1]!, depth + 1)
       if (target) return target
     }
-    return { file: a.file, start: from, end: expressionEnd(a, from) }
+    return { file: a.file, start: from, end: expressionEnd(a, skipGenerics(a.code, from)) }
   }
   // 对象属性 name: fn，以及方法简写 name(…) { … }（对象与类）。
   for (const m of a.code.matchAll(new RegExp(`(?<![\\w$.])(?:async\\s+)?${escaped}\\s*(?:\\(|:\\s*)`, 'g'))) {
@@ -692,6 +706,11 @@ function mountedFile(a: Analysed, arg: Arg, files: ScanFile[]): ScanFile | null 
   if (inline) return moduleFor(inline[1]!, a.file, files)
   const ident = /^([A-Za-z_$][\w$]*)$/.exec(arg.text)
   return ident ? importOf(a, ident[1]!, files)?.file ?? null : null
+}
+
+/** 函数定义范围的形参名，供其他规则使用。 */
+export function functionParams(range: CodeRange): string[] {
+  return paramNamesOf(analyse(range.file), range).filter(Boolean)
 }
 
 /** 函数的形参名，按位置排列；无法确定时返回空数组。range 为函数体（以 { 开头）或函数表达式的起点。 */
