@@ -8,8 +8,8 @@ import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { JWT_SOURCE, SB_SECRET_SOURCE } from './patterns.js'
 import { bindingsOf, namePattern } from './bindings.js'
-import { authValuesOf, argumentExpressions, identityRequirement, identityFlowLimited } from './auth-values.js'
-import { middlewareDefinition, serverRoutesOf } from './express.js'
+import { authValuesOf, argumentExpressions, identityRequirement, identityFlowLimited, isServerSecretExpression } from './auth-values.js'
+import { NODE_FRAMEWORKS, authCompositionOf, middlewareDefinition, serverRoutesOf } from './routers.js'
 
 // 识别各框架可被直接请求的服务端路由。
 
@@ -53,7 +53,7 @@ const ASTRO_ENDPOINT = /^(.*?\/)?src\/pages\/(.+)\.[mc]?[jt]s$/
 const ASTRO_EXPORT =
   /\bexport\s+(?:async\s+)?function\s+(?:GET|POST|PUT|PATCH|DELETE|ALL)\b|\bexport\s+const\s+(?:GET|POST|PUT|PATCH|DELETE|ALL)\b/
 
-type Framework = 'next' | 'astro' | 'sveltekit' | 'nuxt' | 'remix' | 'express'
+type Framework = 'next' | 'astro' | 'sveltekit' | 'nuxt' | 'remix' | 'express' | 'hono' | 'fastify'
 
 /** 按 HTTP 方法导出且没有默认导出的脚本是 Astro 端点。 */
 function isAstroEndpoint(file: ScanFile): boolean {
@@ -61,7 +61,7 @@ function isAstroEndpoint(file: ScanFile): boolean {
   return ASTRO_EXPORT.test(code) && !/\bexport\s+default\b/.test(code)
 }
 
-/** Express 路由上的一个中间件实参，以及它所在的文件（路由文件或挂载它的文件）。 */
+/** Express/Hono/Fastify 路由上的一个中间件或钩子实参，以及它所在的文件（路由文件或挂载、注册它的文件）。 */
 export interface MiddlewareRef { text: string; at: number; file: ScanFile }
 
 /** 一个可被直接请求的服务端路由。 */
@@ -75,9 +75,9 @@ export interface Route {
   reachable?: { start: number; end: number }
   /** Next.js Server Function 的函数名；没有独立 URL，中间件不能证明其受保护。 */
   action?: string
-  /** Express：路由参数中的中间件，以及同一实例上更早注册的 use() 中间件。 */
+  /** Express/Hono/Fastify：路由参数或选项中的中间件与钩子，以及同一实例上更早注册的 use()/addHook()。 */
   middleware?: MiddlewareRef[]
-  /** Express：每处挂载该 Router 时经过的中间件；所有挂载都受保护时路由才算受保护。 */
+  /** Express/Hono：每处挂载该 Router 或子应用时经过的中间件；所有挂载都受保护时路由才算受保护。 */
   mounts?: MiddlewareRef[][]
 }
 
@@ -321,12 +321,12 @@ const PROVIDER_CALLBACK = /^(?:\/api)?\/(?:auth|oauth|login|sign-?in)\/[^/]+\/ca
 /** nuxt-auth-utils 的 OAuth 处理函数本身就是登录入口。 */
 const OAUTH_HANDLER = /\bdefineOAuth\w*EventHandler\s*\(/
 
-/** Express 路由常把登录、注册等入口放在任意前缀下，按最后一段路径判断。 */
-const EXPRESS_AUTH_PATH = /\/(?:sign[-_]?(?:in|up|out)|log[-_]?(?:in|out)|register|forgot[-_]?password|reset[-_]?password|verify(?:[-_]?email)?|confirm(?:[-_]?email)?|magic[-_]?link|otp|callback|refresh(?:[-_]?token)?)\/?$/i
+/** Express/Hono/Fastify 路由常把登录、注册等入口放在任意前缀下，按最后一段路径判断。 */
+const NODE_AUTH_PATH = /\/(?:sign[-_]?(?:in|up|out)|log[-_]?(?:in|out)|register|forgot[-_]?password|reset[-_]?password|verify(?:[-_]?email)?|confirm(?:[-_]?email)?|magic[-_]?link|otp|callback|refresh(?:[-_]?token)?|(?:[\w-]*(?:password|passkey|webauthn|credentials)|oauth|sso)\/authori[sz]e|oauth\/(?:token|revoke|introspect|register))\/?$/i
 
 function isAuthEndpoint(route: Route): boolean {
   if (route.action !== undefined) return AUTH_ACTION_NAMES.test(route.action)
-  if (route.framework === 'express') return EXPRESS_AUTH_PATH.test(route.url)
+  if (NODE_FRAMEWORKS.has(route.framework)) return NODE_AUTH_PATH.test(route.url)
   // 不按任意捕获路径豁免，仅识别明确的认证处理方式。
   return AUTH_ENDPOINT_NAMES.test(route.url) || AUTH_CALLBACK.test(route.url) ||
     PROVIDER_CALLBACK.test(route.url) || OAUTH_HANDLER.test(noiseMaskedOf(route.file))
@@ -359,9 +359,13 @@ const SECRET_MISMATCH = new RegExp(`^${COMPARED_VALUE}\\s*!={1,2}\\s*${COMPARED_
 /** 终止请求的语句；SvelteKit 2 的 error(401) 无需 throw 即会中止。 */
 const STOPS_REQUEST = /^(?:(?:return|throw|redirect|notFound)\b|error\s*\(\s*40[13]\b)/
 
-/** 明确返回 401/403：Response 状态、SvelteKit error() 及 Nuxt createError 的 statusCode。 */
+/**
+ * 明确返回 401/403：Response 状态、SvelteKit error() 及 Nuxt createError 的 statusCode，
+ * Fastify 的 reply.code(401)，Hono 的 c.text(…, 401)/c.json(…, 401)，
+ * 以及状态码作首个实参的错误构造与辅助函数：HTTPException(401)、createError(401)、quickError(401, …)。
+ */
 const DENIED_STATUS =
-  /\b(?:return|throw)\b[\s\S]{0,300}\bstatus(?:Code)?\s*[:(=]\s*(?:401|403)\b|\berror\s*\(\s*40[13]\b/i
+  /\b(?:return|throw)\b[\s\S]{0,300}(?:\bstatus(?:Code)?\s*[:(=]\s*|\bcode\s*\(\s*|\b\w*(?:Error|Exception|Response)\s*\(\s*|\b(?:c|ctx|context)\s*\.\s*(?:json|text|body|html|newResponse)\s*\([^;]{0,300}?,\s*)(?:401|403)\b|\berror\s*\(\s*40[13]\b/i
 
 /** 在已屏蔽文本中匹配分隔符。 */
 function closingDelimiter(source: string, start: number, open: string, close: string): number | null {
@@ -385,15 +389,30 @@ function controlledStatement(source: string, afterCondition: number): string {
     const end = closingDelimiter(source, start, '{', '}')
     return source.slice(start, end === null ? Math.min(source.length, start + 600) : end + 1)
   }
-  const semicolon = source.indexOf(';', start)
-  const end = semicolon === -1 ? Math.min(source.length, start + 400) : Math.min(semicolon + 1, start + 400)
-  return source.slice(start, end)
+  // 单条语句在顶层分号处结束；无分号风格的代码在不构成续行的顶层换行处结束，不能把后续语句算作分支内容。
+  const limit = Math.min(source.length, start + 400)
+  let depth = 0
+  for (let i = start; i < limit; i++) {
+    const ch = source[i]!
+    if ('([{'.includes(ch)) depth++
+    else if (')]}'.includes(ch)) depth--
+    else if (depth === 0 && ch === ';') return source.slice(start, i + 1)
+    else if (depth === 0 && ch === '\n') {
+      const before = source.slice(start, i).trimEnd()
+      const after = source.slice(i + 1, i + 40).trimStart()
+      if (before !== '' && !/[=+\-*/%&|^!?:,.([{<>]$/.test(before) && !/^(?:[.?+\-*/%&|^,:<>=)\]}]|=>)/.test(after)) return source.slice(start, i)
+    }
+  }
+  return source.slice(start, limit)
 }
 
-/** 条件中的单项是否在身份缺失时成立，如 !session?.user。 */
+/** 来源、跨域、限流与人机验证检查：即使返回 403 也不是身份认证。 */
+const NON_IDENTITY_CHECK = /origin|referr?er|cors|rate[_-]?limit|captcha/i
+
+/** 条件中的单项是否在身份缺失时成立，如 !session?.user；没有身份词时须明确返回 401/403，且不是来源或限流检查。 */
 function rejectsMissingIdentity(term: string, returnsDeniedStatus: boolean): boolean {
   const rejects = NEGATED_IDENTITY.test(term) || IDENTITY_IS_EMPTY.test(term) || IDENTITY_MISMATCH.test(term)
-  return rejects && (AUTH_CONDITION.test(term) || returnsDeniedStatus)
+  return rejects && (AUTH_CONDITION.test(term) || (returnsDeniedStatus && !NON_IDENTITY_CHECK.test(term)))
 }
 
 /** 只有拒绝未认证请求的条件分支才能提供保护。 */
@@ -1437,8 +1456,12 @@ function findDataOps(file: ScanFile): DataHit[] {
   }
 
   PRISMA_RAW.lastIndex = 0
+  const source = commentsMaskedOf(file)
   while ((m = PRISMA_RAW.exec(code)) !== null) {
-    push(m.index, (m[1] ?? '') === 'executeRaw')
+    // $executeRaw`SELECT 1` 之类的探活查询只读，不算写入；SELECT … INTO 除外。
+    const statement = source.slice(m.index + m[0].length, m.index + m[0].length + 300)
+    const readOnly = /^(?:Unsafe)?\s*(?:`|\(\s*['"`])\s*SELECT\b(?![^`'"]*\bINTO\b)/i.test(statement)
+    push(m.index, (m[1] ?? '') === 'executeRaw' && !readOnly)
   }
 
   DRIZZLE_OP.lastIndex = 0
@@ -1860,14 +1883,27 @@ const AUTH_LIBRARIES: Array<[RegExp, RegExp]> = [
   [/^@clerk\/(?:express|clerk-sdk-node)$/, /^(?:requireAuth|ClerkExpressRequireAuth)\s*\(/],
   [/^connect-ensure-login$/, /^(?:ensureLoggedIn|[A-Za-z_$][\w$]*\s*\.\s*ensureLoggedIn)\s*\(/],
   [/^express-basic-auth$/, /^[A-Za-z_$][\w$]*\s*\(/],
+  [/^hono\/jwt$/, /^jwt\s*\(/],
+  [/^hono\/jwk$/, /^jwk\s*\(/],
+  [/^hono\/bearer-auth$/, /^bearerAuth\s*\(/],
+  [/^hono\/basic-auth$/, /^basicAuth\s*\(/],
+  // 注册即为所在作用域添加 onRequest 校验钩子。
+  [/^@fastify\/bearer-auth$/, /^[A-Za-z_$][\w$]*$/],
 ]
+
+/** 注册后以实例装饰器提供校验函数的 Fastify 插件：onRequest: fastify.basicAuth。 */
+const FASTIFY_AUTH_DECORATORS: Array<[string, string]> = [['@fastify/basic-auth', 'basicAuth']]
 
 /** 只附加身份或处理其他安全问题、从不拒绝未认证请求的常见中间件包。 */
 const NON_AUTH_MIDDLEWARE = /^(?:express-session|cookie-session|cookie-parser|lusca|helmet|cors|csurf|express-rate-limit|body-parser|multer|compression|morgan|connect-flash|express-flash|connect-mongo|express-validator)$/
 
+/** 返回 401/403：Express 的 status()/sendStatus()、Fastify 的 reply.code()、Hono 的 c.json(…, 401)，以及 HTTPException(401)。 */
+const DENIED_RESPONSE =
+  /\b(?:sendStatus|status|code)\s*\(\s*40[13]\b|\bstatus(?:Code)?\s*:\s*40[13]\b|,\s*40[13]\s*\)|\bHTTPException\s*\(\s*40[13]\b/
+
 /** 拒绝请求：重定向（通常到登录页）、401/403，或把鉴权错误交给 next。 */
-const DENIES_REQUEST =
-  /\bres(?:ponse)?\s*\.\s*(?:redirect\s*\(|sendStatus\s*\(\s*40[13]\b|status\s*\(\s*40[13]\b)|\bnext\s*\(\s*(?:new\s+)?[\w$.]*(?:Unauthori[sz]ed|Forbidden|Auth)\w*/
+const DENIES_REQUEST = new RegExp(
+  String.raw`\b(?:res(?:ponse)?|c|ctx)\s*\.\s*redirect\s*\(|${DENIED_RESPONSE.source}|\bnext\s*\(\s*(?:new\s+)?[\w$.]*(?:Unauthori[sz]ed|Forbidden|Auth)\w*`)
 
 /** 先放行后拒绝：if (req.isAuthenticated()) return next()，分支之后重定向登录页或返回 401/403。 */
 function passesOnlyAuthenticated(code: string): boolean {
@@ -1878,26 +1914,121 @@ function passesOnlyAuthenticated(code: string): boolean {
     const condition = code.slice(open + 1, close)
     if (condition.trimStart().startsWith('!') || !AUTH_CONDITION.test(condition)) continue
     const rest = code.slice(close + 1)
-    const pass = /^\s*\{?\s*(?:return\s+)?next\s*\(\s*\)\s*;?\s*\}?/.exec(rest)
+    const pass = /^\s*\{?\s*(?:return\s+)?(?:await\s+)?next\s*\(\s*\)\s*;?\s*(?:return\s*;?\s*)?\}?/.exec(rest)
     if (pass && DENIES_REQUEST.test(rest.slice(pass[0].length))) return true
   }
   return false
 }
 
-/** 中间件代码是否拒绝未认证请求：条件分支中按缺失身份返回或抛出，先放行已认证请求再拒绝，已知鉴权调用，或验证令牌后对失败返回 401/403。 */
+/**
+ * Fastify 的 request.jwtVerify() 失败时抛出：不捕获，或在 catch 中把错误发回、重新抛出或返回 401/403，都会拒绝请求。
+ * 来源：https://github.com/fastify/fastify-jwt （decorate('authenticate', …) 用法）
+ */
+function jwtVerifyRejects(code: string): boolean {
+  if (!/\.\s*jwtVerify\s*\(/.test(code)) return false
+  const handlers = [...code.matchAll(/\bcatch\s*(?:\([^()]*\))?\s*\{/g)].map(m => {
+    const open = m.index + m[0].length - 1
+    return code.slice(open, closingDelimiter(code, open, '{', '}') ?? open)
+  })
+  return handlers.every(body => /\bsend\s*\(|\bthrow\b/.test(body) || DENIED_RESPONSE.test(body))
+}
+
+/**
+ * 请求值与服务器密钥不一致时返回 401/403：if (c.req.header('authorization') !== env.CRON_SECRET) return c.text('…', 401)。
+ * 条件可用 || 连接其他拒绝条件，不能含 && 或三元条件。
+ */
+function rejectsSecretMismatch(code: string): boolean {
+  for (const m of code.matchAll(/\bif\s*\(/g)) {
+    const open = m.index + m[0].length - 1
+    const close = closingDelimiter(code, open, '(', ')')
+    if (close === null) continue
+    const condition = code.slice(open + 1, close)
+    if (/&&|\?(?!\.)/.test(condition)) continue
+    const mismatch = condition.split('||').some(part => {
+      const sides = /^([\s\S]*?)\s*!={1,2}\s*([\s\S]*)$/.exec(part.trim())
+      return sides !== null && (isServerSecretExpression(sides[1]!) || isServerSecretExpression(sides[2]!))
+    })
+    if (mismatch && DENIED_STATUS.test(controlledStatement(code, close + 1))) return true
+  }
+  return false
+}
+
+/**
+ * try 中调用校验函数、catch 中每个出口都拒绝请求：try { req.client = await validateRequest(req.headers) } catch { return reply.status(401).send() }。
+ * catch 顶层须以 return/throw 退出，其中的每个 return 都返回 401/403 或把错误发回，throw 视为拒绝。
+ */
+function catchDenies(code: string): boolean {
+  for (const m of code.matchAll(/\btry\s*\{/g)) {
+    const tryOpen = m.index + m[0].length - 1
+    const tryClose = closingDelimiter(code, tryOpen, '{', '}')
+    if (tryClose === null) continue
+    if (!/\b\w*(?:auth|valid|verify|session|token|user|client|key|secret|permission|access)\w*\s*\(/i.test(code.slice(tryOpen, tryClose))) continue
+    const handler = /^\s*catch\s*(?:\([^()]*\))?\s*\{/.exec(code.slice(tryClose + 1))
+    if (!handler) continue
+    const open = tryClose + handler[0].length
+    const close = closingDelimiter(code, open, '{', '}')
+    if (close === null) continue
+    const body = code.slice(open + 1, close)
+    const exits = [...body.matchAll(/\b(?:return|throw)\b/g)].map(exit => exit.index)
+    if (exits.length === 0) continue
+    const denies = exits.every((at, i) => {
+      const statement = body.slice(at, exits[i + 1] ?? body.length)
+      return statement.startsWith('throw') || DENIED_STATUS.test(statement) || /\bsend\s*\(\s*(?:err|error|e)\s*\)/.test(statement)
+    })
+    // catch 顶层必须有退出，嵌套分支中的退出不覆盖其余路径。
+    const pairs = delimiterPairs(body)
+    let topLevelExit = false
+    for (let i = 0; i < body.length; i++) {
+      const end = pairs.get(i)
+      if (end !== undefined) { i = end; continue }
+      if (/^(?:return|throw)\b/.test(body.slice(i, i + 6)) && (i === 0 || !/[\w$.]/.test(body[i - 1]!))) { topLevelExit = true; break }
+    }
+    if (denies && topLevelExit) return true
+  }
+  return false
+}
+
+/** 中间件中承载凭据的名称，允许驼峰拼接：authorizationSecret、apiKey、isValidSignature。 */
+const MIDDLEWARE_CREDENTIAL = /auth|secret|token|api[_-]?key|signature|session|jwt|bearer|credential|password|timingSafeEqual|verif/i
+
+/**
+ * 中间件中按凭据缺失或校验失败拒绝：if (!authorizationSecret) throw …、if (!await timingSafeEqual(a, b)) throw …。
+ * 中间件只负责放行或拒绝，这里的退出即拒绝请求，因此接受驼峰拼接的凭据名称与 await 的校验结果。
+ */
+function rejectsMissingCredential(code: string): boolean {
+  // 只接受取反与判空；两值比较可能两边都来自请求，与服务器密钥的比较由 rejectsSecretMismatch 判断。
+  return hasConditionalAuthGuard(code.replace(/!\s*await\s+/g, '!'), false, term =>
+    (NEGATED_IDENTITY.test(term) || IDENTITY_IS_EMPTY.test(term)) && MIDDLEWARE_CREDENTIAL.test(term))
+}
+
+/** 中间件代码是否拒绝未认证请求：条件分支中按缺失身份或凭据返回或抛出，先放行已认证请求再拒绝，与服务器密钥比较，校验失败的 catch 中拒绝，已知鉴权调用，或验证令牌后对失败返回 401/403。 */
 function middlewareRejects(code: string): boolean {
-  if (hasConditionalAuthGuard(code) || passesOnlyAuthenticated(code) || AUTH_ENFORCING_CALL.test(code)) return true
+  if (hasConditionalAuthGuard(code) || rejectsMissingCredential(code) || passesOnlyAuthenticated(code) || rejectsSecretMismatch(code) || catchDenies(code) ||
+      AUTH_ENFORCING_CALL.test(code) || jwtVerifyRejects(code)) return true
   return /\b(?:jwt\s*\.\s*verify|jwtVerify|verifyToken|verifyJwt|verifyIdToken|verifyAccessToken)\s*\(/.test(code) &&
-    /\b(?:sendStatus|status)\s*\(\s*40[13]\b|\bstatus(?:Code)?\s*:\s*40[13]\b/.test(code)
+    DENIED_RESPONSE.test(code)
 }
 
 type MiddlewareStatus = 'guard' | 'unconfirmed' | 'none'
 
-function middlewareStatus(ref: MiddlewareRef, files: ScanFile[]): { status: MiddlewareStatus; name: string } {
-  const { name, range, spec } = middlewareDefinition(ref, files)
+function middlewareStatus(ref: MiddlewareRef, files: ScanFile[], depth = 0): { status: MiddlewareStatus; name: string } {
+  // @fastify/auth：默认任一函数通过即放行，所以每个函数都须拒绝；relation: 'and' 时有一个拒绝即可。
+  const composition = depth < 3 ? authCompositionOf(ref) : null
+  if (composition) {
+    const parts = composition.refs.map(part => middlewareStatus(part, files, depth + 1))
+    const guarded = composition.relation === 'and'
+      ? parts.some(part => part.status === 'guard')
+      : parts.length > 0 && parts.every(part => part.status === 'guard')
+    if (guarded) return { status: 'guard', name: 'auth' }
+    const unconfirmed = parts.find(part => part.status === 'unconfirmed')
+    return unconfirmed ?? { status: 'none', name: 'auth' }
+  }
+  const { name, range, spec, inline } = middlewareDefinition(ref, files)
+  const known = spec ? AUTH_LIBRARIES.find(([pkg]) => pkg.test(spec)) : undefined
+  if (known && known[1].test(ref.text)) return { status: 'guard', name }
+  // 内联函数，或 createMiddleware(async (c, next) => …) 之类包装中的函数。
+  if (inline && middlewareRejects(noiseMaskedOf(inline.file).slice(inline.start, inline.end + 1))) return { status: 'guard', name }
   if (spec) {
-    const known = AUTH_LIBRARIES.find(([pkg]) => pkg.test(spec))
-    if (known && known[1].test(ref.text)) return { status: 'guard', name }
     // 鉴权库的其他调用（passport.session()、passport.initialize()）只附加身份。
     if (known || NON_AUTH_MIDDLEWARE.test(spec)) return { status: 'none', name }
   } else if (range) {
@@ -1905,16 +2036,21 @@ function middlewareStatus(ref: MiddlewareRef, files: ScanFile[]): { status: Midd
     if (middlewareRejects(code)) return { status: 'guard', name }
     // 初始化为库中间件的本地变量，如 const auth = passport.authenticate('jwt')。
     const initializer = commentsMaskedOf(range.file).slice(range.start, range.end + 1).trim()
-    if (initializer !== ref.text && /^[A-Za-z_$][\w$.]*\s*\(/.test(initializer)) {
-      const inner = middlewareStatus({ text: initializer, at: range.start, file: range.file }, files)
+    if (initializer !== ref.text && /^[A-Za-z_$][\w$.]*\s*\(/.test(initializer) && depth < 3) {
+      const inner = middlewareStatus({ text: initializer, at: range.start, file: range.file }, files, depth + 1)
       if (inner.status === 'guard') return { status: 'guard', name }
     }
+  } else if (/^[A-Za-z_$][\w$]*\s*\.\s*[A-Za-z_$][\w$]*$/.test(ref.text)) {
+    // 插件提供的装饰器：项目注册了 @fastify/basic-auth 时的 fastify.basicAuth。
+    const plugin = FASTIFY_AUTH_DECORATORS.find(([pkg, decorator]) =>
+      decorator === name && files.some(file => file.content.includes(`'${pkg}'`) || file.content.includes(`"${pkg}"`)))
+    if (plugin) return { status: 'guard', name }
   }
   return { status: AUTH_HELPER_NAME.test(name) ? 'unconfirmed' : 'none', name }
 }
 
-/** Express 路由是否受中间件保护：路由自身的中间件中有一个确认的鉴权，或每一处挂载都经过确认的鉴权。 */
-function expressGuardStatus(route: Route, files: ScanFile[]): { guarded: boolean; unconfirmed: string[] } {
+/** Node 框架路由是否受中间件保护：路由自身的中间件中有一个确认的鉴权，或每一处挂载都经过确认的鉴权。 */
+function middlewareGuardStatus(route: Route, files: ScanFile[]): { guarded: boolean; unconfirmed: string[] } {
   const unconfirmed = new Set<string>()
   const scan = (refs: MiddlewareRef[]): boolean => {
     let guarded = false
@@ -1994,10 +2130,10 @@ export const apiAuthRule: ProjectRule = {
       // Next.js 与 Astro 的中间件逐路由判断保护范围。
       if ((route.framework === 'next' || route.framework === 'astro') && route.action === undefined &&
           middlewareCovers(ctx, route)) continue
-      // Express：能确认会拒绝未认证请求的中间件使路由受保护；名称像鉴权但无法确认的降低置信度。
+      // Express/Hono/Fastify：能确认会拒绝未认证请求的中间件使路由受保护；名称像鉴权但无法确认的降低置信度。
       let unconfirmedMiddleware: string[] = []
-      if (route.framework === 'express') {
-        const status = expressGuardStatus(route, ctx.files)
+      if (NODE_FRAMEWORKS.has(route.framework)) {
+        const status = middlewareGuardStatus(route, ctx.files)
         if (status.guarded) continue
         unconfirmedMiddleware = status.unconfirmed
       }

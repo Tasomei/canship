@@ -3,8 +3,10 @@
  * 来源：https://docs.stripe.com/webhooks （Verify events are sent from Stripe）
  */
 import type { Finding, Rule, ScanContext, ScanFile } from '../types.js'
+import { commentsMaskedOf } from '../mask.js'
+import type { MiddlewareRef, Route } from './apiauth.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
-import { serverRoutesOf } from './express.js'
+import { NODE_FRAMEWORKS, middlewareDefinition, serverRoutesOf } from './routers.js'
 import { LocalVerification } from './verification.js'
 
 /** 按事件类型分支：case 'checkout.session.completed' 或 event.type === 'invoice.paid'。 */
@@ -34,7 +36,23 @@ function eventName(context: LocalVerification, event: RegExpExecArray): string |
   return name
 }
 
-const READS_BODY = /\.\s*(?:json|text|arrayBuffer|formData)\s*\(|\breq(?:uest)?\s*\.\s*body\b|\b(?:readBody|readRawBody)\s*\(|\bbuffer\s*\(\s*req\b/
+/** 读取请求体：请求对象上的 json()/text() 等（含 Hono 的 c.req），不含 c.json()、res.json() 之类的响应。 */
+const READS_BODY = /(?<![\w$])(?:req|request)\s*(?:\.\s*raw\s*)?\.\s*(?:json|text|arrayBuffer|formData|parseBody)\s*\(|\breq(?:uest)?\s*\.\s*body\b|\b(?:readBody|readRawBody)\s*\(|\bbuffer\s*\(\s*req\b/
+
+/** 验签中间件：调用 constructEvent，或读取 stripe-signature 请求头交给解析函数。 */
+const SIGNATURE_MIDDLEWARE = /\bconstructEvent(?:Async)?\s*\(|['"]stripe-signature['"]/i
+
+/** Express/Hono/Fastify 路由经过的中间件中有验签中间件：事件由它验证后放入上下文。 */
+function verifiedByMiddleware(route: Route, files: ScanFile[]): boolean {
+  if (!NODE_FRAMEWORKS.has(route.framework)) return false
+  const verifies = (ref: MiddlewareRef): boolean => {
+    const { inline, range } = middlewareDefinition(ref, files)
+    const target = inline ?? range
+    return target !== null && SIGNATURE_MIDDLEWARE.test(commentsMaskedOf(target.file).slice(target.start, target.end + 1))
+  }
+  const mounts = route.mounts ?? []
+  return (route.middleware ?? []).some(verifies) || (mounts.length > 0 && mounts.every(refs => refs.some(verifies)))
+}
 
 export const webhookRule: Rule = {
   id: 'webhook/unverified-signature',
@@ -56,7 +74,7 @@ export const webhookRule: Rule = {
     for (const event of source.matchAll(new RegExp(STRIPE_EVENT.source, 'g'))) {
       if (code[event.index] !== source[event.index]) continue
       const route = routeAt(event.index)
-      if (!route) continue
+      if (!route || verifiedByMiddleware(route, ctx.files)) continue
       const owner = context.owner(event.index)
       const name = eventName(context, event)
       if (name && verifiedEvent(context, name, event.index)) continue

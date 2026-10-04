@@ -40,10 +40,12 @@ Credential formats include OpenAI, Anthropic, AWS, Stripe, GitHub, and npm. Fire
 | Remix / React Router | `loader` and `action` exports in `app/routes` |
 | Astro | Endpoints in `src/pages` |
 | Express | `app`/`Router` routes, including `.route()` chains, mounted routers, and controllers in other files |
+| Hono | `app.get()`-style routes, chains, `basePath`, and sub-apps mounted with `app.route()` |
+| Fastify | Shorthand and `route()` declarations, `register()` prefixes and encapsulation, `@fastify/autoload` directories |
 
-Recognised Next.js/Astro middleware may suppress covered auth findings; Server Functions need local checks. Express middleware suppresses auth findings only when it resolves to code that rejects unauthenticated requests or to a known auth library; auth-like middleware that cannot be followed lowers confidence. Local helpers, SvelteKit hooks, and Nuxt middleware may lower confidence without suppressing findings. Input analysis follows visible assignments, destructuring, and string construction; helper names alone do not prove sanitisation.
+Recognised Next.js/Astro middleware may suppress covered auth findings; Server Functions need local checks. Express, Hono, and Fastify middleware and hooks suppress auth findings only when they resolve to code that rejects unauthenticated requests or to a known auth library; auth-like middleware that cannot be followed lowers confidence. Local helpers, SvelteKit hooks, and Nuxt middleware may lower confidence without suppressing findings. Input analysis follows visible assignments, destructuring, and string construction; helper names alone do not prove sanitisation.
 
-SvelteKit page loads, remote functions, Express writes delegated to service modules, and Hono/Fastify handlers are outside route analysis. Content-based checks, including credentials and CORS, still apply.
+SvelteKit page loads, remote functions, Hono `app.openapi()` routes, and Express/Hono/Fastify writes delegated to service modules are outside route analysis. Content-based checks, including credentials and CORS, still apply.
 
 ## Results
 

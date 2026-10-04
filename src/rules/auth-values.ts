@@ -20,6 +20,18 @@ function project(value: AuthValue, path: string[]): AuthValue {
   }
   return current
 }
+
+/** 服务器环境变量：process.env.X，Hono/Workers 绑定 c.env.X，以及 env.X、env().X 之类的环境配置对象。 */
+const SERVER_ENV = /^(?:process\s*\.\s*env|(?:[A-Za-z_$][\w$]*\s*\.\s*)?env(?:\s*\(\s*\))?)\s*\.\s*[A-Z_][A-Z0-9_]*$/
+
+/** 服务器密钥，或只插入一个服务器密钥的模板（如 `Bearer ${process.env.CRON_SECRET}`）。 */
+export function isServerSecretExpression(expression: string): boolean {
+  const text = expression.trim()
+  if (SERVER_ENV.test(text)) return true
+  const template = /^`[^`$]*\$\{([^{}`]{1,200})\}[^`$]*`$/.exec(text)
+  return template !== null && SERVER_ENV.test(template[1]!.trim())
+}
+
 interface Assignment { at: number; expression: string; projection: string[] | null; overLimit: boolean }
 const limited = new WeakSet<ScanFile>()
 const cache = new WeakMap<ScanFile, Map<number, AuthValues>>()
@@ -182,7 +194,7 @@ class AuthValues {
     if (this.exhausted || depth >= 8) return { kind: 'opaque' }
     const expr = expression.trim()
     if (expr.length > 4000) { limited.add(this.file); return { kind: 'opaque' } }
-    if (/^process\.env\.[A-Z_][A-Z0-9_]*$/.test(expr)) return { kind: 'secret' }
+    if (SERVER_ENV.test(expr)) return { kind: 'secret' }
     // 仅插入一个服务器密钥的模板（如 `Bearer ${process.env.CRON_SECRET}`）仍按密钥比较处理。
     const template = /^`[^`$]*\$\{([^{}`]{1,200})\}[^`$]*`$/.exec(expr)
     if (template) return this.value(template[1]!, at, depth + 1).kind === 'secret' ? { kind: 'secret' } : { kind: 'literal' }

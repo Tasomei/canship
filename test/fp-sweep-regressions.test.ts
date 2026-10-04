@@ -26,6 +26,39 @@ const summary = (findings: Finding[]) => findings
   .filter(f => /^(?:injection|ssrf|redirect|webhook)\//.test(f.ruleId))
   .map(f => [f.ruleId, f.file, f.line, f.confidence])
 
+describe('statements without semicolons', () => {
+  test('a one-line branch ends at its line, so a later denial is not borrowed', async () => {
+    const route = (guard: string) => "import { db } from '@/lib/db'\nexport async function POST(request: Request) {\n" +
+      `  const origin = request.headers.get('origin')\n${guard}  await db.item.deleteMany({})\n  return Response.json({ ok: true })\n}\n`
+    const writes = (result: ScanResult) => result.findings.filter(f => f.ruleId === 'api/db-write-without-auth').map(f => [f.file, f.line])
+    // if (!origin) 放行，之后的 403 只针对不允许的来源，不是鉴权。
+    assert.deepEqual(writes(await run({ 'app/api/items/route.ts': route(
+      "  if (!origin)\n    return Response.json({ ok: true })\n  if (!allowed(origin))\n    return Response.json({ error: 'forbidden' }, { status: 403 })\n") })),
+      [['app/api/items/route.ts', 8]])
+  })
+})
+
+describe('addresses built with join', () => {
+  test('a fixed host joined with input in the query is safe; input at the start is not', async () => {
+    const route = (first: string) => `export async function GET(request: Request) {\n  const code = new URL(request.url).searchParams.get('code')\n` +
+      `  const url = [${first}, \`?code=\${code}\`].join('')\n  return Response.json(await (await fetch(url)).json())\n}\n`
+    const ssrf = (result: ScanResult) => summary(result.findings).filter(f => f[0] === 'ssrf/request-url')
+    assert.deepEqual(ssrf(await run({ 'app/api/oauth/route.ts': route("'https://slack.com/api/oauth.v2.access'") })), [])
+    assert.deepEqual(ssrf(await run({ 'app/api/oauth/route.ts': route("new URL(request.url).searchParams.get('target')") })),
+      [['ssrf/request-url', 'app/api/oauth/route.ts', 4, 'likely']])
+  })
+})
+
+describe('raw database statements', () => {
+  test('a SELECT probe through $executeRaw is a read; other raw statements are writes', async () => {
+    const route = (sql: string) => `import { db } from '@/lib/db'\nexport async function GET() {\n  await db.$executeRaw\`${sql}\`\n  return Response.json({ ok: true })\n}\n`
+    const writes = (result: ScanResult) => result.findings.filter(f => f.ruleId === 'api/db-write-without-auth').map(f => [f.file, f.line])
+    assert.deepEqual(writes(await run({ 'app/api/health/route.ts': route('SELECT 1') })), [])
+    assert.deepEqual(writes(await run({ 'app/api/health/route.ts': route('DELETE FROM sessions') })), [['app/api/health/route.ts', 3]])
+    assert.deepEqual(writes(await run({ 'app/api/health/route.ts': route('SELECT * INTO archive FROM sessions') })), [['app/api/health/route.ts', 3]])
+  })
+})
+
 describe('long expressions are ordinary code', () => {
   test('a large call in a declaration does not make a clean scan incomplete', async () => {
     const steps = Array.from({ length: 200 }, (_, i) => `      writer.write({ type: 'step', index: ${i}, label: 'processing step number ${i}' })`).join('\n')

@@ -12,8 +12,8 @@ import { MAX_EXPRESSION, handlerFileOf, lowerBound, reportInputLimit, type Handl
 const FETCH_CALL = /(?<![\w$.])(?:fetch|\$fetch|ofetch|axios|got|ky|needle)\s*(?:<[^()]{0,200}>\s*)?\(/g
 const FETCH_METHOD = /(?<![\w$.])(?:axios|got|ky|needle|http|https|undici)\s*\.\s*(?:get|post|put|patch|delete|head|request|stream)\s*(?:<[^()]{0,200}>\s*)?\(/g
 
-/** 跳转接口：Next.js/Remix/SvelteKit 的 redirect、Response.redirect、res.redirect 与 h3 的 sendRedirect。 */
-const REDIRECT_CALL = /(?<![\w$.])(?:redirect|permanentRedirect|sendRedirect)\s*\(|(?<![\w$.])(?:NextResponse|Response|res|reply|response|ctx|context|Astro)\s*\.\s*redirect\s*\(/g
+/** 跳转接口：Next.js/Remix/SvelteKit 的 redirect、Response.redirect、res.redirect、Fastify 的 reply.redirect、Hono 的 c.redirect 与 h3 的 sendRedirect。 */
+const REDIRECT_CALL = /(?<![\w$.])(?:redirect|permanentRedirect|sendRedirect)\s*\(|(?<![\w$.])(?:NextResponse|Response|res|reply|response|ctx|context|c|Astro)\s*\.\s*redirect\s*\(/g
 
 type Kind = 'ssrf' | 'redirect'
 interface Call { kind: Kind; at: number; open: number; close: number; name: string }
@@ -76,8 +76,9 @@ function controlsStart(expr: string, at: number, flow: InputFlow, source: string
   }
   if (text.startsWith('\x60')) return templateStart(text, start, flow, source, open, kind, depth)
 
-  const operands = flow.operandsOf(text, start)
-  if (operands.length > 1) {
+  const joined = joinedElements(text, start)
+  const operands = joined ?? flow.operandsOf(text, start)
+  if (operands.length > 1 || (joined && operands.length > 0)) {
     let prefix = ''
     for (const operand of operands) {
       const inner = operand.text.trim()
@@ -200,6 +201,29 @@ function matchingBrace(text: string, open: number): number | null {
     else if (text[i] === '}' && --depth === 0) return i
   }
   return null
+}
+
+/** [a, b, …].join('')：数组元素按顺序拼接，与 + 拼接同样判断开头；其他分隔符或形式返回空值。 */
+function joinedElements(text: string, start: number): Array<{ text: string; at: number }> | null {
+  if (!text.startsWith('[')) return null
+  let depth = 0, close = -1
+  for (let i = 0; i < text.length; i++) {
+    if ('([{'.includes(text[i]!)) depth++
+    else if (')]}'.includes(text[i]!) && --depth === 0) { close = i; break }
+  }
+  if (close === -1 || text[close] !== ']' || !/^\s*\.\s*join\s*\(\s*(['"\x60])\1\s*\)\s*$/.test(text.slice(close + 1))) return null
+  const elements: Array<{ text: string; at: number }> = []
+  let from = 1
+  depth = 0
+  for (let i = 1; i <= close; i++) {
+    if (i < close && '([{'.includes(text[i]!)) depth++
+    else if (i < close && ')]}'.includes(text[i]!)) depth--
+    else if (i === close || (text[i] === ',' && depth === 0)) {
+      if (text.slice(from, i).trim() !== '') elements.push({ text: text.slice(from, i), at: start + from })
+      from = i + 1
+    }
+  }
+  return elements
 }
 
 function splitTopLevel(text: string): string[] {

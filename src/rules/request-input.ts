@@ -7,7 +7,7 @@ import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
 import { namePattern } from './bindings.js'
 import { lineStartsOf } from './offsets.js'
 import { delimiterPairs, functionBodies, type FunctionBody, type Route } from './apiauth.js'
-import { serverRoutesOf } from './express.js'
+import { NODE_FRAMEWORKS, serverRoutesOf } from './routers.js'
 
 /** direct：请求值经赋值、解构或字符串拼接原样到达；derived：中途经过其他调用，无法确认是否已校验。 */
 export type InputLevel = 'direct' | 'derived'
@@ -30,12 +30,13 @@ export interface Taint {
   opaque?: boolean
 }
 
-/** 处理函数参数的角色：请求对象、URL 对象、Cookie 对象，或本身即为调用方可控的值。 */
+/** 处理函数参数的角色：请求对象、URL 对象、Cookie 对象、Hono 上下文（经 c.req 读取请求），或本身即为调用方可控的值。 */
 export interface ParamRoles {
   objects: Map<string, number>
   urls: Map<string, number>
   cookies: Map<string, number>
   values: Map<string, number>
+  contexts: Map<string, number>
 }
 
 const MAX_VALUE_HOPS = 8
@@ -69,6 +70,13 @@ const H3_READERS = 'readBody|readFormData|readMultipartFormData|readRawBody|read
   'getRouterParams?|getValidatedRouterParams|getHeaders?|getRequestHeaders?|getCookie|parseCookies|getRequestURL'
 
 /**
+ * Hono 的 c.req（HonoRequest）上读取请求的成员；valid() 返回经校验器处理的同一份数据。
+ * 来源：https://hono.dev/docs/api/request
+ */
+const HONO_MEMBERS = 'param|query|queries|header|json|text|parseBody|formData|arrayBuffer|blob|url|path|valid|headers'
+const HONO_READ_CALLS = 'param|query|queries|header|json|text|parseBody|formData|arrayBuffer|blob|valid'
+
+/**
  * 结果不再携带原始字符串的表达式；未知处理函数不能仅凭名称豁免。
  * 查表另行核对容器来源，不能将请求对象的索引访问视为安全。
  */
@@ -93,7 +101,7 @@ const MIRROR_CALLS = new Set([
 const VALUE_MEMBERS = /^\s*\??\.\s*(?:toString|valueOf|href|trim|trimStart|trimEnd|toLowerCase|toUpperCase|normalize)\b/
 
 /** 请求的 Host 头：路由到本站的主机名，按本站地址处理。 */
-const HOST_HEADER = /^\s*(?:\??\.\s*get\s*\(\s*['"](?:x-forwarded-)?host['"]\s*\)|\??\.\s*host\b|\[\s*['"](?:x-forwarded-)?host['"]\s*\])/i
+const HOST_HEADER = /^\s*(?:\??\.\s*get\s*\(\s*['"](?:x-forwarded-)?host['"]\s*\)|\??\.\s*host\b|\[\s*['"](?:x-forwarded-)?host['"]\s*\]|\(\s*['"](?:x-forwarded-)?host['"]\s*\))/i
 
 /** 请求自身 URL 中调用方可控的部分；主机、协议等部分由本站决定。 */
 const URL_INPUT_ACCESS = /\??\.\s*(?:searchParams|pathname|search|hash)\b/
@@ -198,12 +206,12 @@ export function patternNames(pattern: string): string[] {
 
 /**
  * 按参数文本判断角色。Server Function 的全部参数都来自客户端；
- * 路由处理函数只认请求对象及其解构出的请求字段。
+ * 路由处理函数只认请求对象及其解构出的请求字段；Hono 处理函数的第一个参数是上下文。
  */
-export function paramRoles(paramsText: string, paramsStart: number, allInput: boolean): ParamRoles {
-  const roles: ParamRoles = { objects: new Map(), urls: new Map(), cookies: new Map(), values: new Map() }
+export function paramRoles(paramsText: string, paramsStart: number, allInput: boolean, context = false): ParamRoles {
+  const roles: ParamRoles = { objects: new Map(), urls: new Map(), cookies: new Map(), values: new Map(), contexts: new Map() }
   let offset = 0
-  for (const raw of parameterList(paramsText)) {
+  for (const [index, raw] of parameterList(paramsText).entries()) {
     const at = paramsStart + Math.max(0, paramsText.indexOf(raw, offset))
     offset = Math.max(offset, paramsText.indexOf(raw, offset) + raw.length)
     // 去掉类型标注与默认值；解构模式保留花括号。
@@ -214,6 +222,7 @@ export function paramRoles(paramsText: string, paramsStart: number, allInput: bo
       for (const name of patternNames(param)) roles.values.set(name, at)
       continue
     }
+    if (context && index === 0 && /^[A-Za-z_$][\w$]*$/.test(param)) { roles.contexts.set(param, at); continue }
     if (param.startsWith('{')) {
       for (const { key, local } of destructuredKeys(param)) {
         if (DESTRUCTURED_OBJECTS.has(key)) roles.objects.set(local, at)
@@ -325,6 +334,7 @@ export class InputFlow {
   limited = false
   private readonly assignmentList = new Map<string, Assignment[]>()
   private sourcePattern: RegExp | null
+  private readonly contextRead: RegExp | null
   private references: RegExp | null = null
   private readonly values = new Map<string, Taint | null>()
   private readonly strings = new Map<string, (Taint & { text: string }) | null>()
@@ -339,6 +349,9 @@ export class InputFlow {
   ) {
     for (const [name, at] of roles.values) this.parameters.set(name, { level: 'direct', origin: at, names: new Set([name]), ownUrl: false })
     this.sourcePattern = sourceRegex(roles)
+    this.contextRead = roles.contexts.size > 0
+      ? new RegExp(String.raw`(?<![\w$.])(?:${namePattern(roles.contexts.keys())})\s*\??\.\s*req(?:\s*\??\.\s*raw)?\s*\??\.\s*(${HONO_READ_CALLS})\s*\(`)
+      : null
     const assignments = this.assignments().sort((a, b) => a.at - b.at)
     const region = code.slice(span.start, span.end)
     const functions = this.localFunctions(region, assignments)
@@ -424,10 +437,12 @@ export class InputFlow {
       this.sourcePattern.lastIndex = 0
       for (const m of observed.matchAll(this.sourcePattern)) {
         const after = observed.slice(m.index + m[0].length)
-        const ownUrl = m[1] === 'url' || m[1] === 'nextUrl'
+        // 各来源模式各有一个成员分组，取匹配到的那一个。
+        const member = m.slice(1).find(group => group !== undefined)
+        const ownUrl = member === 'url' || member === 'nextUrl'
         if (ownUrl && URL_ORIGIN_ACCESS.test(after)) continue
         const hostAt = exprAt + m.index + m[0].length
-        const hostHeader = m[1] === 'headers' && HOST_HEADER.test(this.source.slice(hostAt, hostAt + 80))
+        const hostHeader = (member === 'headers' || member === 'header') && HOST_HEADER.test(this.source.slice(hostAt, hostAt + 80))
         found = mergeTaint(found, { level: 'direct', origin: exprAt + m.index, names: new Set(),
           ownUrl: hostHeader || (ownUrl && !URL_INPUT_ACCESS.test(after.slice(0, 40))) })
       }
@@ -452,11 +467,15 @@ export class InputFlow {
     if (!found) return null
     // new URL(request.url).searchParams.get(…) 之类在调用结果上取查询部分。
     if (found.ownUrl && URL_INPUT_ACCESS.test(text)) found.ownUrl = false
+    // Hono 的 c.req.query()、c.req.json() 等直接读取请求，按读取请求体处理；c.req.valid() 按校验调用处理。
+    const read = this.contextRead
+      ? text.replace(new RegExp(this.contextRead.source, 'g'), (_whole, call: string) => call === 'valid' ? 'parse(' : 'json(')
+      : text
     // JSON.parse 只改变形式；schema.parse 等校验调用使结果降为 derived。
-    const calls = [...text.replace(/\bJSON\s*\.\s*parse\s*\(/g, '(').matchAll(/([\w$]+)\s*\(/g)].map(m => m[1]!)
+    const calls = [...read.replace(/\bJSON\s*\.\s*parse\s*\(/g, '(').matchAll(/([\w$]+)\s*\(/g)].map(m => m[1]!)
     if (calls.some(name => !TRANSPARENT_CALLS.has(name))) found.level = 'derived'
     // 整个表达式是一次未知函数调用：结果整体保留待复核，取其属性则不再是请求输入。
-    const call = callResultOf(text)
+    const call = callResultOf(read)
     if (call && !TRANSPARENT_CALLS.has(call.callee) && !MIRROR_CALLS.has(call.callee)) {
       if (call.members) return null
       found.opaque = true
@@ -694,6 +713,9 @@ export class InputFlow {
 /** 由参数角色构造请求读取表达式的模式。 */
 function sourceRegex(roles: ParamRoles): RegExp | null {
   const parts: string[] = []
+  if (roles.contexts.size > 0) {
+    parts.push(String.raw`(?<![\w$.])(?:${namePattern(roles.contexts.keys())})\s*\??\.\s*req(?:\s*\??\.\s*raw)?\s*\??\.\s*(${HONO_MEMBERS})\b`)
+  }
   if (roles.objects.size > 0) {
     const objects = namePattern(roles.objects.keys())
     parts.push(
@@ -725,7 +747,7 @@ function mergeTaint(found: Taint | null, t: Taint): Taint {
 
 /** 参数角色是否包含任何请求来源。 */
 export function hasInput(roles: ParamRoles): boolean {
-  return roles.objects.size + roles.urls.size + roles.cookies.size + roles.values.size > 0
+  return roles.objects.size + roles.urls.size + roles.cookies.size + roles.values.size + roles.contexts.size > 0
 }
 
 /** 路由中接收请求的函数及其输入流向。 */
@@ -800,9 +822,9 @@ export function handlerFileOf(file: ScanFile, files: ScanFile[]): HandlerFile | 
       const openers = new Map<number, number>()
       for (const [open, close] of pairs) openers.set(close, open)
       const bodies = functionBodies(code, pairs)
-      // Express 的表达式箭头处理函数没有函数体，以 => 起的整个表达式作为处理范围。
+      // Express/Hono/Fastify 的表达式箭头处理函数没有函数体，以 => 起的整个表达式作为处理范围。
       for (const r of routes) {
-        if (r.framework === 'express' && r.reachable && code.startsWith('=>', r.reachable.start)) {
+        if (NODE_FRAMEWORKS.has(r.framework) && r.reachable && code.startsWith('=>', r.reachable.start)) {
           bodies.push({ declaration: r.reachable.start, start: r.reachable.start, end: r.reachable.end })
         }
       }
@@ -821,7 +843,8 @@ export function handlerFileOf(file: ScanFile, files: ScanFile[]): HandlerFile | 
           const action = r.action !== undefined && reachable !== undefined && body.start === reachable.start
           const params = parametersOf(code, body, pairs, openers)
           if (!params) continue
-          const roles = paramRoles(source.slice(params.start, params.end), params.start, action)
+          const context = r.framework === 'hono' && reachable !== undefined && body.start === reachable.start
+          const roles = paramRoles(source.slice(params.start, params.end), params.start, action, context)
           if (hasInput(roles)) candidates.push({ route: r, body, roles })
         }
       }
