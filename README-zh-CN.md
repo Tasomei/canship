@@ -4,7 +4,7 @@
 
 [English](./README.md)
 
-> 本文对应 `0.6.0`。使用 `npx canship --version` 确认已安装版本。
+> 本文对应 `0.7.0`。使用 `npx canship --version` 确认已安装版本。
 
 ## 快速开始
 
@@ -123,7 +123,7 @@ jobs:
           persist-credentials: false
       - uses: Tasomei/canship@7dfebc9502b786edd5c7fd71266e4926d0ad764b
         with:
-          version: '0.6.0'
+          version: '0.7.0'
           honor-ignore-markers: false
 ```
 

@@ -4,7 +4,7 @@ A local static scanner for JavaScript and TypeScript web apps. Checks exposed cr
 
 [简体中文](./README-zh-CN.md)
 
-> Documentation for `0.6.0`. Check the installed version with `npx canship --version`.
+> Documentation for `0.7.0`. Check the installed version with `npx canship --version`.
 
 ## Quick start
 
@@ -123,7 +123,7 @@ jobs:
           persist-credentials: false
       - uses: Tasomei/canship@7dfebc9502b786edd5c7fd71266e4926d0ad764b
         with:
-          version: '0.6.0'
+          version: '0.7.0'
           honor-ignore-markers: false
 ```
 

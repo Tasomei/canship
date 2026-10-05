@@ -1,7 +1,7 @@
 {
   "name": "canship",
-  "version": "0.6.0",
-  "description": "Static scanner for exposed credentials and open access rules in JS/TS front-end projects. Scans local files without executing project code or making network requests.",
+  "version": "0.7.0",
+  "description": "Static scanner for exposed credentials, open access rules, and unsafe request input in JS/TS web apps. Scans local files without executing project code or making network requests.",
   "keywords": [
     "security",
     "audit",
@@ -9,6 +9,9 @@
     "api-key",
     "supabase",
     "nextjs",
+    "express",
+    "hono",
+    "fastify",
     "vibe-coding",
     "ai-generated-code",
     "static-analysis",
