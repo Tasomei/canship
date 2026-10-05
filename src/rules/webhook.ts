@@ -4,9 +4,10 @@
  */
 import type { Finding, Rule, ScanContext, ScanFile } from '../types.js'
 import { commentsMaskedOf } from '../mask.js'
+import { awaitedCall, maskUnusedFunctions } from './apiauth.js'
 import type { MiddlewareRef, Route } from './apiauth.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
-import { NODE_FRAMEWORKS, middlewareDefinition, serverRoutesOf } from './routers.js'
+import { NODE_FRAMEWORKS, calleeDefinition, middlewareDefinition, serverRoutesOf } from './routers.js'
 import { LocalVerification } from './verification.js'
 
 /** 按事件类型分支：case 'checkout.session.completed' 或 event.type === 'invoice.paid'。 */
@@ -39,19 +40,58 @@ function eventName(context: LocalVerification, event: RegExpExecArray): string |
 /** 读取请求体：请求对象上的 json()/text() 等（含 Hono 的 c.req），不含 c.json()、res.json() 之类的响应。 */
 const READS_BODY = /(?<![\w$])(?:req|request)\s*(?:\.\s*raw\s*)?\.\s*(?:json|text|arrayBuffer|formData|parseBody)\s*\(|\breq(?:uest)?\s*\.\s*body\b|\b(?:readBody|readRawBody)\s*\(|\bbuffer\s*\(\s*req\b/
 
-/** 验签中间件：调用 constructEvent，或读取 stripe-signature 请求头交给解析函数。 */
-const SIGNATURE_MIDDLEWARE = /\bconstructEvent(?:Async)?\s*\(|['"]stripe-signature['"]/i
+/** 读取 Stripe 签名头；只读取不等于验证。 */
+const SIGNATURE_HEADER = /['"]stripe-signature['"]/i
 
-/** Express/Hono/Fastify 路由经过的中间件中有验签中间件：事件由它验证后放入上下文。 */
-function verifiedByMiddleware(route: Route, files: ScanFile[]): boolean {
-  if (!NODE_FRAMEWORKS.has(route.framework)) return false
-  const verifies = (ref: MiddlewareRef): boolean => {
+/**
+ * 中间件中的验签：真正执行的 constructEvent（同步，失败抛出）或 await 的 constructEventAsync，
+ * 且没有吞掉失败后继续放行的 catch（catch 中调用无参数的 next()）。
+ */
+function middlewareVerifies(code: string): boolean {
+  const masked = maskUnusedFunctions(code)
+  const verifies = /\bconstructEvent\s*\(/.test(masked) || awaitedCall(masked, /\bconstructEventAsync\s*\(/)
+  if (!verifies) return false
+  for (const m of masked.matchAll(/\bcatch\s*(?:\([^()]*\))?\s*\{/g)) {
+    const open = m.index + m[0].length - 1
+    let close = open
+    for (let depth = 0; close < masked.length; close++) {
+      if (masked[close] === '{') depth++
+      else if (masked[close] === '}' && --depth === 0) break
+    }
+    const body = masked.slice(open, close)
+    if (/\bnext\s*\(\s*\)/.test(body)) return false
+  }
+  return true
+}
+
+/**
+ * Express/Hono/Fastify 路由经过的中间件中有验签中间件：事件由它验证后放入上下文。
+ * 只读取签名头、交给无法确认的函数时返回 custom，结果保留待复核。
+ */
+function verifiedByMiddleware(route: Route, files: ScanFile[]): 'verified' | 'custom' | null {
+  if (!NODE_FRAMEWORKS.has(route.framework)) return null
+  const codeOf = (ref: MiddlewareRef): { file: ScanFile; code: string } | null => {
     const { inline, range } = middlewareDefinition(ref, files)
     const target = inline ?? range
-    return target !== null && SIGNATURE_MIDDLEWARE.test(commentsMaskedOf(target.file).slice(target.start, target.end + 1))
+    return target === null ? null : { file: target.file, code: commentsMaskedOf(target.file).slice(target.start, target.end + 1) }
   }
-  const mounts = route.mounts ?? []
-  return (route.middleware ?? []).some(verifies) || (mounts.length > 0 && mounts.every(refs => refs.some(verifies)))
+  // 中间件把签名交给项目函数解析（await parseStripeEvent(body, signature)）：被调函数中验签同样算数，只跟进一层。
+  const verifies = ({ file, code }: { file: ScanFile; code: string }): boolean => {
+    if (middlewareVerifies(code)) return true
+    const masked = maskUnusedFunctions(code)
+    const calls = [...masked.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*(?:\.\s*([A-Za-z_$][\w$]*)\s*)?\(/g)].slice(0, 16)
+    return calls.some(m => {
+      const definition = calleeDefinition(file, m[1]!, m[2] ?? null, files)
+      return definition !== null && middlewareVerifies(commentsMaskedOf(definition.file).slice(definition.start, definition.end + 1))
+    })
+  }
+  const status = (test: (target: { file: ScanFile; code: string }) => boolean): boolean => {
+    const check = (ref: MiddlewareRef): boolean => { const target = codeOf(ref); return target !== null && test(target) }
+    const mounts = route.mounts ?? []
+    return (route.middleware ?? []).some(check) || (mounts.length > 0 && mounts.every(refs => refs.some(check)))
+  }
+  if (status(verifies)) return 'verified'
+  return status(({ code }) => SIGNATURE_HEADER.test(code)) ? 'custom' : null
 }
 
 export const webhookRule: Rule = {
@@ -74,7 +114,9 @@ export const webhookRule: Rule = {
     for (const event of source.matchAll(new RegExp(STRIPE_EVENT.source, 'g'))) {
       if (code[event.index] !== source[event.index]) continue
       const route = routeAt(event.index)
-      if (!route || verifiedByMiddleware(route, ctx.files)) continue
+      if (!route) continue
+      const middleware = verifiedByMiddleware(route, ctx.files)
+      if (middleware === 'verified') continue
       const owner = context.owner(event.index)
       const name = eventName(context, event)
       if (name && verifiedEvent(context, name, event.index)) continue
@@ -84,7 +126,8 @@ export const webhookRule: Rule = {
       const line = lineNumberAt(lineStartsOf(file.content), event.index)
       const region = code.slice(owner?.start ?? 0, owner?.end ?? code.length)
       const readsBody = READS_BODY.test(region)
-      const customCheck = /\bverifyHeader\s*\(/.test(region) ||
+      // 中间件读取了签名头但看不到可确认的验签调用时，按自定义校验保留待复核。
+      const customCheck = middleware === 'custom' || /\bverifyHeader\s*\(/.test(region) ||
         (/\bcreateHmac\s*\(/.test(region) && /\btimingSafeEqual\s*\(/.test(region))
       findings.push({
         ruleId: 'webhook/unverified-signature', severity: 'P1', confidence: readsBody && !customCheck ? 'certain' : 'likely',

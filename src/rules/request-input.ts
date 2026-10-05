@@ -100,8 +100,11 @@ const MIRROR_CALLS = new Set([
 /** 不改变值内容的成员访问：对返回值调用这些仍等于使用返回值本身。 */
 const VALUE_MEMBERS = /^\s*\??\.\s*(?:toString|valueOf|href|trim|trimStart|trimEnd|toLowerCase|toUpperCase|normalize)\b/
 
-/** 请求的 Host 头：路由到本站的主机名，按本站地址处理。 */
-const HOST_HEADER = /^\s*(?:\??\.\s*get\s*\(\s*['"](?:x-forwarded-)?host['"]\s*\)|\??\.\s*host\b|\[\s*['"](?:x-forwarded-)?host['"]\s*\]|\(\s*['"](?:x-forwarded-)?host['"]\s*\))/i
+/**
+ * 请求的 Host 头：路由到本站的主机名，按本站地址处理。
+ * X-Forwarded-Host 是否可信取决于代理是否覆盖它，扫描看不到代理配置，仍按可控输入保留待复核。
+ */
+const HOST_HEADER = /^\s*(?:\??\.\s*get\s*\(\s*['"]host['"]\s*\)|\??\.\s*host\b|\[\s*['"]host['"]\s*\]|\(\s*['"]host['"]\s*\))/i
 
 /** 请求自身 URL 中调用方可控的部分；主机、协议等部分由本站决定。 */
 const URL_INPUT_ACCESS = /\??\.\s*(?:searchParams|pathname|search|hash)\b/
@@ -338,6 +341,7 @@ export class InputFlow {
   private references: RegExp | null = null
   private readonly values = new Map<string, Taint | null>()
   private readonly strings = new Map<string, (Taint & { text: string }) | null>()
+  private readonly mirrors = new Map<string, boolean>()
 
   constructor(
     private readonly code: string,
@@ -475,12 +479,64 @@ export class InputFlow {
     const calls = [...read.replace(/\bJSON\s*\.\s*parse\s*\(/g, '(').matchAll(/([\w$]+)\s*\(/g)].map(m => m[1]!)
     if (calls.some(name => !TRANSPARENT_CALLS.has(name))) found.level = 'derived'
     // 整个表达式是一次未知函数调用：结果整体保留待复核，取其属性则不再是请求输入。
+    // 同文件中把形参原样返回的函数（identity(body)）不是未知函数，其返回值仍是传入的数据。
     const call = callResultOf(read)
-    if (call && !TRANSPARENT_CALLS.has(call.callee) && !MIRROR_CALLS.has(call.callee)) {
+    if (call && !TRANSPARENT_CALLS.has(call.callee) && !MIRROR_CALLS.has(call.callee) && !this.returnsArgument(read, call.callee)) {
       if (call.members) return null
       found.opaque = true
     }
     return found
+  }
+
+  /**
+   * 表达式直接调用同文件中定义的函数，且该函数在调用参数之外返回某个形参：return value、return { ...value }、
+   * (v) => v.trim()。return db.find(value) 之类把形参交给其他调用的不算，结果仍按未知函数处理。
+   */
+  private returnsArgument(expression: string, callee: string): boolean {
+    const escaped = callee.replace(/\$/g, '\\$')
+    if (!new RegExp(`^(?:(?:await|new)\\s+)*${escaped}\\s*\\(`).test(expression)) return false
+    const cached = this.mirrors.get(callee)
+    if (cached !== undefined) return cached
+    const code = this.code
+    let params = ''
+    let after = -1
+    const declared = new RegExp(`(?:^|[^\\w$.])(?:async\\s+)?function\\s*\\*?\\s*${escaped}\\s*\\(`).exec(code)
+    const assigned = declared ? null
+      : new RegExp(`\\b(?:const|let|var)\\s+${escaped}\\s*(?::[^=;]{0,200})?=\\s*(?:async\\b\\s*)?(?:function\\b[^(]{0,80}\\(|\\(|([A-Za-z_$][\\w$]*)\\s*=>)`).exec(code)
+    const match = declared ?? assigned
+    if (match && assigned?.[1]) {
+      params = assigned[1]
+      after = match.index + match[0].length
+    } else if (match) {
+      const open = match.index + match[0].length - 1
+      const close = this.pairs.get(open)
+      if (close !== undefined) { params = code.slice(open + 1, close); after = close + 1 }
+    }
+    let result = false
+    if (after !== -1) {
+      const names = params.split(',').flatMap(part => part.replace(/[:=][\s\S]*$/, '').match(/[A-Za-z_$][\w$]*/g) ?? [])
+      const head = /^\s*(?::[^={]{0,200})?(?:=>)?\s*/.exec(code.slice(after, after + 260))!
+      const start = after + head[0].length
+      const end = (from: number, limit: number): number => expressionEnd(code, from, limit, this.pairs, () => { this.limited = true })
+      const bodyEnd = this.pairs.get(start) ?? start
+      const returns = code[start] === '{'
+        ? [...code.slice(start, bodyEnd).matchAll(/\breturn\b/g)].map(m => {
+          const from = start + m.index + m[0].length
+          return code.slice(from, end(from, bodyEnd))
+        })
+        : [code.slice(start, end(start, code.length))]
+      const outsideCalls = (text: string): string => {
+        // 展开运算符 { ...value } 不是成员访问。
+        let current = text.replace(/\.\.\./g, '   ')
+        // 只去掉调用的实参（名称或调用结果之后的括号），({ ...value }) 这类分组括号保留。
+        for (let i = 0; i < 8 && /[\w$)\]]\s*\([^()]*\)/.test(current); i++) current = current.replace(/([\w$)\]])\s*\([^()]*\)/g, '$1')
+        return current
+      }
+      result = names.length > 0 && returns.some(text => names.some(name =>
+        new RegExp(`(?<![\\w$.])${name.replace(/\$/g, '\\$')}(?![\\w$])`).test(outsideCalls(text))))
+    }
+    this.mirrors.set(callee, result)
+    return result
   }
 
   /** 字符串拼接：无标签模板的插值或含字符串操作数的 + 拼接中携带请求输入。 */

@@ -2108,11 +2108,55 @@ function passesOnlyAuthenticated(code: string): boolean {
 }
 
 /**
- * Fastify 的 request.jwtVerify() 失败时抛出：不捕获，或在 catch 中把错误发回、重新抛出或返回 401/403，都会拒绝请求。
+ * 调用的结果是否被等待：紧跟 await 或 return（异步中间件返回被拒绝的 Promise 同样会拒绝请求）。
+ * 调用前的成员链（request.、getStripe(c).webhooks.）一并跳过。未等待的 Promise 失败不会阻止请求继续。
+ */
+export function awaitedCall(code: string, pattern: RegExp): boolean {
+  for (const m of code.matchAll(new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`))) {
+    const before = code.slice(Math.max(0, m.index - 300), m.index)
+      .replace(/(?:[A-Za-z_$][\w$]*(?:\s*\([^()]*\))?\s*\??\.\s*)*$/, '').trimEnd()
+    if (/(?:^|[^\w$.])(?:await|return)$/.test(before)) return true
+  }
+  return false
+}
+
+/**
+ * 定义后从未被引用的本地函数不会执行，判断前用空白遮蔽（保持偏移）：const unused = () => requireAuth(req)。
+ * 函数名在定义之外出现过即视为可能调用，保留原样。
+ */
+export function maskUnusedFunctions(code: string): string {
+  let out = code
+  const definitions = /\b(?:(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]{0,200})?=\s*(?:async\b\s*)?(?:function\b[^(]{0,80}\([^()]*\)|\([^()]*\)\s*(?::[^=;{]{0,200})?=>|[A-Za-z_$][\w$]*\s*=>)|(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\([^()]*\))\s*/g
+  for (const m of code.matchAll(definitions)) {
+    const name = m[1] ?? m[2]!
+    const bodyAt = m.index + m[0].length
+    let end: number
+    if (code[bodyAt] === '{') end = closingDelimiter(code, bodyAt, '{', '}') ?? code.length - 1
+    else {
+      // 表达式箭头函数：到同层的分号、逗号、右括号或换行为止。
+      end = bodyAt
+      for (let depth = 0; end < code.length; end++) {
+        const ch = code[end]!
+        if ('([{'.includes(ch)) depth++
+        else if (')]}'.includes(ch)) { if (depth === 0) break; depth-- }
+        else if (depth === 0 && (ch === ';' || ch === ',' || ch === '\n')) break
+      }
+      end--
+    }
+    const reference = new RegExp(`(?<![\\w$.])${name.replace(/\$/g, '\\$')}(?![\\w$])`, 'g')
+    const used = [...code.matchAll(reference)].some(r => r.index < m.index || r.index > end)
+    if (!used) out = out.slice(0, m.index) + out.slice(m.index, end + 1).replace(/[^\n]/g, ' ') + out.slice(end + 1)
+  }
+  return out
+}
+
+/**
+ * Fastify 的 request.jwtVerify() 失败时返回被拒绝的 Promise：必须 await 或 return；不捕获，
+ * 或在 catch 中把错误发回、重新抛出或返回 401/403，都会拒绝请求。
  * 来源：https://github.com/fastify/fastify-jwt （decorate('authenticate', …) 用法）
  */
 function jwtVerifyRejects(code: string): boolean {
-  if (!/\.\s*jwtVerify\s*\(/.test(code)) return false
+  if (!awaitedCall(code, /\bjwtVerify\s*\(/)) return false
   const handlers = [...code.matchAll(/\bcatch\s*(?:\([^()]*\))?\s*\{/g)].map(m => {
     const open = m.index + m[0].length - 1
     return code.slice(open, closingDelimiter(code, open, '{', '}') ?? open)
@@ -2189,10 +2233,12 @@ function rejectsMissingCredential(code: string): boolean {
 }
 
 /** 中间件代码是否拒绝未认证请求：条件分支中按缺失身份或凭据返回或抛出，先放行已认证请求再拒绝，与服务器密钥比较，校验失败的 catch 中拒绝，已知鉴权调用，或验证令牌后对失败返回 401/403。 */
-function middlewareRejects(code: string): boolean {
+function middlewareRejects(source: string): boolean {
+  // 定义了却从未调用的本地函数不会执行，其中的鉴权代码不算。
+  const code = maskUnusedFunctions(source)
   if (hasConditionalAuthGuard(code) || rejectsMissingCredential(code) || passesOnlyAuthenticated(code) || rejectsSecretMismatch(code) || catchDenies(code) ||
       AUTH_ENFORCING_CALL.test(code) || jwtVerifyRejects(code)) return true
-  return /\b(?:jwt\s*\.\s*verify|jwtVerify|verifyToken|verifyJwt|verifyIdToken|verifyAccessToken)\s*\(/.test(code) &&
+  return (/\b(?:jwt\s*\.\s*verify|verifyToken|verifyJwt|verifyIdToken|verifyAccessToken)\s*\(/.test(code) || awaitedCall(code, /\bjwtVerify\s*\(/)) &&
     DENIED_RESPONSE.test(code)
 }
 
@@ -2297,6 +2343,7 @@ export const apiAuthRule: ProjectRule = {
     const sessionModules = ctx.files.filter(buildsSessionClient)
     const findings: Finding[] = []
     const indirectByFile = new Map<ScanFile, IndirectGuards>()
+    const reportedRanges = new Set<string>()
 
     for (const route of routes) {
       const reachable = route.reachable
@@ -2349,6 +2396,11 @@ export const apiAuthRule: ProjectRule = {
       if (indirectGuards.truncated) globalNote.push(
         'The scan stopped following local helpers in this file at its limit (8 hops, 64 symbols per helper, 1,024 per file). ' +
           'Unfollowed helpers cannot hide a finding, but if one of them enforces authentication for this operation, treat this as a finding to review.')
+
+      // 同一处理函数注册在多条路径上（app.on('POST', ['/a', '/b'], h)）：每条路径各自判断保护，只报告一次。
+      const rangeKey = `${route.file.path}\0${reachable?.start ?? -1}\0${reachable?.end ?? -1}`
+      if (reportedRanges.has(rangeKey)) continue
+      reportedRanges.add(rangeKey)
 
       const admin = usesAdminClient(route, adminModules, ctx.files)
       // 存在写操作时优先用其作为证据。

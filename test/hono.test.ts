@@ -230,7 +230,14 @@ describe('request-input rules in Hono handlers', () => {
     const route = (withMiddleware: boolean) => HONO + "import { stripeWebhook } from './middleware'\nconst app = new Hono()\n" +
       `app.post('/stripe', ${withMiddleware ? 'stripeWebhook(), ' : ''}async (c) => {\n  const event = c.get('stripeEvent')\n` +
       "  if (event.type === 'checkout.session.completed') await fulfil(event.data.object)\n  return c.json({ received: true })\n})\nexport default app\n"
-    assert.deepEqual(summary(await findings({ 'src/middleware.ts': middleware, 'src/index.ts': route(true) })), [])
+    const helper = "import Stripe from 'stripe'\nconst stripe = new Stripe(process.env.STRIPE_SECRET_KEY!)\n" +
+      'export async function parseStripeEvent(body: string, signature: string) {\n' +
+      '  return stripe.webhooks.constructEvent(body, signature, process.env.STRIPE_WEBHOOK_SECRET!)\n}\n'
+    assert.deepEqual(summary(await findings({ 'src/middleware.ts': middleware, 'src/stripe.ts': helper, 'src/index.ts': route(true) })), [])
+    // 解析函数找不到时只看到读取签名头，不能证明已验证：保留待复核。
+    const unresolved = await findings({ 'src/middleware.ts': middleware, 'src/index.ts': route(true) })
+    assert.deepEqual(summary(unresolved), [['webhook/unverified-signature', 'src/index.ts', 6, 'likely']])
+    assert.match(unresolved.find(f => f.ruleId === 'webhook/unverified-signature')!.title, /^Review custom Stripe signature verification/)
     // 没有验签中间件时仍报告；事件不来自请求体，c.json() 是响应而非读取，因此只到 likely。
     assert.deepEqual(summary(await findings({ 'src/middleware.ts': middleware, 'src/index.ts': route(false) })), [['webhook/unverified-signature', 'src/index.ts', 6, 'likely']])
   })
