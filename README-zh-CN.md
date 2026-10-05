@@ -121,7 +121,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@7dfebc9502b786edd5c7fd71266e4926d0ad764b
+      - uses: Tasomei/canship@7465c9560b8b3692777af080e8cc67b4be2335d7
         with:
           version: '0.7.0'
           honor-ignore-markers: false
@@ -131,7 +131,7 @@ jobs:
 
 | 输入 | 默认值 | 含义 |
 |---|---|---|
-| `version` | `0.6.0` | 精确 npm 扫描器版本 |
+| `version` | `0.7.0` | 精确 npm 扫描器版本 |
 | `fail-on` | `blocking` | `blocking`：确定的 P0/P1；`any`：全部结果；`none`：仅报告 |
 
 扫描不完整或工具错误始终失败。默认不读取项目配置、不上传 SARIF。输入输出见 [action.yml](./action.yml)。
