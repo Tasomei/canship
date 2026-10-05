@@ -74,6 +74,21 @@ function claimedIdentityCall(expr: string): boolean {
   return ![...args.matchAll(/\b[A-Za-z_$][\w$]*(?:[a-z]Id|_id)\b/g)].some(m => !CREDENTIAL_ID.test(m[0]))
 }
 
+/**
+ * 调用的是同文件中定义的同步函数：function name(…) 或 const name = (…) => …，且没有 async。
+ * 导入或无法定位的函数可能是异步的，返回 false。
+ */
+function synchronousLocal(file: ScanFile, expr: string): boolean {
+  const name = /^([A-Za-z_$][\w$]*)\s*\(/.exec(expr)?.[1]
+  if (!name) return false
+  const code = noiseMaskedOf(file)
+  const escaped = name.replace(/\$/g, '\\$')
+  const declared = new RegExp(`(?:^|[^\\w$])(async\\s+)?function\\s*\\*?\\s*${escaped}\\s*\\(`).exec(code)
+  if (declared) return !declared[1]
+  const assigned = new RegExp(`\\b(?:const|let|var)\\s+${escaped}\\s*(?::[^=;]{0,200})?=\\s*(async\\b)?\\s*(?:function\\b|\\([^()]*\\)\\s*(?::[^=;{]{0,200})?=>|[A-Za-z_$][\\w$]*\\s*=>)`).exec(code)
+  return assigned !== null && !assigned[1]
+}
+
 interface Assignment { at: number; expression: string; projection: string[] | null; overLimit: boolean }
 const limited = new WeakSet<ScanFile>()
 const cache = new WeakMap<ScanFile, Map<number, AuthValues>>()
@@ -262,7 +277,8 @@ class AuthValues {
       if (envelope) return { kind: 'envelope', field: envelope === 'getUser' ? 'user' : 'claims' }
       return { kind: 'identity' }
     }
-    if (claimedIdentityCall(expr)) return { kind: 'claimed' }
+    // 未 await 时，异步实现返回的 Promise 恒为真值，判空不能证明身份；只有同文件中明确为同步的函数可以不 await。
+    if (claimedIdentityCall(expr)) return /^await\s/.test(expr) || synchronousLocal(this.file, expr) ? { kind: 'claimed' } : { kind: 'promise' }
     if (/\.(?:body|query|headers|cookies|searchParams)\b|\.(?:json|text|formData)\s*\(/.test(expr)) return { kind: 'input' }
     // 参数对象上按键取值（Hono 的 c.get('user')）与成员访问同样沿用参数来源，由调用方按框架判断是否可信。
     const keyed = /^([A-Za-z_$][\w$]*)\s*\.\s*get\s*\(\s*['"][\w$.-]+['"]\s*\)$/.exec(expr)

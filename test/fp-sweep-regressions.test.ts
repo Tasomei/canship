@@ -199,12 +199,22 @@ export async function GET(request: Request) {
 describe('server requests and SQL', () => {
   test('the request Host header names this site, not a caller-chosen server', async () => {
     const result = await run({ 'app/routes/healthcheck.tsx': `export async function loader({ request }) {
-  const host = request.headers.get('X-Forwarded-Host') ?? request.headers.get('host')
+  const host = request.headers.get('host')
   const url = new URL('/', \`http://\${host}\`)
   await fetch(url.toString(), { method: 'HEAD' })
   return new Response('OK')
 }` })
     assert.deepEqual(summary(result.findings), [])
+  })
+
+  test('X-Forwarded-Host depends on the proxy, so a server request built from it stays for review', async () => {
+    const result = await run({ 'app/routes/healthcheck.tsx': `export async function loader({ request }) {
+  const host = request.headers.get('X-Forwarded-Host') ?? request.headers.get('host')
+  const url = new URL('/', \`http://\${host}\`)
+  await fetch(url.toString(), { method: 'HEAD' })
+  return new Response('OK')
+}` })
+    assert.deepEqual(summary(result.findings), [['ssrf/request-url', 'app/routes/healthcheck.tsx', 4, 'likely']])
   })
 
   test('a database row looked up with request input is not request input in SQL', async () => {

@@ -225,15 +225,37 @@ function constantOf(a: Analysed, name: string): string | null {
 }
 
 /**
- * 路径实参：字面量；同文件字符串常量及只插入这类常量的模板（`${MCP_OAUTH_PATH}/register`）；
- * 路径数组取第一项（Hono 的 app.on('GET', ['/a', '/b'], …)）。其他形式视为动态路径。
+ * 路径数组的每一项（Express 的 app.get(['/a', '/b'], …)、Hono 的 app.on('GET', ['/a', '/b'], …)），
+ * 每条路径各自判断保护状态；不是数组时只有一项。
  */
-function pathOf(a: Analysed, arg: Arg): string | null {
+function pathsOf(a: Analysed, arg: Arg): Array<string | null> {
+  if (!arg.text.startsWith('[')) return [pathOf(a, arg)]
+  const close = a.pairs.get(arg.at)
+  const items = close === undefined ? [] : argsOf(a, arg.at, close)
+  return items.length ? items.map(item => pathOf(a, item)) : [null]
+}
+
+/**
+ * use() 首个实参是路径或路径数组时返回各前缀，否则返回空值，表示它是中间件。
+ * 数组中无法解析的路径不知道作用于哪里，不当作全局前缀，直接略去。
+ */
+function usePrefixes(a: Analysed, arg: Arg): string[] | null {
   if (arg.text.startsWith('[')) {
     const close = a.pairs.get(arg.at)
-    const first = close === undefined ? undefined : argsOf(a, arg.at, close)[0]
-    return first ? pathOf(a, first) : null
+    const items = close === undefined ? [] : argsOf(a, arg.at, close)
+    if (items.length === 0 || !items.every(item => /^['"`]/.test(item.source))) return null
+    return items.map(item => pathOf(a, item)).filter((path): path is string => path !== null)
   }
+  const prefix = pathOf(a, arg)
+  return prefix === null ? null : [prefix]
+}
+
+/**
+ * 路径实参：字面量；同文件字符串常量及只插入这类常量的模板（`${MCP_OAUTH_PATH}/register`）。
+ * 数组由 pathsOf 展开，其他形式视为动态路径。
+ */
+function pathOf(a: Analysed, arg: Arg): string | null {
+  if (arg.text.startsWith('[')) return null
   const literal = literalOf(arg)
   if (literal !== null) return literal
   if (/^[A-Za-z_$][\w$]*$/.test(arg.source)) return constantOf(a, arg.source)
@@ -255,13 +277,17 @@ function joinPath(prefix: string, path: string): string {
   return path === '/' ? base || '/' : `${base}${path}`
 }
 
-/** Express 实例上的路由注册：app.get(path, …)，以及 router.route(path).get(…).post(…) 链。 */
+/**
+ * Express 实例上的路由注册：app.get(path, …)，以及 router.route(path).get(…).post(…) 链。
+ * 回调可以放在数组中（app.post('/x', [auth, handler])），展开后最后一个为处理函数。
+ */
 function expressRegistrations(a: Analysed, name: string): Registration[] {
   const found: Registration[] = []
   const escaped = name.replace(/\$/g, '\\$')
-  const add = (path: string | null, args: Arg[], at: number): void => {
-    if (args.length === 0) return
-    found.push({ path, middleware: args.slice(0, -1), handler: args.at(-1)!, handlerRange: null, at })
+  const add = (paths: Array<string | null>, args: Arg[], at: number): void => {
+    const callbacks = flatten(a, args)
+    if (callbacks.length === 0) return
+    for (const path of paths) found.push({ path, middleware: callbacks.slice(0, -1), handler: callbacks.at(-1)!, handlerRange: null, at })
   }
   for (const m of a.code.matchAll(new RegExp(`(?<![\\w$.])${escaped}\\s*\\.\\s*(?:${METHODS})\\s*${GENERICS}\\(`, 'g'))) {
     const open = m.index + m[0].length - 1
@@ -270,21 +296,21 @@ function expressRegistrations(a: Analysed, name: string): Registration[] {
     const args = argsOf(a, open, close)
     // app.get('setting') 是读取配置，路由至少有路径和处理函数。
     if (args.length < 2) continue
-    add(pathOf(a, args[0]!), args.slice(1), m.index)
+    add(pathsOf(a, args[0]!), args.slice(1), m.index)
   }
   for (const m of a.code.matchAll(new RegExp(`(?<![\\w$.])${escaped}\\s*\\.\\s*route\\s*\\(`, 'g'))) {
     const open = m.index + m[0].length - 1
     let close = a.pairs.get(open)
     if (close === undefined) continue
     const pathArg = argsOf(a, open, close)[0]
-    const path = pathArg ? pathOf(a, pathArg) : null
+    const paths = pathArg ? pathsOf(a, pathArg) : [null]
     for (let guard = 0; guard < 16; guard++) {
       const next = new RegExp(`^\\s*\\.\\s*(?:${METHODS})\\s*${GENERICS}\\(`).exec(a.code.slice(close + 1, close + 500))
       if (!next) break
       const methodOpen = close + 1 + next[0].length - 1
       const methodClose = a.pairs.get(methodOpen)
       if (methodClose === undefined) break
-      add(path, argsOf(a, methodOpen, methodClose), close + 1 + next[0].search(/[a-z]/))
+      add(paths, argsOf(a, methodOpen, methodClose), close + 1 + next[0].search(/[a-z]/))
       close = methodClose
     }
   }
@@ -302,8 +328,9 @@ function expressUses(a: Analysed, name: string): Use[] {
     const close = a.pairs.get(open)
     if (close === undefined) continue
     const args = argsOf(a, open, close)
-    const prefix = args[0] ? pathOf(a, args[0]) : null
-    found.push({ prefix, args: flatten(a, prefix === null ? args : args.slice(1)), at: m.index })
+    const prefixes = args[0] ? usePrefixes(a, args[0]) : null
+    const middleware = flatten(a, prefixes === null ? args : args.slice(1))
+    for (const prefix of prefixes ?? [null]) found.push({ prefix, args: middleware, at: m.index })
   }
   return found.sort((x, y) => x.at - y.at)
 }
@@ -315,11 +342,14 @@ function expressUses(a: Analysed, name: string): Use[] {
 function honoOps(a: Analysed, name: string, chainFrom: number | undefined): { registrations: Registration[]; uses: Use[] } {
   const registrations: Registration[] = []
   const uses: Use[] = []
-  const visit = (method: string, open: number, close: number, at: number, previous: string | null): string | null => {
+  // 路径数组（app.on('POST', ['/a', '/b'], …)）中的每条路径各自登记一条路由。
+  type Paths = Array<string | null>
+  const visit = (method: string, open: number, close: number, at: number, previous: Paths): Paths => {
     const args = argsOf(a, open, close)
     if (method === 'use') {
-      const prefix = args[0] ? pathOf(a, args[0]) : null
-      uses.push({ prefix, args: flatten(a, prefix === null ? args : args.slice(1)), at })
+      const prefixes = args[0] ? usePrefixes(a, args[0]) : null
+      const middleware = flatten(a, prefixes === null ? args : args.slice(1))
+      for (const prefix of prefixes ?? [null]) uses.push({ prefix, args: middleware, at })
       return previous
     }
     if (method === 'route') {
@@ -327,12 +357,14 @@ function honoOps(a: Analysed, name: string, chainFrom: number | undefined): { re
       return previous
     }
     let rest = method === 'on' ? args.slice(1) : args
-    let path = previous
-    if (rest[0] && /^['"`[]/.test(rest[0].source)) { path = pathOf(a, rest[0]); rest = rest.slice(1) }
-    if (rest.length > 0) registrations.push({ path, middleware: rest.slice(0, -1), handler: rest.at(-1)!, handlerRange: null, at })
-    return path
+    let paths = previous
+    if (rest[0] && /^['"`[]/.test(rest[0].source)) { paths = pathsOf(a, rest[0]); rest = rest.slice(1) }
+    if (rest.length > 0) {
+      for (const path of paths) registrations.push({ path, middleware: rest.slice(0, -1), handler: rest.at(-1)!, handlerRange: null, at })
+    }
+    return paths
   }
-  const chain = (after: number, previous: string | null): void => {
+  const chain = (after: number, previous: Paths): void => {
     for (let guard = 0; guard < 64; guard++) {
       const next = new RegExp(`^\\s*\\.\\s*(${HONO_CALL})\\s*${GENERICS}\\(`).exec(a.code.slice(after + 1, after + 500))
       if (!next) return
@@ -343,12 +375,12 @@ function honoOps(a: Analysed, name: string, chainFrom: number | undefined): { re
       after = close
     }
   }
-  if (chainFrom !== undefined) chain(chainFrom, null)
+  if (chainFrom !== undefined) chain(chainFrom, [null])
   for (const m of a.code.matchAll(new RegExp(`(?<![\\w$.])${name.replace(/\$/g, '\\$')}\\s*\\.\\s*(${HONO_CALL})\\s*${GENERICS}\\(`, 'g'))) {
     const open = m.index + m[0].length - 1
     const close = a.pairs.get(open)
     if (close === undefined) continue
-    chain(close, visit(m[1]!, open, close, m.index, null))
+    chain(close, visit(m[1]!, open, close, m.index, [null]))
   }
   registrations.sort((x, y) => x.at - y.at)
   uses.sort((x, y) => x.at - y.at)
@@ -413,9 +445,15 @@ function fastifyOps(a: Analysed, name: string): { registrations: Registration[];
   return { registrations, uses, registers }
 }
 
-const pathMatches = (prefix: string | null, path: string | null): boolean => {
+/**
+ * use() 的路径是否覆盖路由路径。Express 的 use 路径按前缀匹配；Hono 的 use 与普通路由一样注册，
+ * 只有 '/admin/*'、'*' 这类通配才覆盖子路径，app.use('/admin', …) 只作用于 /admin 本身。
+ * 来源：https://github.com/honojs/hono/blob/main/src/hono-base.ts （use 以原路径调用 #addRoute）
+ */
+const pathMatches = (prefix: string | null, path: string | null, framework: NodeFramework): boolean => {
   if (prefix === null) return true
-  // Hono 的 '/admin/*'、'*' 按前缀匹配。
+  const wildcard = /\*$/.test(prefix)
+  if (framework === 'hono' && !wildcard) return path !== null && path.replace(/\/+$/, '') === prefix.replace(/\/+$/, '')
   const base = prefix.replace(/\/?\*$/, '')
   return base === '' || base === '/' || (path !== null && (path === base || path.startsWith(base.endsWith('/') ? base : `${base}/`)))
 }
@@ -461,7 +499,8 @@ function functionAt(a: Analysed, from: number, to: number): CodeRange | null {
   return arrow !== -1 && arrow < to ? { file: a.file, start: arrow, end: to, arrow: true } : null
 }
 
-const FUNCTION_EXPRESSION = /^(?:async\s+)?(?:function\b|\([^()]*\)\s*(?::[^=]{0,200})?=>|[A-Za-z_$][\w$]*\s*=>)/
+/** 函数表达式；async 与参数括号之间可以没有空白：async(req, res) => {}。 */
+const FUNCTION_EXPRESSION = /^(?:async\b\s*)?(?:function\b|\([^()]*\)\s*(?::[^=]{0,200})?=>|[A-Za-z_$][\w$]*\s*=>)/
 
 /**
  * 按名称在文件中查找函数：函数声明与变量初始化、exports.name 赋值、对象属性与方法简写（含类方法）。
@@ -500,7 +539,7 @@ function findFunction(a: Analysed, name: string, depth = 0): CodeRange | null {
       if (end !== undefined) return { file: a.file, start: open, end }
       continue
     }
-    if (/^(?:async\s+)?(?:function\b|\(|[A-Za-z_$][\w$]*\s*=>)/.test(a.code.slice(at, at + 40))) {
+    if (/^(?:async\b\s*)?(?:function\b|\(|[A-Za-z_$][\w$]*\s*=>)/.test(a.code.slice(at, at + 40))) {
       return { file: a.file, start: at, end: expressionEnd(a, at) }
     }
   }
@@ -737,7 +776,7 @@ function paramNamesOf(a: Analysed, range: CodeRange): string[] {
     }
     open = a.openers.get(i)
   } else {
-    const head = /^\s*(?:async\s+)?(?:function\b[^(]{0,80})?\(/.exec(code.slice(range.start, range.start + 200))
+    const head = /^\s*(?:async\b\s*)?(?:function\b[^(]{0,80})?\(/.exec(code.slice(range.start, range.start + 200))
     if (head) open = range.start + head[0].length - 1
     else {
       const single = /^\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>/.exec(code.slice(range.start, range.start + 200))
@@ -961,17 +1000,29 @@ function serverIndex(files: ScanFile[]): ServerIndex {
       if (shadowed(site, reg.at)) continue
       const handler = reg.handlerRange ?? (reg.handler ? handlerOf(a, reg.handler, files) : null)
       if (!handler) continue
-      const before = uses.filter(use => !use.mount && use.at < reg.at && pathMatches(use.prefix, reg.path))
+      const before = uses.filter(use => !use.mount && use.at < reg.at && pathMatches(use.prefix, reg.path, site.framework))
         .flatMap(use => use.args.filter(arg => site.framework !== 'express' || mountedFile(a, arg, files) === null))
-      const route: Route = {
-        file: handler.file, framework: site.framework, url: reg.path === null ? '(dynamic path)' : joinPath(site.prefix, reg.path),
-        scope: scopeOf(handler.file.path), reachable: { start: handler.start, end: handler.end },
-        middleware: [...site.inherited, ...toRefs(a, before), ...toRefs(a, flatten(a, reg.middleware))],
-        mounts: [],
-      }
-      routes.push(route)
+      const url = reg.path === null ? '(dynamic path)' : joinPath(site.prefix, reg.path)
+      const callbacks = flatten(a, reg.middleware)
       const root = site.root ?? site
-      byRoot.set(root, [...(byRoot.get(root) ?? []), route])
+      const add = (range: CodeRange, middleware: Arg[]): void => {
+        const route: Route = {
+          file: range.file, framework: site.framework, url,
+          scope: scopeOf(range.file.path), reachable: { start: range.start, end: range.end },
+          middleware: [...site.inherited, ...toRefs(a, before), ...toRefs(a, middleware)],
+          mounts: [],
+        }
+        routes.push(route)
+        byRoot.set(root, [...(byRoot.get(root) ?? []), route])
+      }
+      add(handler, callbacks)
+      // 处理函数之前的内联回调同样处理请求：app.post('/x', async (req, res, next) => { await db.write(); next() }, send)。
+      // 它们各自作为入口检查，只受排在其前面的中间件保护。
+      callbacks.forEach((callback, index) => {
+        if (!FUNCTION_EXPRESSION.test(callback.text)) return
+        const range = functionAt(a, callback.at, callback.at + callback.text.length)
+        if (range) add(range, callbacks.slice(0, index))
+      })
     }
     if (routes.length) byRouterFile.set(a.file, routes)
   }
@@ -992,7 +1043,11 @@ function serverIndex(files: ScanFile[]): ServerIndex {
         const routes = target && target !== a.file ? byRouterFile.get(target) : localRoutes(a, arg)
         if (!routes || routes.length === 0) return
         const isMiddleware = (x: Arg): boolean => mountedFile(a, x, files) === null && localRoutes(a, x) === undefined
-        const earlier = uses.filter(other => !other.mount && other.at < use.at && pathMatches(other.prefix, use.prefix))
+        // Hono 子应用的路由都在挂载前缀之下，只有通配路径的中间件能覆盖全部。
+        const covers = (other: Use): boolean => site.framework === 'hono'
+          ? other.prefix === null || (/\*$/.test(other.prefix) && pathMatches(other.prefix, use.prefix, 'hono'))
+          : pathMatches(other.prefix, use.prefix, site.framework)
+        const earlier = uses.filter(other => !other.mount && other.at < use.at && covers(other))
           .flatMap(other => site.framework === 'hono' ? other.args : other.args.filter(isMiddleware))
         const middleware = [...site.inherited, ...toRefs(a, earlier), ...toRefs(a, use.args.slice(0, index).filter(isMiddleware))]
         const prefix = joinPath(site.prefix, use.prefix ?? '/')
