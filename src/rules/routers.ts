@@ -832,7 +832,8 @@ function opsOf(site: Site): Ops {
 /** 实例上不限路径、作用于之后注册内容的中间件（Express 的 use() 中排除被挂载的 Router）。 */
 function generalMiddleware(site: Site, before: number, files: ScanFile[]): MiddlewareRef[] {
   const args = opsOf(site).uses
-    .filter(use => !use.mount && use.at < before && (use.prefix === null || use.prefix === '/' || /^\/?\*$/.test(use.prefix)))
+    .filter(use => !use.mount && use.at < before && (use.prefix === null ||
+      (site.framework !== 'hono' && use.prefix === '/') || /^\/?\*$/.test(use.prefix)))
     .flatMap(use => use.args)
     .filter(arg => site.framework !== 'express' || mountedFile(site.a, arg, files) === null)
   return toRefs(site.a, args)
@@ -1016,11 +1017,10 @@ function serverIndex(files: ScanFile[]): ServerIndex {
         byRoot.set(root, [...(byRoot.get(root) ?? []), route])
       }
       add(handler, callbacks)
-      // 处理函数之前的内联回调同样处理请求：app.post('/x', async (req, res, next) => { await db.write(); next() }, send)。
+      // 前置回调同样处理请求，包含具名及跨文件处理函数。
       // 它们各自作为入口检查，只受排在其前面的中间件保护。
       callbacks.forEach((callback, index) => {
-        if (!FUNCTION_EXPRESSION.test(callback.text)) return
-        const range = functionAt(a, callback.at, callback.at + callback.text.length)
+        const range = handlerOf(a, callback, files)
         if (range) add(range, callbacks.slice(0, index))
       })
     }
@@ -1084,27 +1084,30 @@ export function serverRoutesOf(file: ScanFile, files: ScanFile[]): Route[] {
   return actions.length ? actions : nodeRoutesFor(file, files)
 }
 
-/** Fastify 装饰器的定义：fastify.decorate('authenticate', fn)；按名称在全部文件中查找。 */
-const decoratorCache = new WeakMap<ScanFile[], Map<string, CodeRange | null>>()
-
-function decoratorOf(name: string, files: ScanFile[]): CodeRange | null {
-  let cache = decoratorCache.get(files)
-  if (!cache) {
-    cache = new Map()
-    for (const file of files) {
-      if (!/\.[mc]?[jt]sx?$/.test(file.path) || !file.content.includes('decorate')) continue
-      const a = analyse(file)
-      for (const m of a.source.matchAll(/\.\s*decorate\s*\(\s*['"]([A-Za-z_$][\w$]*)['"]\s*,/g)) {
-        if (cache.has(m[1]!)) continue
-        const open = a.source.indexOf('(', m.index)
-        const close = a.pairs.get(open)
-        const value = close === undefined ? undefined : argsOf(a, open, close)[1]
-        cache.set(m[1]!, value ? handlerOf(a, value, files) : null)
-      }
-    }
-    decoratorCache.set(files, cache)
+/** 装饰器须来自同文件、同实例和同函数作用域；无法解析的跨文件来源不提供保护证明。 */
+function decoratorOf(ref: MiddlewareRef, receiver: string, name: string, files: ScanFile[]): CodeRange | null {
+  const a = analyse(ref.file)
+  const owner = (at: number) => a.bodies.filter(b => b.start < at && at < b.end).sort((x, y) => y.start - x.start)[0]
+  const pattern = new RegExp(`(?<![\\w$.])${receiver.replace(/\$/g, '\\$')}\\s*\\.\\s*decorate\\s*\\(\\s*['"]${name.replace(/\$/g, '\\$')}['"]\\s*,`, 'g')
+  let result: CodeRange | null = null
+  for (const m of a.source.matchAll(pattern)) {
+    if (m.index >= ref.at || owner(m.index) !== owner(ref.at)) continue
+    const open = a.source.indexOf('(', m.index)
+    const close = a.pairs.get(open)
+    const value = close === undefined ? undefined : argsOf(a, open, close)[1]
+    result = value ? handlerOf(a, value, files) : null
   }
-  return cache.get(name) ?? null
+  return result
+}
+
+/** 只接受当前实例在引用前注册的插件，不能借用其他应用的导入。 */
+export function registeredAuthPlugin(ref: MiddlewareRef, pkg: string): boolean {
+  const a = analyse(ref.file)
+  const receiver = /^([A-Za-z_$][\w$]*)\s*\./.exec(ref.text)?.[1]
+  if (!receiver) return false
+  const owner = (at: number) => a.bodies.filter(b => b.start < at && at < b.end).sort((x, y) => y.start - x.start)[0]
+  return fastifyOps(a, receiver).registers.some(reg => reg.at < ref.at && owner(reg.at) === owner(ref.at) &&
+    /^[A-Za-z_$][\w$]*$/.test(reg.target.text) && packageOf(a, reg.target.text) === pkg)
 }
 
 /** @fastify/auth 的组合：fastify.auth([a, b], { relation: 'and' })；默认任一通过即放行。 */
@@ -1148,7 +1151,7 @@ export function middlewareDefinition(ref: MiddlewareRef, files: ScanFile[]): {
   const spec = packageOf(a, root)
   // Fastify 实例上的装饰器：fastify.authenticate；实例可能就是 require('fastify')() 的结果。
   if (member && (spec === null || spec === 'fastify')) {
-    const decorated = decoratorOf(member, files)
+    const decorated = decoratorOf(ref, root, member, files)
     if (decorated) return { name: callee, range: decorated, spec: null, inline }
   }
   // 外部包：返回包名，由调用方按已知鉴权库判断。

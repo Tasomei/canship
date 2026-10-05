@@ -84,9 +84,33 @@ function synchronousLocal(file: ScanFile, expr: string): boolean {
   const code = noiseMaskedOf(file)
   const escaped = name.replace(/\$/g, '\\$')
   const declared = new RegExp(`(?:^|[^\\w$])(async\\s+)?function\\s*\\*?\\s*${escaped}\\s*\\(`).exec(code)
-  if (declared) return !declared[1]
+  if (declared?.[1]) return false
   const assigned = new RegExp(`\\b(?:const|let|var)\\s+${escaped}\\s*(?::[^=;]{0,200})?=\\s*(async\\b)?\\s*(?:function\\b|\\([^()]*\\)\\s*(?::[^=;{]{0,200})?=>|[A-Za-z_$][\\w$]*\\s*=>)`).exec(code)
-  return assigned !== null && !assigned[1]
+  if (!declared && (!assigned || assigned[1])) return false
+  // 非 async 函数也可能返回 Promise；调用或 thenable 返回值不能当作同步身份。
+  const declaration = declared ?? assigned!
+  const pairedEnd = (open: number, left: string, right: string): number => {
+    let depth = 0
+    for (let i = open; i < Math.min(code.length, open + 65536); i++) {
+      if (code[i] === left) depth++
+      else if (code[i] === right && --depth === 0) return i
+    }
+    return -1
+  }
+  let start = declaration.index + declaration[0].length
+  if (declared) start = pairedEnd(start - 1, '(', ')') + 1
+  else if (/function\b$/.test(declaration[0])) {
+    const open = code.indexOf('(', start)
+    start = open < 0 ? 0 : pairedEnd(open, '(', ')') + 1
+  }
+  if (start === 0) return false
+  start += /^\s*(?::[\w\s.<>,[\]|?]+)?\s*/.exec(code.slice(start))![0].length
+  const close = code[start] === '{' ? pairedEnd(start, '{', '}') : -1
+  if (code[start] === '{' && close < 0) return false
+  const body = close >= 0 ? code.slice(start, close + 1) : `return ${code.slice(start).split(/[;\n]/)[0] ?? ''}`
+  if (/\b(?:Promise|then|await|new|function|async)\b|=>|\.\.\./.test(body)) return false
+  if ([...body.matchAll(/([\w$]+)\s*\(/g)].some(m => !/^(?:if|switch)$/.test(m[1]!))) return false
+  return /\breturn\s+(?:null|false|true|\{|[\w$]+\s*\?)/.test(body)
 }
 
 interface Assignment { at: number; expression: string; projection: string[] | null; overLimit: boolean }

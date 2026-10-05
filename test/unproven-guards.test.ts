@@ -35,7 +35,8 @@ describe('middleware must actually run its authentication', () => {
       `app.post('/items', guard, async (req, res) => {\n${WRITE}  res.json({})\n})\n`
     assert.deepEqual(summary(await findings({ 'db.ts': DB, 'app.ts': app })), [['api/db-write-without-auth', 'app.ts', 9, 'likely']])
     const called = app.replace('  next()', '  unused()\n  next()')
-    assert.deepEqual(summary(await findings({ 'db.ts': DB, 'app.ts': called })), [])
+    // 调用了闭包仍未等待其中的 requireAuth，不能据此认定请求受保护。
+    assert.deepEqual(summary(await findings({ 'db.ts': DB, 'app.ts': called })), [['api/db-write-without-auth', 'app.ts', 10, 'likely']])
   })
 
   test('a Fastify hook must await or return jwtVerify', async () => {

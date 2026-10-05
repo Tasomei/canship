@@ -7,7 +7,7 @@ import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
 import { namePattern } from './bindings.js'
 import { lineStartsOf } from './offsets.js'
 import { delimiterPairs, functionBodies, type FunctionBody, type Route } from './apiauth.js'
-import { NODE_FRAMEWORKS, serverRoutesOf } from './routers.js'
+import { NODE_FRAMEWORKS, serverRoutesOf, calleeDefinition, functionParams, type CodeRange } from './routers.js'
 
 /** direct：请求值经赋值、解构或字符串拼接原样到达；derived：中途经过其他调用，无法确认是否已校验。 */
 export type InputLevel = 'direct' | 'derived'
@@ -350,6 +350,7 @@ export class InputFlow {
     private readonly pairs: Map<number, number>,
     roles: ParamRoles,
     private readonly fixedTables: Map<string, number>,
+    private readonly definition?: (name: string) => CodeRange | null,
   ) {
     for (const [name, at] of roles.values) this.parameters.set(name, { level: 'direct', origin: at, names: new Set([name]), ownUrl: false })
     this.sourcePattern = sourceRegex(roles)
@@ -497,7 +498,8 @@ export class InputFlow {
     if (!new RegExp(`^(?:(?:await|new)\\s+)*${escaped}\\s*\\(`).test(expression)) return false
     const cached = this.mirrors.get(callee)
     if (cached !== undefined) return cached
-    const code = this.code
+    let code = this.code
+    let pairs = this.pairs
     let params = ''
     let after = -1
     const declared = new RegExp(`(?:^|[^\\w$.])(?:async\\s+)?function\\s*\\*?\\s*${escaped}\\s*\\(`).exec(code)
@@ -509,16 +511,26 @@ export class InputFlow {
       after = match.index + match[0].length
     } else if (match) {
       const open = match.index + match[0].length - 1
-      const close = this.pairs.get(open)
+      const close = pairs.get(open)
       if (close !== undefined) { params = code.slice(open + 1, close); after = close + 1 }
+    }
+    if (!match) {
+      const target = this.definition?.(callee)
+      if (target) {
+        code = noiseMaskedOf(target.file)
+        pairs = delimiterPairs(code)
+        params = functionParams(target).join(',')
+        after = code[target.start] === '{' ? target.start : code.indexOf('=>', target.start) + 2
+        if (after < target.start || after > target.end) after = -1
+      }
     }
     let result = false
     if (after !== -1) {
       const names = params.split(',').flatMap(part => part.replace(/[:=][\s\S]*$/, '').match(/[A-Za-z_$][\w$]*/g) ?? [])
       const head = /^\s*(?::[^={]{0,200})?(?:=>)?\s*/.exec(code.slice(after, after + 260))!
       const start = after + head[0].length
-      const end = (from: number, limit: number): number => expressionEnd(code, from, limit, this.pairs, () => { this.limited = true })
-      const bodyEnd = this.pairs.get(start) ?? start
+      const end = (from: number, limit: number): number => expressionEnd(code, from, limit, pairs, () => { this.limited = true })
+      const bodyEnd = pairs.get(start) ?? start
       const returns = code[start] === '{'
         ? [...code.slice(start, bodyEnd).matchAll(/\breturn\b/g)].map(m => {
           const from = start + m.index + m[0].length
@@ -836,6 +848,7 @@ export class HandlerFile {
     readonly pairs: Map<number, number>,
     readonly lineStarts: number[],
     private readonly candidates: HandlerCandidate[],
+    private readonly definition: (name: string) => CodeRange | null,
   ) { this.fixedTables = fixedTablesOf(code, source, pairs) }
 
   get limited(): boolean {
@@ -853,7 +866,7 @@ export class HandlerFile {
       if (first >= positions.length || positions[first]! >= body.end) continue
       let flow = this.flows.get(candidate)
       if (!flow) {
-        flow = new InputFlow(this.code, this.source, { start: body.start, end: body.end }, this.pairs, candidate.roles, this.fixedTables)
+        flow = new InputFlow(this.code, this.source, { start: body.start, end: body.end }, this.pairs, candidate.roles, this.fixedTables, this.definition)
         this.flows.set(candidate, flow)
       }
       result.push({ route: candidate.route, body, flow })
@@ -904,7 +917,8 @@ export function handlerFileOf(file: ScanFile, files: ScanFile[]): HandlerFile | 
           if (hasInput(roles)) candidates.push({ route: r, body, roles })
         }
       }
-      if (candidates.length > 0) result = new HandlerFile(code, source, pairs, lineStartsOf(file.content), candidates)
+      if (candidates.length > 0) result = new HandlerFile(code, source, pairs, lineStartsOf(file.content), candidates,
+        name => calleeDefinition(file, name, null, files))
     }
   }
   handlerCache.set(file, result)

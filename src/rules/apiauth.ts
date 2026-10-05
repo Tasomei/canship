@@ -9,7 +9,8 @@ import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { JWT_SOURCE, SB_SECRET_SOURCE } from './patterns.js'
 import { bindingsOf, namePattern } from './bindings.js'
 import { authValuesOf, argumentExpressions, identityRequirement, identityFlowLimited, isServerSecretExpression } from './auth-values.js'
-import { NODE_FRAMEWORKS, authCompositionOf, calleeDefinition, functionParams, middlewareDefinition, serverRoutesOf } from './routers.js'
+import { NODE_FRAMEWORKS, authCompositionOf, calleeDefinition, functionParams, middlewareDefinition, serverRoutesOf, registeredAuthPlugin } from './routers.js'
+import { enforcedVerification } from './verification.js'
 
 // 识别各框架可被直接请求的服务端路由。
 
@@ -2156,7 +2157,7 @@ export function maskUnusedFunctions(code: string): string {
  * 来源：https://github.com/fastify/fastify-jwt （decorate('authenticate', …) 用法）
  */
 function jwtVerifyRejects(code: string): boolean {
-  if (!awaitedCall(code, /\bjwtVerify\s*\(/)) return false
+  if (!enforcedVerification(code, /\bjwtVerify\s*\(/)) return false
   const handlers = [...code.matchAll(/\bcatch\s*(?:\([^()]*\))?\s*\{/g)].map(m => {
     const open = m.index + m[0].length - 1
     return code.slice(open, closingDelimiter(code, open, '{', '}') ?? open)
@@ -2193,7 +2194,8 @@ function catchDenies(code: string): boolean {
     const tryOpen = m.index + m[0].length - 1
     const tryClose = closingDelimiter(code, tryOpen, '{', '}')
     if (tryClose === null) continue
-    if (!/\b\w*(?:auth|valid|verify|session|token|user|client|key|secret|permission|access)\w*\s*\(/i.test(code.slice(tryOpen, tryClose))) continue
+    const calls = /\b\w*(?:auth|valid|verify|session|token|user|client|key|secret|permission|access)\w*\s*\(/i
+    if (!enforcedVerification(code, calls, /^(?:assertAuth(?:enticated)?|constructEvent)\b/i)) continue
     const handler = /^\s*catch\s*(?:\([^()]*\))?\s*\{/.exec(code.slice(tryClose + 1))
     if (!handler) continue
     const open = tryClose + handler[0].length
@@ -2237,7 +2239,7 @@ function middlewareRejects(source: string): boolean {
   // 定义了却从未调用的本地函数不会执行，其中的鉴权代码不算。
   const code = maskUnusedFunctions(source)
   if (hasConditionalAuthGuard(code) || rejectsMissingCredential(code) || passesOnlyAuthenticated(code) || rejectsSecretMismatch(code) || catchDenies(code) ||
-      AUTH_ENFORCING_CALL.test(code) || jwtVerifyRejects(code)) return true
+      enforcedVerification(code, AUTH_ENFORCING_CALL, /^(?:assertAuth(?:enticated)?|constructEvent)\b/i) || jwtVerifyRejects(code)) return true
   return (/\b(?:jwt\s*\.\s*verify|verifyToken|verifyJwt|verifyIdToken|verifyAccessToken)\s*\(/.test(code) || awaitedCall(code, /\bjwtVerify\s*\(/)) &&
     DENIED_RESPONSE.test(code)
 }
@@ -2276,7 +2278,7 @@ function middlewareStatus(ref: MiddlewareRef, files: ScanFile[], depth = 0): { s
   } else if (/^[A-Za-z_$][\w$]*\s*\.\s*[A-Za-z_$][\w$]*$/.test(ref.text)) {
     // 插件提供的装饰器：项目注册了 @fastify/basic-auth 时的 fastify.basicAuth。
     const plugin = FASTIFY_AUTH_DECORATORS.find(([pkg, decorator]) =>
-      decorator === name && files.some(file => file.content.includes(`'${pkg}'`) || file.content.includes(`"${pkg}"`)))
+      decorator === name && registeredAuthPlugin(ref, pkg))
     if (plugin) return { status: 'guard', name }
   }
   return { status: AUTH_HELPER_NAME.test(name) ? 'unconfirmed' : 'none', name }

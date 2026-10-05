@@ -4,11 +4,11 @@
  */
 import type { Finding, Rule, ScanContext, ScanFile } from '../types.js'
 import { commentsMaskedOf } from '../mask.js'
-import { awaitedCall, maskUnusedFunctions } from './apiauth.js'
+import { maskUnusedFunctions } from './apiauth.js'
 import type { MiddlewareRef, Route } from './apiauth.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { NODE_FRAMEWORKS, calleeDefinition, middlewareDefinition, serverRoutesOf } from './routers.js'
-import { LocalVerification } from './verification.js'
+import { LocalVerification, enforcedVerification } from './verification.js'
 
 /** 按事件类型分支：case 'checkout.session.completed' 或 event.type === 'invoice.paid'。 */
 const STRIPE_EVENT = /(?:\bcase\s*|\.type\s*[!=]==?\s*)['"`]((?:checkout\.session|payment_intent|customer\.subscription|customer|invoice|charge|setup_intent|payment_method|subscription_schedule|account|payout|refund|checkout)\.[a-z_.]+)['"`]|['"`]((?:checkout\.session|payment_intent|customer\.subscription|invoice|charge)\.[a-z_.]+)['"`]\s*[!=]==?\s*[\w$.]+\.type\b/
@@ -49,7 +49,7 @@ const SIGNATURE_HEADER = /['"]stripe-signature['"]/i
  */
 function middlewareVerifies(code: string): boolean {
   const masked = maskUnusedFunctions(code)
-  const verifies = /\bconstructEvent\s*\(/.test(masked) || awaitedCall(masked, /\bconstructEventAsync\s*\(/)
+  const verifies = enforcedVerification(masked, /\bconstructEvent(?:Async)?\s*\(/, /^constructEvent\s*\(/)
   if (!verifies) return false
   for (const m of masked.matchAll(/\bcatch\s*(?:\([^()]*\))?\s*\{/g)) {
     const open = m.index + m[0].length - 1
@@ -81,6 +81,8 @@ function verifiedByMiddleware(route: Route, files: ScanFile[]): 'verified' | 'cu
     const masked = maskUnusedFunctions(code)
     const calls = [...masked.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*(?:\.\s*([A-Za-z_$][\w$]*)\s*)?\(/g)].slice(0, 16)
     return calls.some(m => {
+      const call = new RegExp(`(?<![\\w$.])${m[1]!.replace(/\$/g, '\\$')}${m[2] ? `\\s*\\.\\s*${m[2].replace(/\$/g, '\\$')}` : ''}\\s*\\(`)
+      if (!enforcedVerification(masked, call)) return false
       const definition = calleeDefinition(file, m[1]!, m[2] ?? null, files)
       return definition !== null && middlewareVerifies(commentsMaskedOf(definition.file).slice(definition.start, definition.end + 1))
     })
