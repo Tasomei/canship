@@ -2109,19 +2109,6 @@ function passesOnlyAuthenticated(code: string): boolean {
 }
 
 /**
- * 调用的结果是否被等待：紧跟 await 或 return（异步中间件返回被拒绝的 Promise 同样会拒绝请求）。
- * 调用前的成员链（request.、getStripe(c).webhooks.）一并跳过。未等待的 Promise 失败不会阻止请求继续。
- */
-export function awaitedCall(code: string, pattern: RegExp): boolean {
-  for (const m of code.matchAll(new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`))) {
-    const before = code.slice(Math.max(0, m.index - 300), m.index)
-      .replace(/(?:[A-Za-z_$][\w$]*(?:\s*\([^()]*\))?\s*\??\.\s*)*$/, '').trimEnd()
-    if (/(?:^|[^\w$.])(?:await|return)$/.test(before)) return true
-  }
-  return false
-}
-
-/**
  * 定义后从未被引用的本地函数不会执行，判断前用空白遮蔽（保持偏移）：const unused = () => requireAuth(req)。
  * 函数名在定义之外出现过即视为可能调用，保留原样。
  */
@@ -2240,8 +2227,7 @@ function middlewareRejects(source: string): boolean {
   const code = maskUnusedFunctions(source)
   if (hasConditionalAuthGuard(code) || rejectsMissingCredential(code) || passesOnlyAuthenticated(code) || rejectsSecretMismatch(code) || catchDenies(code) ||
       enforcedVerification(code, AUTH_ENFORCING_CALL, /^(?:assertAuth(?:enticated)?|constructEvent)\b/i) || jwtVerifyRejects(code)) return true
-  return (/\b(?:jwt\s*\.\s*verify|verifyToken|verifyJwt|verifyIdToken|verifyAccessToken)\s*\(/.test(code) || awaitedCall(code, /\bjwtVerify\s*\(/)) &&
-    DENIED_RESPONSE.test(code)
+  return false
 }
 
 type MiddlewareStatus = 'guard' | 'unconfirmed' | 'none'

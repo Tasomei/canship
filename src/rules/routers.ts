@@ -243,11 +243,14 @@ function usePrefixes(a: Analysed, arg: Arg): string[] | null {
   if (arg.text.startsWith('[')) {
     const close = a.pairs.get(arg.at)
     const items = close === undefined ? [] : argsOf(a, arg.at, close)
-    if (items.length === 0 || !items.every(item => /^['"`]/.test(item.source))) return null
+    if (items.length === 0 || !items.some(item => /^['"`]/.test(item.source))) return null
     return items.map(item => pathOf(a, item)).filter((path): path is string => path !== null)
   }
   const prefix = pathOf(a, arg)
-  return prefix === null ? null : [prefix]
+  if (prefix !== null) return [prefix]
+  // 动态字符串、环境路径与正则路径不能被误当作无路径的全局中间件。
+  if (/^['"`/]|^new\s+RegExp\b|^(?:process\s*\.\s*env|import\s*\.\s*meta\s*\.\s*env|(?:[\w$]+\s*\.\s*)?env)\s*[.[]/.test(arg.source)) return []
+  return null
 }
 
 /**

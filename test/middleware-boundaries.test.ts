@@ -142,3 +142,19 @@ for (const registered of [false, true]) {
     })).length, registered ? 0 : 1)
   })
 }
+
+for (const prefix of ['process.env.PRIVATE_PATH', '`/private/${process.env.TENANT}`', "['/private/*', process.env.PRIVATE_PATH]"]) {
+  test(`an unresolved middleware path does not imply global protection: ${prefix}`, async () => {
+    assert.equal((await findings({ 'server.ts': `import {Hono} from 'hono';import {bearerAuth} from 'hono/bearer-auth';${ADMIN}
+      const app=new Hono();app.use(${prefix},bearerAuth({token:process.env.AUTH_TOKEN}));
+      app.post('/public/items',async(c)=>{${WRITE}return c.json({});});`,
+    })).length, 1)
+  })
+}
+
+test('an unused denial status cannot repair a swallowed verification failure', async () => {
+  assert.equal((await findings({ 'server.ts': `import Fastify from 'fastify';${ADMIN}const app=Fastify();
+    app.addHook('onRequest',async(req,reply)=>{await req.jwtVerify().catch(()=>reply.code(401));});
+    app.post('/items',async(req,reply)=>{${WRITE}return {};});`,
+  })).length, 1)
+})

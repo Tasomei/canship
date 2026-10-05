@@ -156,6 +156,30 @@ void code; void id;
     const verbose = cli([target, '--all', '--verbose'])
     assert.equal(verbose.status, status, name)
   }
+  // 安装后的构建必须保留反例告警，也不能将正常鉴权误报为开放接口。
+  const admin = "import {createClient} from '@supabase/supabase-js';const admin=createClient(process.env.SUPABASE_URL,process.env.SUPABASE_SERVICE_ROLE_KEY);"
+  const write = "await admin.from('items').delete().neq('id',0);"
+  for (const guarded of [false, true]) {
+    const target = sample(`middleware-${guarded}`, {
+      'server.ts': `import express from 'express';${admin}const app=express();
+        async function requireLogin(req,res,next){${guarded ? '' : 'if(req.headers.authorization)'} await requireAuth(req);next();}
+        app.post('/items',requireLogin,async(req,res)=>{${write}res.end();});`,
+    })
+    const checked = cli([target, '--json', '--all'])
+    const output = JSON.parse(checked.stdout)
+    assert.equal(output.partial, false)
+    assert.deepEqual(output.findings.map(f => f.ruleId), guarded ? [] : ['api/admin-db-access-without-auth'])
+    assert.equal(checked.status, guarded ? 0 : 2)
+  }
+  const proxy = sample('dynamic-middleware-path', {
+    'server.ts': `import {Hono} from 'hono';import {bearerAuth} from 'hono/bearer-auth';${admin}const app=new Hono();
+      app.use(process.env.PRIVATE_PATH,bearerAuth({token:process.env.AUTH_TOKEN}));
+      app.post('/public/items',async(c)=>{${write}return c.json({});});`,
+  })
+  const exposed = cli([proxy, '--json', '--all'])
+  assert.equal(exposed.status, 1)
+  assert.equal(JSON.parse(exposed.stdout).partial, false)
+  assert.deepEqual(JSON.parse(exposed.stdout).findings.map(f => f.ruleId), ['api/admin-db-access-without-auth'])
   console.log(JSON.stringify({ version, packageFiles: expected.length, runtimeDependencies: 0, smoke: 'passed' }))
 } finally {
   // 仅移除本次创建的隔离安装与样本目录。
