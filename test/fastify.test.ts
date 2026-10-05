@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { scan } from '../src/engine.js'
+import { apiAuthRule } from '../src/rules/apiauth.js'
 import type { Finding } from '../src/types.js'
 
 const roots: string[] = []
@@ -31,6 +32,18 @@ const ADMIN = "const { createClient } = require('@supabase/supabase-js')\n" +
   'const admin = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)\n'
 /** @fastify/jwt 推荐的 authenticate 装饰器。 */
 const AUTHENTICATE = "app.decorate('authenticate', async function (request, reply) {\n  try {\n    await request.jwtVerify()\n  } catch (err) {\n    reply.send(err)\n  }\n})\n"
+
+test('many routes share plugin lookup without mixing instances', async () => {
+  const content = "import Fastify from 'fastify';import basicAuth from '@fastify/basic-auth';" + ADMIN +
+    "const app=Fastify();const other=Fastify();app.register(basicAuth,{validate:validateCredentials});\n" +
+    Array.from({ length: 600 }, (_, i) => `app.post('/items/${i}',{onRequest:app.basicAuth},async()=>{await admin.from('items').delete();});`).join('\n') +
+    "\nother.post('/open',{onRequest:other.basicAuth},async()=>{await admin.from('items').delete();});"
+  const file = { path: 'server.ts', content, lines: content.split('\n'), isExampleContext: false }
+  const list = await apiAuthRule.check({ root: '.', files: [file], git: 'not-a-repo', gitExecutable: null,
+    reportIncomplete() { assert.fail('Unexpected incomplete scan') } })
+  assert.equal(list.length, 1)
+  assert.match(list[0]!.title, /\/open/)
+})
 
 describe('Fastify route discovery', () => {
   test('shorthand routes, options objects, and full declarations are found', async () => {

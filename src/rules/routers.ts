@@ -1103,13 +1103,20 @@ function decoratorOf(ref: MiddlewareRef, receiver: string, name: string, files: 
   return result
 }
 
+/** 同一文件、同一实例的插件注册只解析一次。 */
+const authPluginCache = new WeakMap<ScanFile, Map<string, Register[]>>()
+
 /** 只接受当前实例在引用前注册的插件，不能借用其他应用的导入。 */
 export function registeredAuthPlugin(ref: MiddlewareRef, pkg: string): boolean {
   const a = analyse(ref.file)
   const receiver = /^([A-Za-z_$][\w$]*)\s*\./.exec(ref.text)?.[1]
   if (!receiver) return false
+  let cache = authPluginCache.get(ref.file)
+  if (!cache) { cache = new Map(); authPluginCache.set(ref.file, cache) }
+  let registers = cache.get(receiver)
+  if (!registers) { registers = fastifyOps(a, receiver).registers; cache.set(receiver, registers) }
   const owner = (at: number) => a.bodies.filter(b => b.start < at && at < b.end).sort((x, y) => y.start - x.start)[0]
-  return fastifyOps(a, receiver).registers.some(reg => reg.at < ref.at && owner(reg.at) === owner(ref.at) &&
+  return registers.some(reg => reg.at < ref.at && owner(reg.at) === owner(ref.at) &&
     /^[A-Za-z_$][\w$]*$/.test(reg.target.text) && packageOf(a, reg.target.text) === pkg)
 }
 
