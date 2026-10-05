@@ -4,7 +4,7 @@
 
 [English](./README.md)
 
-> 本文对应 `0.7.0`。使用 `npx canship --version` 确认已安装版本。
+> 本文对应 `0.7.1`。使用 `npx canship --version` 确认已安装版本。
 
 ## 快速开始
 
@@ -43,7 +43,11 @@ npx canship
 | Hono | `app.get()` 等路由、链式调用、`basePath`，以及 `app.route()` 挂载的子应用 |
 | Fastify | 简写与 `route()` 声明、`register()` 前缀与封装作用域、`@fastify/autoload` 目录 |
 
-已识别的 Next.js/Astro 中间件可抑制覆盖范围内的鉴权结果；Server Function 需在函数内检查。Express、Hono、Fastify 的中间件与钩子只有解析到拒绝未认证请求的代码或已知鉴权库时才抑制鉴权结果；名称像鉴权但无法解析的中间件降低置信度。项目自定义的会话或凭据校验（如 `validateSessionToken`）及 webhook 验签（Stripe、Polar、Clerk、Svix，以及 QStash `receiver.verify` 这类须 await 的校验）只有在失败分支抛出、跳转或返回 401/403 时才算鉴权。本地辅助函数、含鉴权逻辑的项目包装函数（如 `withWorkspace`）、SvelteKit hooks、Nuxt 中间件可降低置信度或将结果标为待复核，但保留结果。输入分析追踪可见的赋值、解构和字符串构造，不以辅助函数名称证明安全。
+已识别的 Next.js/Astro 中间件可抑制匹配路由的鉴权结果；Server Function 需在函数内检查。Express/Hono/Fastify 仅接受已解析的拒绝逻辑或已知鉴权库。Fastify 装饰器和插件的保护证据限定于当前实例。
+
+会话校验及 webhook 验签（Stripe、Polar、Clerk、Svix、QStash）须在失败时拒绝请求，异步调用须等待或返回。项目辅助函数与包装器、SvelteKit hooks、Nuxt 中间件的间接证据可降低置信度；未解析的鉴权来源不能消除结果。
+
+输入追踪支持赋值、解构、字符串构造及可解析的跨文件透传函数，不以辅助函数名称证明输入已净化。
 
 Express、Hono、Fastify 路由会跟进被调项目函数中的写入，最多两层（处理函数 → service → model）；文件约定路由只报告路由文件内的写入。路由分析不覆盖 SvelteKit 页面 load、remote function 和 Hono 的 `app.openapi()` 路由；凭据、CORS 等内容规则仍适用。
 
@@ -123,7 +127,7 @@ jobs:
           persist-credentials: false
       - uses: Tasomei/canship@7465c9560b8b3692777af080e8cc67b4be2335d7
         with:
-          version: '0.7.0'
+          version: '0.7.1'
           honor-ignore-markers: false
 ```
 

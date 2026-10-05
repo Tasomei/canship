@@ -4,7 +4,7 @@ A local static scanner for JavaScript and TypeScript web apps. Checks exposed cr
 
 [简体中文](./README-zh-CN.md)
 
-> Documentation for `0.7.0`. Check the installed version with `npx canship --version`.
+> Documentation for `0.7.1`. Check the installed version with `npx canship --version`.
 
 ## Quick start
 
@@ -43,7 +43,11 @@ Credential formats include OpenAI, Anthropic, AWS, Stripe, GitHub, and npm. Fire
 | Hono | `app.get()`-style routes, chains, `basePath`, and sub-apps mounted with `app.route()` |
 | Fastify | Shorthand and `route()` declarations, `register()` prefixes and encapsulation, `@fastify/autoload` directories |
 
-Recognised Next.js/Astro middleware may suppress covered auth findings; Server Functions need local checks. Express, Hono, and Fastify middleware and hooks suppress auth findings only when they resolve to code that rejects unauthenticated requests or to a known auth library; auth-like middleware that cannot be followed lowers confidence. Project session or credential checks (such as `validateSessionToken`) and webhook signature verification (Stripe, Polar, Clerk, Svix, and awaited checks such as QStash `receiver.verify`) count only when the failing branch throws, redirects, or returns 401/403. Local helpers, project wrappers that contain authentication (such as `withWorkspace`), SvelteKit hooks, and Nuxt middleware may lower confidence or mark findings for review without suppressing them. Input analysis follows visible assignments, destructuring, and string construction; helper names alone do not prove sanitisation.
+Recognised Next.js/Astro middleware may suppress covered auth findings; Server Functions need local checks. Express/Hono/Fastify require resolved rejection logic or known auth libraries. Fastify decorator and plugin evidence is scoped to the local instance.
+
+Session checks and webhook verification (Stripe, Polar, Clerk, Svix, QStash) must reject failures; asynchronous calls must be awaited or returned. Indirect evidence from project helpers/wrappers, SvelteKit hooks, or Nuxt middleware may lower confidence. Unresolved auth sources do not suppress findings.
+
+Input analysis follows assignments, destructuring, string construction, and resolvable cross-file passthrough helpers. Helper names alone do not prove sanitisation.
 
 For Express, Hono, and Fastify routes, writes inside called project functions are followed two levels (handler → service → model); file-based routes report writes in the route file only. SvelteKit page loads, remote functions, and Hono `app.openapi()` routes are outside route analysis. Content-based checks, including credentials and CORS, still apply.
 
@@ -123,7 +127,7 @@ jobs:
           persist-credentials: false
       - uses: Tasomei/canship@7465c9560b8b3692777af080e8cc67b4be2335d7
         with:
-          version: '0.7.0'
+          version: '0.7.1'
           honor-ignore-markers: false
 ```
 
