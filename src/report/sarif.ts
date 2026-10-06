@@ -15,6 +15,7 @@ export interface SarifOptions {
   version: string
   /** 基线抑制的结果数。 */
   baselineSuppressed?: number
+  baselineExpired?: number
   /** 本次规则筛选说明。 */
   ruleSelection?: string | null
   /** 隐藏的疑似结果数。 */
@@ -24,6 +25,7 @@ export interface SarifOptions {
 /** 通过通知披露基线、忽略标记和规则筛选造成的结果隐藏。 */
 function suppressionNotes(result: ScanResult, opts: SarifOptions): unknown[] {
   const notes: unknown[] = []
+  if ((opts.baselineExpired ?? 0) > 0) notes.push({ level: 'note', message: { text: `${opts.baselineExpired} baseline acceptances expired; expired records no longer suppress findings.` } })
   if (result.changeView) notes.push({ level: 'warning', message: { text: changeViewNotice(result.changeView) } })
   const baseline = opts.baselineSuppressed ?? 0
   const hidden = opts.hiddenLikely ?? 0

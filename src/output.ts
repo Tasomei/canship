@@ -15,7 +15,7 @@ function owned(text: string, kind: OutputKind): boolean {
   if (kind === 'html') return /<title>canship\b/.test(text) && /id="canship-data"/.test(text)
   try {
     const data = JSON.parse(text)
-    if (kind === 'baseline') return [2,3].includes(data.version) && Array.isArray(data.entries) && data.entries.every((entry: unknown) =>
+    if (kind === 'baseline') return [2,3,4].includes(data.version) && Array.isArray(data.entries) && data.entries.every((entry: unknown) =>
       entry !== null && typeof entry === 'object' && typeof (entry as Record<string,unknown>).fingerprint === 'string' && typeof (entry as Record<string,unknown>).ruleId === 'string')
     return data.version === '2.1.0' && Array.isArray(data.runs) && data.runs.length > 0 && data.runs.every((run: {tool?:{driver?:{name?:string}}}) => run?.tool?.driver?.name === 'canship')
   } catch { return false }

@@ -3,7 +3,7 @@ import { accessSync, constants, existsSync, lstatSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { VERSION } from './build-info.js'
 import { CONFIG_FILENAME, ConfigError, loadConfig } from './config.js'
-import { readBaseline } from './baseline.js'
+import { BASELINE_VERSION, readBaseline } from './baseline.js'
 import { insideProject } from './project-path.js'
 import { inspectOutput } from './output.js'
 import { execGitSync, hasContainedGitMetadata, hasGitMetadataAbove, resolveGitExecutable } from './git.js'
@@ -72,13 +72,13 @@ export function diagnose(options: DoctorOptions) {
         // 在读取前拒绝非常规文件，避免命名管道等特殊目标阻塞诊断。
         if (!statSync(path).isFile()) throw new Error('not a file')
         const baseline = readBaseline(path)
-        add('baseline', baseline.version === 2 ? 'warning' : 'ok', baseline.version === 2 ? 'BASELINE_LEGACY' : 'BASELINE_VALID',
+        add('baseline', baseline.version < BASELINE_VERSION ? 'warning' : 'ok', baseline.version < BASELINE_VERSION ? 'BASELINE_LEGACY' : 'BASELINE_VALID',
           `Baseline v${baseline.version} is structurally valid (${baseline.entries.length} entries); matching and stale entries require a scan.`,
-          baseline.version === 2 ? 'Review --baseline-migrate output before saving it to a different file.' : null)
+          baseline.version < BASELINE_VERSION ? 'Review --baseline-migrate output before saving it to a different file.' : null)
       }
     } catch {
       add('baseline', 'error', 'BASELINE_INVALID', 'The baseline is missing, unreadable, invalid, or outside the configured project boundary.',
-        'Check the baseline path and format. Use --baseline-migrate only for a valid v2/v3 baseline; do not overwrite it blindly.')
+        'Check the baseline path and format. Review supported legacy baselines before migration; do not overwrite them blindly.')
     }
   }
 

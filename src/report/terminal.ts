@@ -18,6 +18,8 @@ export interface RenderOptions {
   baselineSuppressed?: number
   /** 不再匹配的基线条目数。 */
   baselineStale?: number
+  /** 已到期、不再抑制结果的接受次数。 */
+  baselineExpired?: number
   /** 应用的基线文件路径。 */
   baselinePath?: string | null
   /** 展开每条结果的摘录、说明、追踪、修复步骤和人工操作。 */
@@ -256,6 +258,7 @@ function renderNext(result: ScanResult, opts: RenderOptions, width: number): str
 function renderBaseline(opts: RenderOptions): string[] {
   const suppressed = opts.baselineSuppressed ?? 0
   const stale = opts.baselineStale ?? 0
+  const expired = opts.baselineExpired ?? 0
   const out: string[] = []
   if (suppressed > 0) {
     const where = opts.baselinePath ? ` (${opts.baselinePath})` : ''
@@ -264,8 +267,9 @@ function renderBaseline(opts: RenderOptions): string[] {
   }
   if (stale > 0) {
     // 不规则复数单独处理。
-    out.push(dim(`${stale} baseline ${stale === 1 ? 'entry' : 'entries'} no longer ${stale === 1 ? 'matches' : 'match'} anything — re-run --baseline-write to prune.`))
+    out.push(dim(`${stale} baseline ${stale === 1 ? 'entry' : 'entries'} no longer ${stale === 1 ? 'matches' : 'match'} anything — inspect --baseline-review before --baseline-prune.`))
   }
+  if (expired > 0) out.push(yellow(`${expired} baseline acceptances expired; expired records no longer suppress findings.`))
   return out
 }
 

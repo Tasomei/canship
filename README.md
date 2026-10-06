@@ -94,8 +94,9 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 | `--baseline[=file]` / `--baseline-write[=file]` | Suppress/record findings; default `canship-baseline.json` |
 | `--baseline-migrate[=file]` | Print a migrated baseline as JSON; preserve the source file |
 | `--baseline-review` | Compare accepted and current findings; supports `--baseline[=file]` and `--json` |
-| `--baseline-prune` | Print a v3 candidate retaining only matched acceptances; preserve the source |
+| `--baseline-prune` | Print a v4 candidate retaining only active, matched acceptances; preserve the source |
 | `--baseline-accept=ids` | Print a candidate accepting selected `fingerprint[:count]` entries; default count `1`, comma-separated and repeatable |
+| `--baseline-reason=text` / `--baseline-expires=UTC` | With `--baseline-accept`, record a reason and/or UTC expiry |
 | `--no-config` / `--no-ignore-markers` | Ignore project configuration/source suppression comments |
 | `--best-effort` | Allow incomplete coverage with no findings to exit `0` |
 | `-h`, `--help` / `-v`, `--version` | Show help/version |
@@ -121,11 +122,13 @@ For editor completion, set `$schema` to the bundled [configuration schema](./sch
 
 A standalone `canship-ignore-file` comment excludes a file. `canship-ignore-next-line [rule]` suppresses the next line, optionally for one rule. Exclusions are disclosed and may reduce status to `0` without marking coverage incomplete. For untrusted projects, use `--no-config --no-ignore-markers`.
 
-Baselines accept existing findings without fixing them. New baselines use v3: identity ignores title, language, and line moves, but changes when source evidence changes. v2 remains readable; SARIF retains the v2 fingerprint alongside v3.
+Baselines accept existing findings without fixing them. New baselines use v4 with optional reasons and expiry; v2/v3 remain readable. The v3 fingerprint algorithm is unchanged: title, language, and line moves do not change identity; source evidence does. SARIF retains v2 and v3 fingerprints. Older scanners reject v4 instead of ignoring expiry.
 
-`--baseline-review` shows retained, unmatched, and unaccepted counts; unmatched does not mean fixed. Review and acceptance start empty only when the implicit default baseline is absent; explicit or configured missing files fail. `--baseline-prune` and `--baseline-accept` require complete, unfiltered coverage without source suppressions. Both print candidates without changing the source: pruning accepts nothing new; acceptance changes only selected counts and preserves unmatched v3 entries. Select full fingerprints from the review, then inspect and save the candidate to a different file. Legacy acceptance requires all old entries to match; use review/prune first if they do not. These commands use operation status, not finding severity; incomplete reviews exit `3`.
+`--baseline-review` lists retained, unmatched, unaccepted, and expired records; unmatched does not mean fixed. Review and acceptance start empty only when the implicit default baseline is absent; explicit or configured missing files fail. Prune and acceptance require complete, unfiltered coverage without source suppressions. Both print candidates without changing the source: pruning accepts nothing new; acceptance adds only selected counts and preserves old v3/v4 records. Select full fingerprints from the review, then save the reviewed candidate to a different file. v2 acceptance requires all old entries to match. These commands use operation status, not finding severity; incomplete reviews exit `3`.
 
-`--baseline-migrate` requires a complete, unfiltered scan and matching existing entries. It accepts no new findings, prints v3 JSON, and leaves the old file unchanged. Review the output before saving it to a different file. Reports and baselines are written atomically; existing unrelated files and symbolic-link targets are not overwritten.
+Reasons are optional, limited to 500 characters, and should contain no secrets or personal data. Expiry requires a future UTC timestamp such as `2030-01-01T00:00:00Z`; records stop suppressing at that instant. Different decisions for the same fingerprint keep separate counts and expiry. Reports disclose expired counts; review shows the reason and deadline. Omitting expiry creates a permanent acceptance.
+
+`--baseline-migrate` requires a complete, unfiltered scan and matching, unexpired entries. It accepts no new findings, prints v4 JSON, and leaves the old file unchanged. Review/prune unmatched or expired decisions first. Reports and baselines are written atomically; existing unrelated files and symbolic-link targets are not overwritten.
 
 Default paths are relative to the scan directory; explicit paths are relative to the working directory. Read/write modes are mutually exclusive. Missing, invalid, or v1 baselines exit `3`. A successful write exits `0`, with a warning for incomplete or selective scans.
 

@@ -42,7 +42,7 @@ function withoutGit(): NodeJS.ProcessEnv {
   env.PATH = ''
   return env
 }
-function baseline(root: string, version = 3, name = 'canship-baseline.json'): string {
+function baseline(root: string, version = 4, name = 'canship-baseline.json'): string {
   const path = join(root, name)
   writeFileSync(path, JSON.stringify({ version, generatedAt: '2026-01-01T00:00:00.000Z', entries: [] }))
   return path

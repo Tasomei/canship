@@ -1,4 +1,4 @@
-/** v2 兼容与 v3 迁移仅保留原接受额度，不接受新问题，不改原文件。 */
+/** 旧格式迁移仅保留原接受额度，不接受新问题，不改原文件。 */
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
@@ -28,7 +28,7 @@ test('v2 remains readable and matches its original evidence after wording change
 test('migration accepts no newly discovered evidence and preserves duplicate budgets',()=>{
   const old=finding()
   const migrated=migrateBaseline([old,old,finding({sourceFingerprint:'source-b'})],legacy(old))
-  assert.equal(migrated.version,3)
+  assert.equal(migrated.version,4)
   assert.equal(migrated.entries.reduce((n,e)=>n+e.count,0),1)
   assert.equal(applyBaseline([old,old],migrated).kept.length,1)
 })
@@ -50,7 +50,7 @@ test('CLI migration prints JSON, leaves the source unchanged and accepts no new 
   const run=spawnSync(process.execPath,['--import','tsx','src/cli.ts',root,`--baseline-migrate=${path}`],{encoding:'utf8'})
   assert.equal(run.status,0,run.stderr)
   const upgraded=JSON.parse(run.stdout)
-  assert.equal(upgraded.version,3)
+  assert.equal(upgraded.version,4)
   assert.equal(upgraded.entries.reduce((n:number,e:{count:number})=>n+e.count,0),1)
   assert.equal(readFileSync(path,'utf8'),original)
   assert.equal(readBaseline(path).version,2)

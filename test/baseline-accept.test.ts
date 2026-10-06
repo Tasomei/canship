@@ -37,7 +37,7 @@ test('legacy acceptance migrates only when no original acceptance is lost', () =
   const a = finding('a'); const b = finding('b')
   const old = { version: 2, generatedAt: '', entries: [{ fingerprint: legacyFingerprintOf(a), ruleId: a.ruleId, file: a.file, title: a.title, count: 1 }] }
   const selected = [{ fingerprint: fingerprintOf(b), count: 1 }]
-  assert.equal(acceptBaseline([a, b], old, selected).version, 3)
+  assert.equal(acceptBaseline([a, b], old, selected).version, 4)
   assert.throws(() => acceptBaseline([b], old, selected), /all accepted entries to match/)
 })
 

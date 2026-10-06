@@ -21,8 +21,9 @@ export interface HtmlOptions {
   hiddenLikely?: number
   /** 基线抑制数量；独立报告必须披露这一信息。 */
   baselineSuppressed?: number
-  /** 已过期的基线条目数。 */
+  /** 未匹配的基线接受次数。 */
   baselineStale?: number
+  baselineExpired?: number
   /** 应用的基线文件路径。 */
   baselinePath?: string | null
 }
@@ -378,7 +379,8 @@ ${result.skipped.map(s => `<li><code>${esc(s.path)}</code> — ${esc(skipPhrase(
     baselineSuppressed > 0
       ? `${baselineSuppressed} ${plural(baselineSuppressed, 'finding')} hidden by the baseline${opts.baselinePath ? ` (<code>${esc(opts.baselinePath)}</code>)` : ''}. Those problems still exist.` : '',
     baselineStale > 0
-      ? `${baselineStale} baseline ${baselineStale === 1 ? 'entry' : 'entries'} no longer ${baselineStale === 1 ? 'matches' : 'match'} anything — re-run <code>--baseline-write</code> to prune.` : '',
+      ? `${baselineStale} baseline ${baselineStale === 1 ? 'entry' : 'entries'} no longer ${baselineStale === 1 ? 'matches' : 'match'} anything — inspect <code>--baseline-review</code> before <code>--baseline-prune</code>.` : '',
+    (opts.baselineExpired ?? 0) > 0 ? `${opts.baselineExpired} baseline acceptances expired; expired records no longer suppress findings.` : '',
     result.ignoredFindings.length > 0
       ? `${result.ignoredFindings.length} ${plural(result.ignoredFindings.length, 'finding')} silenced by <code>canship-ignore-next-line</code>: ${result.ignoredFindings.map(f => `<code>${esc(f.file)}:${f.line}</code> (${esc(f.ruleId)})`).join(', ')}` : '',
     selection === null ? '' : `Rule selection in force: ${selection.only.length > 0

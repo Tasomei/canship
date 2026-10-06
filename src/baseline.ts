@@ -6,7 +6,7 @@ import { writeOutput } from './output.js'
 import type { Finding } from './types.js'
 
 /** 基线格式版本；拒绝读取未知版本。 */
-export const BASELINE_VERSION = 3
+export const BASELINE_VERSION = 4
 
 /** 未指定路径时的基线文件名。 */
 export const DEFAULT_BASELINE_PATH = 'canship-baseline.json'
@@ -20,6 +20,10 @@ export interface BaselineEntry {
   title: string
   /** 该指纹的接受次数，防止新增重复问题被自动忽略。 */
   count: number
+  /** 可选接受理由，不要求记录个人身份。 */
+  reason?: string
+  /** UTC 到期时刻；到期后不再提供接受额度。 */
+  expiresAt?: string
 }
 
 /** 基线文件结构。 */
@@ -82,6 +86,27 @@ export function writeBaseline(path: string, baseline: BaselineFile): void {
 /** 基线读取或校验错误。 */
 export class BaselineError extends Error {}
 
+export interface BaselinePolicy { reason?: string; expiresAt?: string }
+
+/** 仅接受明确的 UTC 时间，不对无效日期自动进位。 */
+function validExpiration(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/.test(value)) return false
+  const time = Date.parse(value)
+  const canonical = value.includes('.') ? value : value.replace(/Z$/, '.000Z')
+  return Number.isFinite(time) && new Date(time).toISOString() === canonical
+}
+
+export function validateBaselinePolicy(policy: BaselinePolicy, now = new Date()): BaselinePolicy {
+  if (!Number.isFinite(now.getTime())) throw new BaselineError('Invalid baseline evaluation time.')
+  if (policy.reason !== undefined && (typeof policy.reason !== 'string' || !policy.reason.trim() ||
+      policy.reason.length > 500 || /[\u0000-\u001f\u007f-\u009f]/.test(policy.reason))) throw new BaselineError('Acceptance reason must be 1–500 characters without control characters.')
+  if (policy.expiresAt !== undefined && (!validExpiration(policy.expiresAt) || Date.parse(policy.expiresAt) <= now.getTime())) {
+    throw new BaselineError('Acceptance expiry must be a future UTC timestamp, for example 2030-01-01T00:00:00Z.')
+  }
+  return { ...(policy.reason === undefined ? {} : { reason: policy.reason.trim() }),
+    ...(policy.expiresAt === undefined ? {} : { expiresAt: new Date(policy.expiresAt).toISOString() }) }
+}
+
 /** 校验基线条目的字段和计数。 */
 function isEntry(value: unknown): value is BaselineEntry {
   if (typeof value !== 'object' || value === null) return false
@@ -93,8 +118,10 @@ function isEntry(value: unknown): value is BaselineEntry {
     (e['file'] === null || typeof e['file'] === 'string') &&
     typeof e['title'] === 'string' &&
     typeof e['count'] === 'number' &&
-    Number.isInteger(e['count']) &&
-    e['count'] > 0
+    Number.isSafeInteger(e['count']) &&
+    e['count'] > 0 &&
+    (e['reason'] === undefined || (typeof e['reason'] === 'string' && e['reason'].trim().length > 0 && e['reason'].length <= 500 && !/[\u0000-\u001f\u007f-\u009f]/.test(e['reason']))) &&
+    (e['expiresAt'] === undefined || validExpiration(e['expiresAt']))
   )
 }
 
@@ -133,7 +160,7 @@ export function readBaseline(path: string): BaselineFile {
   const obj = parsed as Record<string, unknown>
 
   const version = obj['version']
-  if (version !== 2 && version !== BASELINE_VERSION) {
+  if (version !== 2 && version !== 3 && version !== BASELINE_VERSION) {
     throw new BaselineError(
       `baseline ${path} has version ${String(version)}; this canship reads version ${BASELINE_VERSION}. ` +
         'Review the findings and regenerate the baseline with --baseline-write.',
@@ -148,12 +175,15 @@ export function readBaseline(path: string): BaselineFile {
   const entries: BaselineEntry[] = []
   for (const [i, raw] of rawEntries.entries()) {
     if (!isEntry(raw)) throw new BaselineError(`baseline ${path}: entry ${i} is malformed`)
+    if (version < 4 && (raw.reason !== undefined || raw.expiresAt !== undefined)) throw new BaselineError('Reasons and expiry require baseline v4; older tools must not silently ignore them.')
     entries.push({
       fingerprint: raw.fingerprint,
       ruleId: raw.ruleId,
       file: raw.file,
       title: raw.title,
       count: raw.count,
+      ...(raw.reason === undefined ? {} : { reason: raw.reason }),
+      ...(raw.expiresAt === undefined ? {} : { expiresAt: raw.expiresAt }),
     })
   }
 
@@ -169,85 +199,89 @@ export interface BaselineApplication {
   suppressed: number
   /** 不再匹配的接受次数，可用于清理过期条目。 */
   stale: number
+  /** 已到期的接受次数；不会抑制结果。 */
+  expired: number
 }
 
-/** 按计数消耗指纹额度；超出额度的重复问题仍需报告。 */
-function matchBaseline(findings: Finding[], baseline: BaselineFile): BaselineApplication & { accepted: Finding[]; remaining: Map<string, number> } {
-  if (![2, BASELINE_VERSION].includes(baseline.version)) throw new BaselineError('Unsupported baseline version.')
-  const remaining = new Map<string, number>()
-  const legacy = new Map<string, BaselineEntry[]>()
-  for (const entry of baseline.entries) {
-    remaining.set(entry.fingerprint, (remaining.get(entry.fingerprint) ?? 0) + entry.count)
-    if (baseline.version === 2) {
-      const key = JSON.stringify([entry.ruleId, entry.file])
-      legacy.set(key, [...(legacy.get(key) ?? []), entry])
+/** 每条接受记录独立计数，避免不同理由或有效期的额度互相覆盖。 */
+function matchBaseline(findings: Finding[], baseline: BaselineFile, now = new Date()) {
+  if (![2, 3, BASELINE_VERSION].includes(baseline.version)) throw new BaselineError('Unsupported baseline version.')
+  if (!Number.isFinite(now.getTime())) throw new BaselineError('Invalid baseline evaluation time.')
+  const buckets = new Map<string, number[]>()
+  const remaining: number[] = []
+  const expiredEntries: BaselineEntry[] = []
+  for (const [index, entry] of baseline.entries.entries()) {
+    if (!isEntry(entry) || (baseline.version < 4 && (entry.reason !== undefined || entry.expiresAt !== undefined))) throw new BaselineError('Invalid baseline entry or policy version.')
+    const expired = entry.expiresAt !== undefined && Date.parse(entry.expiresAt) <= now.getTime()
+    remaining.push(expired ? 0 : entry.count)
+    if (expired) expiredEntries.push({ ...entry })
+    else {
+      const key = baseline.version === 2 ? JSON.stringify([entry.ruleId, entry.file]) : entry.fingerprint
+      const indices = buckets.get(key) ?? []
+      indices.push(index)
+      buckets.set(key, indices)
     }
   }
-
   const kept: Finding[] = []
   let suppressed = 0
-  const accepted: Finding[] = []
+  const retained = new Map<number, BaselineEntry>()
   for (const f of findings) {
-    const fp = baseline.version === 2
-      ? legacy.get(JSON.stringify([f.ruleId, f.file]))?.find(entry => (remaining.get(entry.fingerprint) ?? 0) > 0 &&
-        legacyFingerprintOf({ ...f, title: entry.title }) === entry.fingerprint)?.fingerprint ?? ''
-      : fingerprintOf(f)
-    const budget = remaining.get(fp) ?? 0
-    if (budget > 0) {
-      remaining.set(fp, budget - 1)
+    const fingerprint = fingerprintOf(f)
+    const key = baseline.version === 2 ? JSON.stringify([f.ruleId, f.file]) : fingerprint
+    const index = buckets.get(key)?.find(index => remaining[index]! > 0 && (baseline.version !== 2 ||
+      legacyFingerprintOf({ ...f, title: baseline.entries[index]!.title }) === baseline.entries[index]!.fingerprint))
+    if (index !== undefined) {
+      remaining[index] = remaining[index]! - 1
       suppressed++
-      accepted.push(f)
-      continue
-    }
-    kept.push(f)
+      const existing = retained.get(index)
+      if (existing) existing.count++
+      else retained.set(index, { ...baseline.entries[index]!, fingerprint, ruleId: f.ruleId, file: f.file, title: f.title, count: 1 })
+    } else kept.push(f)
   }
-
-  let stale = 0
-  for (const left of remaining.values()) stale += left
-
-  return { kept, suppressed, stale, accepted, remaining }
+  const unmatched = baseline.entries.flatMap((entry, index) => remaining[index]! > 0 ? [{ ...entry, count: remaining[index]! }] : [])
+  return { kept, suppressed, stale: remaining.reduce((a, b) => a + b, 0),
+    expired: expiredEntries.reduce((sum, entry) => sum + entry.count, 0), expiredEntries,
+    retained: [...retained.values()], unmatched }
 }
 
-export function applyBaseline(findings: Finding[], baseline: BaselineFile): BaselineApplication {
-  const { kept, suppressed, stale } = matchBaseline(findings, baseline)
-  return { kept, suppressed, stale }
+export function applyBaseline(findings: Finding[], baseline: BaselineFile, now = new Date()): BaselineApplication {
+  const { kept, suppressed, stale, expired } = matchBaseline(findings, baseline, now)
+  return { kept, suppressed, stale, expired }
 }
 
-/** 只迁移仍匹配的接受记录；不接受新发现，不静默丢弃旧条目。 */
+/** 迁移不接受新发现，也不静默删除未匹配或到期的决定。 */
 export function migrateBaseline(findings: Finding[], baseline: BaselineFile): BaselineFile {
   const matched = matchBaseline(findings, baseline)
   if (matched.stale > 0) throw new BaselineError('Baseline migration requires all accepted entries to match. Review stale entries first; no output was written.')
-  return buildBaseline(matched.accepted)
+  if (matched.expired > 0) throw new BaselineError('Migration cannot discard expired decisions. Review and prune first; no output was written.')
+  return { version: BASELINE_VERSION, generatedAt: new Date().toISOString(), entries: matched.retained }
 }
 
 /** 按接受次数预览维护结果；未匹配不等于问题已修复。 */
-export function reviewBaseline(findings: Finding[], baseline: BaselineFile) {
-  const matched = matchBaseline(findings, baseline)
-  const unmatched: BaselineEntry[] = []
-  for (const entry of baseline.entries) {
-    const count = Math.min(entry.count, matched.remaining.get(entry.fingerprint) ?? 0)
-    if (count > 0) unmatched.push({ ...entry, count })
-    matched.remaining.set(entry.fingerprint, (matched.remaining.get(entry.fingerprint) ?? 0) - count)
-  }
+export function reviewBaseline(findings: Finding[], baseline: BaselineFile, now = new Date()) {
+  const matched = matchBaseline(findings, baseline, now)
   return {
-    retained: buildBaseline(matched.accepted).entries,
-    unmatched,
+    retained: matched.retained,
+    unmatched: matched.unmatched,
+    expired: matched.expiredEntries,
     unaccepted: buildBaseline(matched.kept).entries,
-    counts: { retained: matched.suppressed, unmatched: matched.stale, unaccepted: matched.kept.length },
+    counts: { retained: matched.suppressed, unmatched: matched.stale, unaccepted: matched.kept.length, expired: matched.expired },
   }
 }
 
-/** 仅保留仍匹配的原接受额度，以当前格式输出；调用方负责验证扫描完整性。 */
-export function pruneBaseline(findings: Finding[], baseline: BaselineFile): BaselineFile {
-  return buildBaseline(matchBaseline(findings, baseline).accepted)
+/** 只保留仍生效且匹配的接受额度及其理由、有效期。 */
+export function pruneBaseline(findings: Finding[], baseline: BaselineFile, now = new Date()): BaselineFile {
+  return { version: BASELINE_VERSION, generatedAt: now.toISOString(), entries: matchBaseline(findings, baseline, now).retained }
 }
 
 export interface BaselineAcceptance { fingerprint: string; count: number }
 
-/** 仅增加明确选定的接受次数，不清理原条目；旧格式必须能无损迁移。 */
-export function acceptBaseline(findings: Finding[], baseline: BaselineFile, selections: BaselineAcceptance[]): BaselineFile {
+/** 新接受决定独立于旧策略，不延长旧记录的有效期或清理旧条目。 */
+export function acceptBaseline(findings: Finding[], baseline: BaselineFile, selections: BaselineAcceptance[],
+  policy: BaselinePolicy = {}, now = new Date()): BaselineFile {
+  const metadata = validateBaselinePolicy(policy, now)
   const current = baseline.version === 2 ? migrateBaseline(findings, baseline) : baseline
-  const remaining = buildBaseline(matchBaseline(findings, current).kept).entries
+  const remaining = buildBaseline(matchBaseline(findings, current, now).kept).entries
   const requested = new Map<string, number>()
   if (selections.length === 0) throw new BaselineError('Select at least one fingerprint from --baseline-review.')
   for (const selection of selections) {
@@ -262,9 +296,10 @@ export function acceptBaseline(findings: Finding[], baseline: BaselineFile, sele
   for (const [fingerprint, count] of requested) {
     const found = remaining.find(entry => entry.fingerprint === fingerprint)
     if (!found || count > found.count) throw new BaselineError('A selected fingerprint or count no longer matches unaccepted findings. Review again; no baseline was changed.')
-    const existing = entries.find(entry => entry.fingerprint === fingerprint)
+    const existing = entries.find(entry => entry.fingerprint === fingerprint &&
+      entry.reason === metadata.reason && entry.expiresAt === metadata.expiresAt)
     if (existing) existing.count += count
-    else entries.push({ ...found, count })
+    else entries.push({ ...found, count, ...metadata })
   }
-  return { version: BASELINE_VERSION, generatedAt: new Date().toISOString(), entries }
+  return { version: BASELINE_VERSION, generatedAt: now.toISOString(), entries }
 }

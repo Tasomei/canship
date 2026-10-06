@@ -50,6 +50,7 @@ export interface PromptContext {
   hiddenLikely?: number
   /** 被基线抑制的结果数。 */
   baselineSuppressed?: number
+  baselineExpired?: number
   /** 逐行标记抑制的位置及规则。 */
   silenced?: string[]
   /** 被整文件标记排除的路径，不能当作已检查且无问题。 */
@@ -79,6 +80,7 @@ export function renderFixPrompt(findings: Finding[], ctx?: PromptContext): strin
   const baselineSuppressed = ctx?.baselineSuppressed ?? 0
   const silenced = ctx?.silenced ?? []
   const suppressedNotes = [
+    (ctx?.baselineExpired ?? 0) > 0 ? `Note: ${ctx!.baselineExpired} baseline acceptances expired; expired records no longer suppress findings.` : null,
     ctx?.changeView ? changeViewNotice(ctx.changeView) : null,
     !ctx?.ignoredFiles?.length
       ? null

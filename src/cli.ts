@@ -19,13 +19,13 @@ import {
   migrateBaseline,
   pruneBaseline,
   acceptBaseline,
-  serializeBaseline,
+  validateBaselinePolicy,
   readBaseline,
   writeBaseline,
   BaselineError,
   DEFAULT_BASELINE_PATH,
 } from './baseline.js'
-import type { BaselineAcceptance } from './baseline.js'
+import type { BaselineAcceptance, BaselinePolicy } from './baseline.js'
 import { ConfigError, CONFIG_FILENAME, loadConfig } from './config.js'
 import { isKnownSelector, ruleMatches } from './rules/index.js'
 import { RULE_CATALOG, renderRuleCatalog } from './rules/catalog.js'
@@ -36,9 +36,10 @@ import type { DiagnosticCode } from './diagnostics.js'
 import { explainConfig, renderConfigExplanation } from './report/config.js'
 import { insideProject, ProjectPathError } from './project-path.js'
 import { diagnose, renderDoctor } from './doctor.js'
-import { canPruneBaseline, createBaselineReview, renderBaselineReview } from './report/baseline-review.js'
+import { canPruneBaseline, createBaselineReview, renderBaselineReview, serializeBaselineCandidate } from './report/baseline-review.js'
 
 interface Args {
+  baselinePolicy: BaselinePolicy
   baselineAccept: BaselineAcceptance[]
   baselineReview: boolean
   baselinePrune: boolean
@@ -122,6 +123,7 @@ function selectionPhrase(selection: RuleSelection | null): string | null {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
+    baselinePolicy: {},
     baselineAccept: [],
     baselineReview: false,
     baselinePrune: false,
@@ -155,6 +157,16 @@ function parseArgs(argv: string[]): Args {
   const positional: string[] = []
 
   for (const arg of argv) {
+    if (arg.startsWith('--baseline-reason=')) {
+      if (args.baselinePolicy.reason !== undefined) argumentError('--baseline-reason can be specified only once')
+      args.baselinePolicy.reason = arg.slice('--baseline-reason='.length)
+      continue
+    }
+    if (arg.startsWith('--baseline-expires=')) {
+      if (args.baselinePolicy.expiresAt !== undefined) argumentError('--baseline-expires can be specified only once')
+      args.baselinePolicy.expiresAt = arg.slice('--baseline-expires='.length)
+      continue
+    }
     if (arg.startsWith('--baseline-accept=')) {
       const values = arg.slice('--baseline-accept='.length).split(',')
       for (const value of values) {
@@ -325,6 +337,8 @@ const HELP = `
                              leave the original unchanged; requires full coverage
         --baseline-accept=IDS  Print a candidate accepting fingerprint[:count] entries
                                from --baseline-review; default count 1; repeatable
+        --baseline-reason=TEXT  With --baseline-accept, record a reason (max 500 chars)
+        --baseline-expires=UTC  With --baseline-accept, expire at a UTC timestamp
         --only=IDS    Run matching rules (comma-separated, repeatable)
         --skip=IDS    Exclude matching rules
         --sarif[=F]   Write a SARIF 2.1.0 log for CI code scanning
@@ -371,6 +385,10 @@ async function main(): Promise<void> {
   if (args.version) {
     process.stdout.write(`${VERSION}\n`)
     return finish(0)
+  }
+  if (Object.keys(args.baselinePolicy).length > 0) {
+    if (!args.baselineAccept.length) argumentError('baseline reason/expiry requires --baseline-accept')
+    args.baselinePolicy = validateBaselinePolicy(args.baselinePolicy)
   }
   if (args.baselineReview || args.baselinePrune || args.baselineAccept.length) {
     if ([args.baselineReview, args.baselinePrune, args.baselineAccept.length > 0].filter(Boolean).length > 1 || args.doctor || args.explainConfig || args.listRules || args.buildInfo ||
@@ -521,17 +539,14 @@ async function main(): Promise<void> {
     const baseline = baselineMissing ? buildBaseline([]) : readBaseline(source)
     if (args.baselineAccept.length) {
       if (!canPruneBaseline(scanned)) throw new BaselineError('Acceptance requires a complete, unfiltered scan without source suppressions. No baseline was changed.')
-      const candidate = acceptBaseline(scanned.findings, baseline, args.baselineAccept)
-      // 保留旧条目时逐字段脱敏，避免手工编辑的基线被原样输出。
-      candidate.entries = candidate.entries.map(entry => ({ ...entry, fingerprint: cleanForOutput(entry.fingerprint),
-        ruleId: cleanForOutput(entry.ruleId), file: entry.file === null ? null : cleanForOutput(entry.file), title: cleanForOutput(entry.title) }))
-      process.stdout.write(serializeBaseline(candidate))
+      const candidate = acceptBaseline(scanned.findings, baseline, args.baselineAccept, args.baselinePolicy)
+      process.stdout.write(serializeBaselineCandidate(candidate))
       process.stderr.write('canship: candidate baseline printed; only selected counts accepted. Source baseline unchanged. Review before saving to a different file.\n')
       return finish(0)
     }
     if (args.baselinePrune) {
       if (!canPruneBaseline(scanned)) throw new BaselineError('Pruning requires a complete, unfiltered scan without source suppressions. No baseline was changed.')
-      process.stdout.write(serializeBaseline(pruneBaseline(scanned.findings, baseline)))
+      process.stdout.write(serializeBaselineCandidate(pruneBaseline(scanned.findings, baseline)))
       process.stderr.write('canship: candidate baseline printed; no new findings accepted. Source baseline unchanged. Review before saving to a different file.\n')
       return finish(0)
     }
@@ -544,7 +559,7 @@ async function main(): Promise<void> {
     if (scanned.partial || scanned.ruleSelection !== null) throw new BaselineError('Migration requires a complete scan without rule selection. No baseline was changed.')
     const source = args.baselineMigrate === '' ? resolve(args.root, DEFAULT_BASELINE_PATH) : resolve(args.baselineMigrate)
     const migrated = migrateBaseline(scanned.findings, readBaseline(source))
-    process.stdout.write(serializeBaseline(migrated))
+    process.stdout.write(serializeBaselineCandidate(migrated))
     const accepted = migrated.entries.reduce((total, entry) => total + entry.count, 0)
     process.stderr.write(`canship: migrated ${accepted} accepted findings; ${scanned.findings.length - accepted} current findings remain unaccepted. Source baseline unchanged.\n`)
     return finish(0)
@@ -593,6 +608,7 @@ async function main(): Promise<void> {
   // 应用基线并统计抑制数量。
   let baselineSuppressed = 0
   let baselineStale = 0
+  let baselineExpired = 0
   let result = scanned
   if (baselinePath !== null) {
     const source = baselinePath
@@ -601,6 +617,7 @@ async function main(): Promise<void> {
       result = { ...scanned, findings: applied.kept }
       baselineSuppressed = applied.suppressed
       baselineStale = applied.stale
+      baselineExpired = applied.expired
     } catch (err) {
       if (err instanceof BaselineError) {
         writeError('BASELINE_INVALID', err.message)
@@ -632,6 +649,7 @@ async function main(): Promise<void> {
       filesScanned: result.filesScanned,
       hiddenLikely,
       baselineSuppressed,
+      baselineExpired,
       silenced: result.ignoredFindings.map((f) => `${f.file}:${f.line} (${f.ruleId})`),
       ignoredFiles: result.ignored,
       ruleSelection: selectionPhrase(result.ruleSelection),
@@ -648,6 +666,7 @@ async function main(): Promise<void> {
           hiddenLikely,
           baselineSuppressed,
           baselineStale,
+          baselineExpired,
           excerptsOmitted: args.noExcerpts,
           build: getBuildInfo(),
         }),
@@ -665,6 +684,7 @@ async function main(): Promise<void> {
           hiddenLikely,
           baselineSuppressed,
           baselineStale,
+          baselineExpired,
           baselinePath: baselinePath === null ? null : cleanForOutput(baselinePath),
           verbose: args.verbose,
           version: buildLabel(),
@@ -685,7 +705,7 @@ async function main(): Promise<void> {
       const target = resolve(args.sarif)
       try {
         writeOutput(target, renderSarif({ ...result, findings: shown }, {
-          version: VERSION, build: getBuildInfo(), baselineSuppressed, hiddenLikely,
+          version: VERSION, build: getBuildInfo(), baselineSuppressed, baselineExpired, hiddenLikely,
           ruleSelection: selectionPhrase(result.ruleSelection),
         }), 'sarif')
         if (!args.json && !args.fixPrompt) reportMessages.push(`SARIF written to ${cleanForOutput(target)}`)
@@ -699,7 +719,7 @@ async function main(): Promise<void> {
       try {
         writeOutput(target, renderHtml({ ...result, findings: shown }, {
           root: displayRoot, generatedAt: new Date().toISOString(), version: buildLabel(), hiddenLikely,
-          baselineSuppressed, baselineStale, baselinePath: baselinePath === null ? null : cleanForOutput(baselinePath),
+          baselineSuppressed, baselineStale, baselineExpired, baselinePath: baselinePath === null ? null : cleanForOutput(baselinePath),
         }), 'html')
         if (!args.json && !args.fixPrompt) reportMessages.push(`Report written to ${cleanForOutput(target)}`)
         if (args.open) {

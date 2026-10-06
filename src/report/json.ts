@@ -10,6 +10,7 @@ export interface JsonReport extends ScanResult {
   hiddenLikely: number
   baselineSuppressed: number
   baselineStale: number
+  baselineExpired: number
   excerptsOmitted: boolean
 }
 
@@ -21,6 +22,7 @@ export interface JsonOptions {
   hiddenLikely: number
   baselineSuppressed: number
   baselineStale: number
+  baselineExpired?: number
   excerptsOmitted?: boolean
 }
 
@@ -44,6 +46,7 @@ export function createJsonReport(result: ScanResult, options: JsonOptions): Json
     hiddenLikely: options.hiddenLikely,
     baselineSuppressed: options.baselineSuppressed,
     baselineStale: options.baselineStale,
+    baselineExpired: options.baselineExpired ?? 0,
     excerptsOmitted: options.excerptsOmitted ?? false,
     findings: result.findings,
     ...(result.changeView ? { changeView: result.changeView } : {}),

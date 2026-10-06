@@ -23,6 +23,7 @@
     "hiddenLikely": { "$ref": "#/definitions/count" },
     "baselineSuppressed": { "$ref": "#/definitions/count" },
     "baselineStale": { "$ref": "#/definitions/count" },
+    "baselineExpired": { "$ref": "#/definitions/count" },
     "excerptsOmitted": { "type": "boolean" },
     "changeView": {
       "type": "object",
