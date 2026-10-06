@@ -211,6 +211,19 @@ void code; void id;
     assert.deepEqual(output.findings.map(f => f.ruleId), mutated ? ['api/admin-db-access-without-auth'] : [])
     assert.equal(checked.status, mutated ? 1 : 0)
   }
+  // 批量入口无法解析时须标记不完整，已解析入口的阻断结果仍优先。
+  for (const known of [false, true]) {
+    const target = sample(`openapi-batch-${known}`, {
+      'server.ts': `import {OpenAPIHono} from '@hono/zod-openapi';${admin}const app=new OpenAPIHono();
+        app.openapiRoutes([unknownEntry${known ? `,{route:{method:'delete',path:'/items',responses:{}},handler:async(c)=>{${write}return c.json({});}}` : ''}]);`,
+    })
+    const checked = cli([target, '--json', '--all'])
+    const output = JSON.parse(checked.stdout)
+    assert.equal(checked.status, known ? 1 : 3)
+    assert.equal(output.partial, true)
+    assert.deepEqual(output.errors.map(error => error.ruleId), ['engine/openapi-routes'])
+    assert.equal(cli([target, '--json', '--all', '--best-effort']).status, known ? 1 : 0)
+  }
   console.log(JSON.stringify({ version, packageFiles: expected.length, runtimeDependencies: 0, smoke: 'passed' }))
 } finally {
   // 仅移除本次创建的隔离安装与样本目录。

@@ -18,6 +18,7 @@ import type { IgnoredLines } from './walker.js'
 import { resolveGitExecutable } from './git.js'
 import { redactAll, truncate } from './redact.js'
 import { createHash } from 'node:crypto'
+import { reportOpenapiBatchCoverage } from './rules/routers.js'
 
 const SEVERITY_ORDER: Record<Finding['severity'], number> = { P0: 0, P1: 1, P2: 2 }
 const CONFIDENCE_ORDER: Record<Finding['confidence'], number> = { certain: 0, likely: 1 }
@@ -224,6 +225,13 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
       findings.push(...(await rule.check(ctx)))
     } catch (err) {
       errors.push({ ruleId: rule.id, file: null, message: messageOf(err), kind: 'crashed' })
+    }
+  }
+
+  // 仅在执行依赖路由的规则时记录入口缺口；凭据等独立规则不受影响。
+  if ([...fileRules, ...projectRules].some(rule => /^(?:api|auth|injection|ssrf|redirect|webhook)\//.test(rule.id))) {
+    try { reportOpenapiBatchCoverage(ctx) } catch (err) {
+      errors.push({ ruleId: 'engine/openapi-routes', file: null, message: messageOf(err), kind: 'crashed' })
     }
   }
 

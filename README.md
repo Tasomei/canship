@@ -40,7 +40,7 @@ Credential formats include OpenAI, Anthropic, AWS, Stripe, GitHub, and npm. Fire
 | Remix / React Router | `loader` and `action` exports in `app/routes` |
 | Astro | Endpoints in `src/pages` |
 | Express | `app`/`Router` routes, including `.route()` chains, mounted routers, and controllers in other files |
-| Hono | Method routes, `OpenAPIHono.openapi()`, chains, `basePath`, and `app.route()` sub-apps |
+| Hono | Method routes, `OpenAPIHono.openapi()` / `openapiRoutes()`, chains, `basePath`, and `app.route()` sub-apps |
 | Fastify | Shorthand and `route()` declarations, `register()` prefixes and encapsulation, `@fastify/autoload` directories |
 
 Recognised Next.js/Astro middleware may suppress covered auth findings; Server Functions need local checks. Express/Hono/Fastify require resolved rejection logic or known auth libraries. Fastify decorator and plugin evidence is scoped to the local instance.
@@ -51,7 +51,9 @@ Input analysis follows assignments, destructuring, string construction, and reso
 
 For Express, Hono, and Fastify routes, writes inside called project functions are followed two levels (handler → service → model); file-based routes report writes in the route file only. SvelteKit page loads and remote functions are outside route analysis. Content-based checks, including credentials and CORS, still apply.
 
-OpenAPI configuration supports inline objects, constants, and static ESM imports/re-exports, with literal paths and at most eight resolution steps. Middleware retains its defining file. Dynamic configuration, detected mutations, and multiple `export *` sources cannot prove protection; arbitrary module side effects are not modelled. `security` declarations and validation hooks are not authentication. Bulk `openapiRoutes()` registration is not supported.
+OpenAPI configuration supports inline objects, constants, and static ESM imports/re-exports, with literal paths and at most eight resolution steps. Middleware retains its defining file. Dynamic configuration, detected mutations, and multiple `export *` sources cannot prove protection; arbitrary module side effects are not modelled. `security` declarations and validation hooks are not authentication.
+
+`openapiRoutes()` supports static arrays, spreads, and `defineOpenAPIRoute()` entries. Only literal `addRoute: false` skips an entry. Unresolved entries or handlers mark coverage incomplete when route-based checks are selected.
 
 ## Results
 
@@ -169,6 +171,7 @@ JSON uses [schemaVersion 1](./schemas/scan-report-v1.schema.json). Check `partia
 |---|---|
 | File reads | 2 MiB per file; 128 MiB and 10,000 files per scan, including probes |
 | Directory discovery | 50,000 entries; 16 levels |
+| OpenAPI batches | 256 items per call, including spreads; 8 array levels |
 | Findings | 100 per file, prioritising severity and confidence |
 | Git history | 100 relevant revisions per file; 30 seconds per command |
 | Auth helper resolution | 8 hops; 64 symbols per helper, 1,024 per route file |

@@ -40,7 +40,7 @@ npx canship
 | Remix / React Router | `app/routes` 中的 `loader`、`action` 导出 |
 | Astro | `src/pages` 中的端点 |
 | Express | `app`/`Router` 路由，含 `.route()` 链、挂载的子路由和其他文件中的控制器 |
-| Hono | 方法路由、`OpenAPIHono.openapi()`、链式调用、`basePath`、`app.route()` 子应用 |
+| Hono | 方法路由、`OpenAPIHono.openapi()` / `openapiRoutes()`、链式调用、`basePath`、`app.route()` 子应用 |
 | Fastify | 简写与 `route()` 声明、`register()` 前缀与封装作用域、`@fastify/autoload` 目录 |
 
 已识别的 Next.js/Astro 中间件可抑制匹配路由的鉴权结果；Server Function 需在函数内检查。Express/Hono/Fastify 仅接受已解析的拒绝逻辑或已知鉴权库。Fastify 装饰器和插件的保护证据限定于当前实例。
@@ -51,7 +51,9 @@ npx canship
 
 Express、Hono、Fastify 路由会跟进被调项目函数中的写入，最多两层（处理函数 → service → model）；文件约定路由只报告路由文件内的写入。路由分析不覆盖 SvelteKit 页面 load 和 remote function；凭据、CORS 等内容规则仍适用。
 
-OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路径须为字面量，最多解析八步。中间件按定义文件解析。动态配置、已检测到的修改及多源 `export *` 不提供保护证明；不分析任意模块副作用。`security` 声明和校验回调不等于鉴权；暂不支持批量 `openapiRoutes()` 注册。
+OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路径须为字面量，最多解析八步。中间件按定义文件解析。动态配置、已检测到的修改及多源 `export *` 不提供保护证明；不分析任意模块副作用。`security` 声明和校验回调不等于鉴权。
+
+`openapiRoutes()` 支持静态数组、展开项和 `defineOpenAPIRoute()` 条目，仅字面量 `addRoute: false` 跳过该项。启用路由相关检查时，无法解析的条目或处理函数标记扫描不完整。
 
 ## 结果
 
@@ -169,6 +171,7 @@ JSON 使用 [schemaVersion 1](./schemas/scan-report-v1.schema.json)。须独立�
 |---|---|
 | 文件读取 | 单文件 2 MiB；单次 128 MiB、10,000 个文件，含探测 |
 | 目录遍历 | 50,000 个条目；16 层 |
+| OpenAPI 批量入口 | 每次调用 256 项，含展开项；数组 8 层 |
 | 结果 | 每文件 100 条，优先保留高严重度、高置信度结果 |
 | Git 历史 | 每文件 100 个相关版本；单条命令 30 秒 |
 | 鉴权辅助函数解析 | 8 跳；每个辅助函数 64 个符号，每个路由文件共 1,024 个 |
