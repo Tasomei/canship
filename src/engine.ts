@@ -7,6 +7,7 @@ import type {
   ScanError,
   ScanFile,
   ScanOptions,
+  ScanProgress,
   ScanResult,
   RuleSelection,
   SkippedFile,
@@ -20,6 +21,7 @@ import { redactAll, truncate } from './redact.js'
 import { createHash } from 'node:crypto'
 import { reportOpenapiBatchCoverage } from './rules/routers.js'
 import { diagnosticCodeOf } from './diagnostics.js'
+import { createScanControl } from './scan-control.js'
 
 const SEVERITY_ORDER: Record<Finding['severity'], number> = { P0: 0, P1: 1, P2: 2 }
 const CONFIDENCE_ORDER: Record<Finding['confidence'], number> = { certain: 0, likely: 1 }
@@ -179,6 +181,11 @@ function sortFindings(findings: Finding[]): Finding[] {
 /** 返回选定规则的全部置信度结果，展示过滤由调用方负责。 */
 export async function scan(root: string, options: ScanOptions = {}): Promise<ScanResult> {
   const started = Date.now()
+  const control = createScanControl(options)
+  control.check()
+  const progress: ScanProgress = { phase: 'discovery', filesCompleted: 0, filesTotal: null,
+    projectRulesCompleted: 0, projectRulesTotal: null }
+  if (control.active) await control.checkpoint(progress)
 
   const gitExecutable = resolveGitExecutable(root)
   const git = detectGitRepo(root, gitExecutable)
@@ -190,6 +197,10 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
   const errors: ScanError[] = []
   const fileRules = FILE_RULES.filter(rule => shouldRunRule(rule.id, options.only ?? [], options.skip ?? []))
   const projectRules = PROJECT_RULES.filter(rule => shouldRunRule(rule.id, options.only ?? [], options.skip ?? []))
+  progress.filesTotal = files.length
+  progress.projectRulesTotal = projectRules.length
+  progress.phase = 'files'
+  if (control.active) await control.checkpoint(progress)
   /** 按规则和消息去重不完整记录。 */
   const incompleteSeen = new Set<string>()
 
@@ -209,6 +220,7 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
 
   // 执行单文件规则。
   for (const file of files) {
+    control.check()
     for (const rule of fileRules) {
       try {
         if (!rule.appliesTo(file)) continue
@@ -218,16 +230,25 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
         errors.push({ ruleId: rule.id, file: file.path, message: messageOf(err), kind: 'crashed' })
       }
     }
+    progress.filesCompleted++
+    if (control.active && progress.filesCompleted % 32 === 0) await control.checkpoint(progress)
   }
+  if (control.active) await control.checkpoint(progress)
 
   // 执行跨文件规则。
   for (const rule of projectRules) {
+    progress.phase = rule.id.startsWith('gitleak/') ? 'history' : 'project'
+    if (control.active) await control.checkpoint(progress)
     try {
       findings.push(...(await rule.check(ctx)))
     } catch (err) {
       errors.push({ ruleId: rule.id, file: null, message: messageOf(err), kind: 'crashed' })
     }
+    control.check()
+    progress.projectRulesCompleted++
   }
+  progress.phase = 'finalize'
+  if (control.active) await control.checkpoint(progress)
 
   // 仅在执行依赖路由的规则时记录入口缺口；凭据等独立规则不受影响。
   if ([...fileRules, ...projectRules].some(rule => /^(?:api|auth|injection|ssrf|redirect|webhook)\//.test(rule.id))) {
@@ -255,7 +276,7 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
     return false
   })
 
-  return {
+  const result: ScanResult = {
     findings: sanitize(bounded, files),
     filesScanned: files.length,
     durationMs: Date.now() - started,
@@ -282,6 +303,9 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
     // 主动忽略不影响完整性；错误、跳过或零文件扫描均标记为未完成。
     partial: errors.length > 0 || skipped.length > 0 || files.length === 0,
   }
+  progress.phase = 'complete'
+  if (control.active) await control.checkpoint(progress)
+  return result
 }
 
 /** 将异常转换为可读消息。 */

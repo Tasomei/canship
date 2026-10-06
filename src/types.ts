@@ -106,12 +106,24 @@ export type SkipReason =
 
 /** 按对外规则 ID 或命名空间选择规则。 */
 export interface ScanOptions {
+  /** 在同步分析批次和规则边界检查取消，不中断正在执行的同步系统调用。 */
+  signal?: AbortSignal
+  /** 只提供阶段和计数；回调失败会中止扫描。 */
+  onProgress?: (progress: Readonly<ScanProgress>) => void | Promise<void>
   /** 仅执行匹配规则；与 skip 互斥。 */
   only?: string[]
   /** 排除匹配规则。 */
   skip?: string[]
   /** 是否遵从被扫描项目中的忽略标记；默认遵从，扫描不可信项目时应关闭。 */
   honorIgnoreMarkers?: boolean
+}
+
+export interface ScanProgress {
+  phase: 'discovery' | 'files' | 'history' | 'project' | 'finalize' | 'complete'
+  filesCompleted: number
+  filesTotal: number | null
+  projectRulesCompleted: number
+  projectRulesTotal: number | null
 }
 
 /** 规则筛选条件及过滤统计。 */

@@ -9,6 +9,9 @@ export { summarize } from './summary.js'
 export type { ScanSummary } from './summary.js'
 import type { ScanOptions as EngineOptions, ScanResult } from './types.js'
 import { ScanInputError } from './diagnostics.js'
+import { checkScanCancelled } from './scan-control.js'
+export { ScanCancelledError, ScanProgressError } from './scan-control.js'
+export type { ScanProgress } from './types.js'
 
 export type { Finding, EvidenceStep, ChangeView, Severity, Confidence, ScanResult, ScanError, SkippedFile, RuleSelection } from './types.js'
 export type { RuleDescription } from './rules/catalog.js'
@@ -32,8 +35,12 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
   if (options === null || typeof options !== 'object' || Array.isArray(options)) {
     throw new ScanInputError('Scan options must be an object.')
   }
-  const allowed = new Set(['only', 'skip', 'honorIgnoreMarkers', 'noExcerpts'])
+  const allowed = new Set(['only', 'skip', 'honorIgnoreMarkers', 'noExcerpts', 'signal', 'onProgress'])
   if (Object.keys(options).some(key => !allowed.has(key))) throw new ScanInputError('Unknown scan option.')
+  if (options.signal !== undefined && (options.signal === null || typeof options.signal !== 'object' ||
+      typeof options.signal.aborted !== 'boolean' || typeof options.signal.addEventListener !== 'function' ||
+      typeof options.signal.removeEventListener !== 'function')) throw new ScanInputError('Expected an AbortSignal.')
+  if (options.onProgress !== undefined && typeof options.onProgress !== 'function') throw new ScanInputError('Expected a progress callback.')
   for (const name of ['honorIgnoreMarkers', 'noExcerpts'] as const) {
     if (options[name] !== undefined && typeof options[name] !== 'boolean') throw new ScanInputError('Expected a boolean scan option.')
   }
@@ -45,17 +52,22 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
     }
   }
   if (options.only?.length && options.skip?.length) throw new ScanInputError('only and skip are mutually exclusive.')
+  checkScanCancelled(options.signal)
   const directory = resolve(root)
   try {
     if (!statSync(directory).isDirectory()) throw new Error('not a directory')
   } catch {
     throw Object.assign(new Error('Scan root must be an accessible directory.'), {code:'SCAN_ROOT_UNAVAILABLE'})
   }
+  // 固定调用时的隐私选项，进度回调不能撤销摘录省略。
+  const omitExcerpts = options.noExcerpts === true
   const result = await scanEngine(directory, {
     only: [...(options.only ?? [])], skip: [...(options.skip ?? [])],
     honorIgnoreMarkers: options.honorIgnoreMarkers ?? true,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(options.onProgress === undefined ? {} : { onProgress: options.onProgress }),
   })
-  return options.noExcerpts
+  return omitExcerpts
     ? { ...result, findings: result.findings.map(finding => ({ ...finding, excerpt: null })) }
     : result
 }

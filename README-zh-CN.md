@@ -69,6 +69,7 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 | `1` | 至少一条 `certain` 的 P0/P1 结果 |
 | `2` | 其他结果，包括隐藏的 `likely` |
 | `3` | 参数错误、工具错误或未被接受的不完整扫描 |
+| `130` / `143` | 扫描期间收到 SIGINT / SIGTERM，不生成报告 |
 
 退出码基于规则筛选、忽略注释和基线处理后的结果。有结果时优先于扫描不完整；`--best-effort` 不改变 `1` 或 `2`。
 
@@ -80,6 +81,7 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 |---|---|
 | `-a`、`--all` | 包含 `likely` 结果 |
 | `--verbose` | 展开终端结果 |
+| `--no-progress` | 关闭交互终端的标准错误进度；结构化输出及重定向流不显示进度 |
 | `--report[=file]` | 写入 HTML，默认 `canship-report.html` |
 | `--open` | 打开 `--report` 输出；CI 和非交互终端中禁用 |
 | `--json` | 输出 JSON |
@@ -181,7 +183,9 @@ const result = await scan('./my-app', { noExcerpts: true })
 console.log(summarize(result))
 ```
 
-`scan()` 返回全部置信度结果，支持 `only`、`skip`、`honorIgnoreMarkers`（默认 `true`）、`noExcerpts`（默认 `false`）。不加载配置、不应用基线、不写报告、不设置进程退出码；无效参数抛出异常。`listRules()` 返回规则目录，`getBuildInfo()` 和 `getCapabilities()` 提供构建身份与权限边界。
+`scan()` 返回全部置信度结果，支持 `only`、`skip`、`honorIgnoreMarkers`（默认 `true`）、`noExcerpts`（默认 `false`）、`signal` 和 `onProgress`。不加载配置、不应用基线、不写报告、不设置进程退出码；无效参数抛出异常。`listRules()` 返回规则目录，`getBuildInfo()` 和 `getCapabilities()` 提供构建身份与权限边界。
+
+`signal` 接受 AbortSignal。取消时抛出 `ScanCancelledError`（`name: "AbortError"`、`code: "SCAN_CANCELLED"`），不返回成功或部分结果。`onProgress` 提供不可变的阶段与计数快照，等待异步回调，回调失败抛出 `ScanProgressError`。阶段结束不代表覆盖完整，应检查返回结果。取消在文件批次及规则边界检查，不会立即中断执行中的同步文件或 Git 调用。CLI Ctrl+C 使用相同边界，进度不包含文件名。
 
 JSON 使用 [schemaVersion 1](./schemas/scan-report-v1.schema.json)。须独立于退出码检查 `partial`、`errors`、`skipped`、`filesScanned`。新报告提供稳定的 `errors[].code`，旧报告可能缺少该字段。CLI 失败通过标准错误输出 `[CODE]`，不破坏 JSON 标准输出。SARIF 包含证据位置和执行诊断。
 

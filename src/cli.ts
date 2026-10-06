@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { existsSync, statSync } from 'node:fs'
 import { writeOutput } from './output.js'
 import { scan, cleanForOutput } from './engine.js'
-import type { RuleSelection } from './types.js'
+import type { RuleSelection, ScanOptions, ScanResult } from './types.js'
 import { renderReport } from './report/terminal.js'
 import { renderFixPrompt } from './report/prompt.js'
 import { renderHtml } from './report/html.js'
@@ -38,9 +38,12 @@ import { insideProject, ProjectPathError } from './project-path.js'
 import { diagnose, renderDoctor } from './doctor.js'
 import { renderInit } from './init.js'
 import { createShareSummary, renderShareSummary } from './report/share.js'
+import { ScanCancelledError, ScanProgressError } from './scan-control.js'
+import { progressText } from './report/progress.js'
 import { canPruneBaseline, createBaselineReview, renderBaselineReview, serializeBaselineCandidate } from './report/baseline-review.js'
 
 interface Args {
+  noProgress: boolean
   shareSummary: boolean
   init: 'config' | 'ci' | null
   baselinePolicy: BaselinePolicy
@@ -90,6 +93,32 @@ function finish(code: number): void {
   process.exitCode = code
 }
 
+let interruptionExitCode: 130 | 143 = 130
+
+/** 仅 CLI 注册终端信号；公共 API 不修改进程监听器。 */
+async function runScan(args: Args, options: ScanOptions): Promise<ScanResult> {
+  const controller = new AbortController()
+  let progressShown = false
+  const interrupt = () => { interruptionExitCode = 130; controller.abort() }
+  const terminate = () => { interruptionExitCode = 143; controller.abort() }
+  const showProgress = !args.noProgress && !args.json && !args.fixPrompt && !args.shareSummary &&
+    process.stderr.isTTY === true && process.stdout.isTTY === true
+  process.once('SIGINT', interrupt)
+  process.once('SIGTERM', terminate)
+  try {
+    return await scan(args.root, { ...options, signal: controller.signal,
+      ...(showProgress ? { onProgress: (progress) => {
+        progressShown = true
+        process.stderr.write(`\r\u001b[2K${progressText(progress, process.stderr.columns ?? 80)}`)
+      } } : {}),
+    })
+  } finally {
+    process.removeListener('SIGINT', interrupt)
+    process.removeListener('SIGTERM', terminate)
+    if (progressShown) process.stderr.write('\r\u001b[2K')
+  }
+}
+
 /** 参数错误由入口统一输出，避免提前终止异步写入。 */
 class ArgumentError extends Error {}
 
@@ -130,6 +159,7 @@ function selectionPhrase(selection: RuleSelection | null): string | null {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
+    noProgress: false,
     shareSummary: false,
     init: null,
     baselinePolicy: {},
@@ -291,6 +321,9 @@ function parseArgs(argv: string[]): Args {
       case '--share-summary':
         args.shareSummary = true
         break
+      case '--no-progress':
+        args.noProgress = true
+        break
       case '--baseline-review':
         args.baselineReview = true
         break
@@ -344,6 +377,7 @@ const HELP = `
                       (skipped in CI and non-interactive shells)
         --json        Output raw JSON (for CI or tooling)
         --share-summary  Print counts and scope flags only; supports --json; no upload
+        --no-progress Disable interactive progress; structured output is always quiet
         --best-effort Allow exit 0 for an incomplete scan with no findings;
                       findings still exit 1 or 2
         --baseline[=F]       Hide findings already recorded in F, so only new
@@ -385,6 +419,7 @@ const HELP = `
     1  at least one certain P0/P1 finding
     2  findings exist, but no certain P0/P1 blocker
     3  invalid arguments, tool error, or incomplete scan without --best-effort
+    130  scan cancelled by SIGINT (Ctrl+C); 143 for SIGTERM
 
   ${dim('--json and --fix-prompt are alternative stdout modes; --report may be combined with either.')}
 
@@ -564,7 +599,7 @@ async function main(): Promise<void> {
     return finish(0)
   }
 
-  const scanned = await scan(args.root, { only, skip, honorIgnoreMarkers: !args.noIgnoreMarkers })
+  const scanned = await runScan(args, { only, skip, honorIgnoreMarkers: !args.noIgnoreMarkers })
 
   if (args.baselineReview || args.baselinePrune || args.baselineAccept.length) {
     const source = baselinePath ?? resolve(args.root, DEFAULT_BASELINE_PATH)
@@ -778,9 +813,14 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
+  if (err instanceof ScanCancelledError) {
+    writeError('SCAN_CANCELLED', 'Scan cancelled before report generation.')
+    return finish(interruptionExitCode)
+  }
   if (err instanceof ArgumentError || err instanceof ProjectPathError) writeError('INVALID_ARGUMENT',err.message)
   else if (err instanceof ChangeViewError) writeError('GIT_REFERENCE_INVALID',err.message)
   else if (err instanceof BaselineError) writeError('BASELINE_INVALID',err.message)
+  else if (err instanceof ScanProgressError) writeError('PROGRESS_CALLBACK_FAILED',err.message)
   else writeError('INTERNAL_ERROR',String(err))
   finish(3)
 })

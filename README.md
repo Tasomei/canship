@@ -69,6 +69,7 @@ Reports are in English. The terminal groups findings by file; `--verbose` adds e
 | `1` | At least one `certain` P0/P1 finding |
 | `2` | Other findings, including hidden `likely` results |
 | `3` | Invalid arguments, tool error, or unaccepted incomplete coverage |
+| `130` / `143` | Interrupted by SIGINT / SIGTERM during scanning; no report is generated |
 
 Status is calculated after rule selection, ignore comments, and baselines. Findings take precedence over incomplete coverage; `--best-effort` never changes `1` or `2`.
 
@@ -80,6 +81,7 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 |---|---|
 | `-a`, `--all` | Include `likely` findings |
 | `--verbose` | Expand terminal findings |
+| `--no-progress` | Disable interactive stderr progress; structured output and redirected streams stay quiet |
 | `--report[=file]` | Write HTML; default `canship-report.html` |
 | `--open` | Open `--report` output; disabled in CI and non-interactive shells |
 | `--json` | Print JSON |
@@ -181,7 +183,9 @@ const result = await scan('./my-app', { noExcerpts: true })
 console.log(summarize(result))
 ```
 
-`scan()` returns all confidence levels. Options: `only`, `skip`, `honorIgnoreMarkers` (default `true`), `noExcerpts` (default `false`). It does not load configuration, apply baselines, write reports, or set process exit status. Invalid arguments throw. `listRules()` returns the rule catalogue; `getBuildInfo()` and `getCapabilities()` identify the build and permission boundaries.
+`scan()` returns all confidence levels. Options: `only`, `skip`, `honorIgnoreMarkers` (default `true`), `noExcerpts` (default `false`), `signal`, and `onProgress`. It does not load configuration, apply baselines, write reports, or set process exit status. Invalid arguments throw. `listRules()` returns the rule catalogue; `getBuildInfo()` and `getCapabilities()` identify the build and permission boundaries.
+
+`signal` accepts an AbortSignal. Cancellation rejects with `ScanCancelledError` (`name: "AbortError"`, `code: "SCAN_CANCELLED"`), not a clean or partial result. `onProgress` receives immutable stage/count snapshots; async callbacks are awaited and failures reject with `ScanProgressError`. Completion stages do not prove coverage; inspect the returned result. Cancellation is checked between file batches and rules, not inside active synchronous file/Git calls. CLI Ctrl+C uses the same boundary; progress contains no filenames.
 
 JSON uses [schemaVersion 1](./schemas/scan-report-v1.schema.json). Check `partial`, `errors`, `skipped`, and `filesScanned` independently of exit status. New reports include stable `errors[].code` values; older reports may omit them. CLI failures include `[CODE]` on stderr without corrupting JSON stdout. SARIF includes evidence locations and execution diagnostics.
 

@@ -105,11 +105,16 @@ try {
   assert.ok(JSON.parse(badDoctor.stdout).checks.some(check => check.code === 'BASELINE_INVALID'))
   // 从实际安装包按包名导入，验证入口无 CLI 副作用及声明文件可被消费。
   const consumer = join(install, 'consumer.mjs')
-  writeFileSync(consumer, `import { scan, summarize, listRules } from 'canship';
+  writeFileSync(consumer, `import { scan, summarize, listRules, ScanCancelledError } from 'canship';
 import assert from 'node:assert/strict';
 const result = await scan(process.argv[2], { noExcerpts: true });
 assert.equal(summarize(result).exitCode, 0);
 assert.ok(listRules().length > 10);
+const phases=[];
+await scan(process.argv[2], {onProgress: progress => {phases.push(progress.phase)}});
+assert.equal(phases[0],'discovery');assert.equal(phases.at(-1),'complete');
+const controller=new AbortController();controller.abort();
+await assert.rejects(scan(process.argv[2], {signal:controller.signal}),ScanCancelledError);
 console.log('API_OK');
 `)
   const api = spawnSync(process.execPath, [consumer, clean], { cwd: install, encoding: 'utf8', timeout: 30_000, windowsHide: true })
@@ -117,7 +122,8 @@ console.log('API_OK');
   assert.equal(api.stdout.trim(), 'API_OK')
   writeFileSync(join(install, 'consumer.mts'), `import { scan, summarize, listRules } from 'canship';
 import type { ScanOptions, ScanResult } from 'canship';
-const options: ScanOptions = { only: ['firebase'], noExcerpts: true };
+const options: ScanOptions = { only: ['firebase'], noExcerpts: true, signal: new AbortController().signal,
+  onProgress: progress => { const completed: number = progress.filesCompleted; void completed; } };
 const result: ScanResult = await scan('.', options);
 const code: 0 | 1 | 2 | 3 = summarize(result).exitCode;
 const id: string = listRules()[0]!.id;
