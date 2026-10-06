@@ -4,6 +4,15 @@
   "type": "object",
   "required": ["schemaVersion", "version", "root", "filesScanned", "durationMs", "partial", "errors", "skipped", "ignored", "ignoredFindings", "ruleSelection", "vendored", "hiddenLikely", "baselineSuppressed", "baselineStale", "findings"],
   "properties": {
+    "build": {
+      "type":"object", "required":["version","channel","revision","dirty"],
+      "properties": {
+        "version":{"type":"string"},
+        "channel":{"enum":["development","prerelease","release"]},
+        "revision":{"anyOf":[{"type":"null"},{"type":"string","pattern":"^(?:[a-f0-9]{40}|[a-f0-9]{64})$"}]},
+        "dirty":{"type":["boolean","null"]}
+      }
+    },
     "schemaVersion": { "const": 1 },
     "version": { "type": "string", "minLength": 1 },
     "root": { "type": "string" },
@@ -39,7 +48,7 @@
           "file": { "type": ["string", "null"] },
           "message": { "type": "string" },
           "kind": { "enum": ["crashed", "incomplete"] },
-          "code": { "enum": ["RULE_EXECUTION_FAILED", "ANALYSIS_INCOMPLETE", "GIT_CHECK_INCOMPLETE", "ROUTE_UNRESOLVED", "FINDINGS_LIMIT"] }
+          "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
         }
       }
     },

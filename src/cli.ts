@@ -28,12 +28,10 @@ import { isKnownSelector, ruleMatches } from './rules/index.js'
 import { RULE_CATALOG, renderRuleCatalog } from './rules/catalog.js'
 import { changedFilesSince, changedFileView, ChangeViewError } from './changes.js'
 import { canOpen, openReport } from './open.js'
-
-/** 构建时从包信息注入版本；源码运行使用开发版本。 */
-declare const __CANSHIP_VERSION__: string | undefined
-const VERSION = typeof __CANSHIP_VERSION__ === 'string' ? __CANSHIP_VERSION__ : '0.0.0-dev'
+import { VERSION, getBuildInfo, getCapabilities, buildLabel } from './build-info.js'
 
 interface Args {
+  buildInfo: boolean
   baselineMigrate: string | null
   root: string
   showAll: boolean
@@ -160,6 +158,7 @@ function parseArgs(argv: string[]): Args {
     version: false,
     listRules: false,
     baselineMigrate: null,
+    buildInfo: false,
     noExcerpts: false,
     changedSince: null,
     verbose: false,
@@ -256,6 +255,9 @@ function parseArgs(argv: string[]): Args {
       case '--list-rules':
         args.listRules = true
         break
+      case '--build-info':
+        args.buildInfo = true
+        break
       case '--no-excerpts':
         args.noExcerpts = true
         break
@@ -322,6 +324,7 @@ const HELP = `
                              scan scope and exit status remain unchanged
     -h, --help        Show this help
     -v, --version     Show version
+        --build-info  Show build identity and capabilities; supports --json
 
   ${bold('Exit codes')}
     0  no findings; scan complete, or partial accepted with --best-effort
@@ -347,6 +350,13 @@ async function main(): Promise<void> {
   }
   if (args.version) {
     process.stdout.write(`${VERSION}\n`)
+    return finish(0)
+  }
+  if (args.buildInfo) {
+    if (process.argv.slice(2).some(arg => !['--build-info','--json'].includes(arg))) argumentError('--build-info only supports --json')
+    const info = getBuildInfo()
+    process.stdout.write(args.json ? `${JSON.stringify({schemaVersion:1,kind:'build-info',...info,capabilities:getCapabilities()},null,2)}\n`
+      : `canship ${buildLabel()}\nchannel: ${info.channel}\nrevision: ${info.revision ?? 'unavailable'}\ndirty: ${info.dirty ?? 'unknown'}\nstatic scan: offline, read-only, no project-code execution\n`)
     return finish(0)
   }
 
@@ -547,6 +557,7 @@ async function main(): Promise<void> {
           baselineSuppressed,
           baselineStale,
           excerptsOmitted: args.noExcerpts,
+          build: getBuildInfo(),
         }),
         null,
         2,
@@ -564,7 +575,7 @@ async function main(): Promise<void> {
           baselineStale,
           baselinePath: baselinePath === null ? null : cleanForOutput(baselinePath),
           verbose: args.verbose,
-          version: VERSION,
+          version: buildLabel(),
           exitCode,
           rerunArgs: followupArgs(process.argv.slice(2)),
         },
@@ -582,6 +593,7 @@ async function main(): Promise<void> {
           { ...result, findings: shown },
           {
             version: VERSION,
+            build: getBuildInfo(),
             baselineSuppressed,
             hiddenLikely,
             ruleSelection: selectionPhrase(result.ruleSelection),
@@ -611,7 +623,7 @@ async function main(): Promise<void> {
           {
             root: displayRoot,
             generatedAt: new Date().toISOString(),
-            version: VERSION,
+            version: buildLabel(),
             hiddenLikely,
             baselineSuppressed,
             baselineStale,

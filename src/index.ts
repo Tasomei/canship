@@ -12,6 +12,8 @@ import type { ScanOptions as EngineOptions, ScanResult } from './types.js'
 export type { Finding, EvidenceStep, ChangeView, Severity, Confidence, ScanResult, ScanError, SkippedFile, RuleSelection } from './types.js'
 export type { RuleDescription } from './rules/catalog.js'
 export type { DiagnosticCode } from './diagnostics.js'
+export { getBuildInfo, getCapabilities } from './build-info.js'
+export type { BuildInfo } from './build-info.js'
 
 export interface ScanOptions extends EngineOptions {
   /** 移除结果摘录；路径、标题及说明仍需在分享前审阅。 */

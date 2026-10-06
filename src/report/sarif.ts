@@ -1,6 +1,7 @@
 /** 生成 SARIF 2.1.0 报告，用于代码扫描平台。 */
 
 import type { Finding, ScanResult } from '../types.js'
+import type { BuildInfo } from '../build-info.js'
 import { fingerprintOf, legacyFingerprintOf } from '../baseline.js'
 import { BLOCKING } from '../types.js'
 import { changeViewNotice } from './shared.js'
@@ -9,6 +10,7 @@ import { changeViewNotice } from './shared.js'
 const INFORMATION_URI = 'https://github.com/Tasomei/canship'
 
 export interface SarifOptions {
+  build?: BuildInfo
   /** 工具版本。 */
   version: string
   /** 基线抑制的结果数。 */
@@ -150,6 +152,7 @@ export function renderSarif(result: ScanResult, opts: SarifOptions): string {
           driver: {
             name: 'canship',
             version: opts.version,
+            ...(opts.build ? {properties:{build:opts.build}} : {}),
             informationUri: INFORMATION_URI,
             rules: rulesOf(findings),
           },

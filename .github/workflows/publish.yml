@@ -55,6 +55,16 @@ jobs:
       # 与本地 npm publish 前执行的检查相同：类型检查、测试、构建。
       - run: npm run prepublishOnly
       - run: node scripts/package-smoke.mjs
+      - name: Verify release build identity
+        shell: bash
+        run: |
+          node --input-type=module -e "
+            import {getBuildInfo} from './dist/index.js';
+            import {execFileSync} from 'node:child_process';
+            const build=getBuildInfo();
+            const revision=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+            if(build.channel==='development'||build.dirty!==false||build.revision!==revision)process.exit(1);
+          "
       - name: Pack
         id: pack
         shell: bash

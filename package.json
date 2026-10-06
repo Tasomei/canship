@@ -54,6 +54,7 @@
   },
   "scripts": {
     "build": "tsup",
+    "benchmark": "npm run build && node --max-old-space-size=256 scripts/benchmark.mjs",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/run-tests.mjs",

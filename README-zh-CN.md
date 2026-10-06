@@ -94,6 +94,7 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 | `--no-config` / `--no-ignore-markers` | 忽略项目配置或源码抑制注释 |
 | `--best-effort` | 允许没有结果的不完整扫描退出 `0` |
 | `-h`、`--help` / `-v`、`--version` | 显示帮助或版本 |
+| `--build-info` | 显示构建渠道、提交摘要、修改状态和能力边界，支持 `--json` |
 
 `--json` 与 `--fix-prompt` 互斥，均可同时输出 HTML 和 SARIF。
 
@@ -158,9 +159,11 @@ const result = await scan('./my-app', { noExcerpts: true })
 console.log(summarize(result))
 ```
 
-`scan()` 返回全部置信度结果，支持 `only`、`skip`、`honorIgnoreMarkers`（默认 `true`）、`noExcerpts`（默认 `false`）。不加载配置、不应用基线、不写报告、不设置进程退出码；无效参数抛出异常。`listRules()` 返回规则目录。
+`scan()` 返回全部置信度结果，支持 `only`、`skip`、`honorIgnoreMarkers`（默认 `true`）、`noExcerpts`（默认 `false`）。不加载配置、不应用基线、不写报告、不设置进程退出码；无效参数抛出异常。`listRules()` 返回规则目录，`getBuildInfo()` 和 `getCapabilities()` 提供构建身份与权限边界。
 
 JSON 使用 [schemaVersion 1](./schemas/scan-report-v1.schema.json)。须独立于退出码检查 `partial`、`errors`、`skipped`、`filesScanned`。新报告提供稳定的 `errors[].code`，旧报告可能缺少该字段。SARIF 包含证据位置和执行诊断。
+
+构建身份区分开发版、候选版和正式版；只有工作区干净且匹配版本标签时才标为发行构建，该标签不等同于发布者认证。JSON 可包含 `build` 元数据，调用方须兼容缺失元数据和未知诊断代码。`--version` 保持包版本格式。
 
 ## 隐私与限制
 

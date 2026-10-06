@@ -44,6 +44,11 @@ try {
     return result
   }
   assert.equal(cli(['--version']).stdout.trim(), version)
+  const identity = JSON.parse(cli(['--build-info', '--json']).stdout)
+  assert.equal(identity.kind, 'build-info')
+  assert.equal(identity.version, version)
+  assert.ok(['development','prerelease','release'].includes(identity.channel))
+  assert.equal(identity.capabilities.staticScan.network, false)
   assert.match(cli(['--help']).stdout, /--no-excerpts/)
   assert.equal(JSON.parse(cli(['--list-rules', '--json']).stdout).kind, 'rule-catalog')
   const catalog = cli(['--list-rules', '--only=injection/sql', '--json'])
@@ -89,6 +94,7 @@ void code; void id;
   const cleanResult = cli([clean, '--json'])
   assert.equal(cleanResult.status, 0)
   assert.equal(JSON.parse(cleanResult.stdout).partial, false)
+  assert.deepEqual(JSON.parse(cleanResult.stdout).build.revision, identity.revision)
   // 从安装包验证身份实参及异常传播，避免只验证源码版本。
   for (const verified of [false, true]) {
     const target = sample(verified ? 'verified-identity' : 'raw-identity', {
@@ -120,6 +126,13 @@ void code; void id;
   const baseline = cli([open, '--json', '--baseline'])
   assert.equal(baseline.status, 0)
   assert.equal(JSON.parse(baseline.stdout).baselineSuppressed, 1)
+  const migrated = cli([open, '--baseline-migrate'])
+  assert.equal(migrated.status, 0)
+  assert.equal(JSON.parse(migrated.stdout).version, 3)
+  // 正常扫描不创建结果文件；输出指向项目源码时须保留原内容。
+  const sourceBefore = readFileSync(join(clean,'index.ts'),'utf8')
+  assert.equal(cli([clean, `--report=${join(clean,'index.ts')}`]).status,3)
+  assert.equal(readFileSync(join(clean,'index.ts'),'utf8'),sourceBefore)
   const privateExcerpt = sample('excerpt', { 'cors.ts': "const note='PRIVATE_SMOKE_SENTINEL'; app.use(cors({origin:true,credentials:true}));" })
   const html = join(root, 'report.html')
   const sarif = join(root, 'report.sarif')

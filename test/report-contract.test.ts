@@ -62,6 +62,7 @@ test('omitting excerpts does not change existing baseline matches', () => {
 test('schema validation rejects corrupt fields and allows compatible additions', () => {
   const report = JSON.parse(cli('--json').stdout)
   assert.equal(validate({ ...report, futureField: { enabled: true } }), true)
+  assert.equal(validate({...report,errors:[{ruleId:'future/check',file:null,message:'Future diagnostic',kind:'incomplete',code:'FUTURE_DIAGNOSTIC'}]}),true)
   for (const change of [{ schemaVersion: 2 }, { partial: 'false' }, { filesScanned: -1 }, { findings: [{}] },
     { errors: [{ kind: 'hidden' }] }, { skipped: [{ path: 'x', reason: 'unknown' }] }]) {
     assert.equal(validate({ ...report, ...change }), false)
