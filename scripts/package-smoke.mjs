@@ -133,6 +133,12 @@ void code; void id;
   assert.equal(cleanResult.status, 0)
   assert.equal(JSON.parse(cleanResult.stdout).partial, false)
   assert.deepEqual(JSON.parse(cleanResult.stdout).build.revision, identity.revision)
+  const summary = cli([clean, '--share-summary', '--json'])
+  assert.equal(summary.status, 0)
+  assert.equal(JSON.parse(summary.stdout).kind, 'share-summary')
+  assert.equal(JSON.parse(summary.stdout).counts.findings, 0)
+  assert.ok(!summary.stdout.includes(clean))
+  assert.equal('root' in JSON.parse(summary.stdout), false)
   // 从安装包验证身份实参及异常传播，避免只验证源码版本。
   for (const verified of [false, true]) {
     const target = sample(verified ? 'verified-identity' : 'raw-identity', {

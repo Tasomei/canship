@@ -37,9 +37,11 @@ import { explainConfig, renderConfigExplanation } from './report/config.js'
 import { insideProject, ProjectPathError } from './project-path.js'
 import { diagnose, renderDoctor } from './doctor.js'
 import { renderInit } from './init.js'
+import { createShareSummary, renderShareSummary } from './report/share.js'
 import { canPruneBaseline, createBaselineReview, renderBaselineReview, serializeBaselineCandidate } from './report/baseline-review.js'
 
 interface Args {
+  shareSummary: boolean
   init: 'config' | 'ci' | null
   baselinePolicy: BaselinePolicy
   baselineAccept: BaselineAcceptance[]
@@ -93,7 +95,10 @@ class ArgumentError extends Error {}
 
 /** 稳定代码供脚本识别；消息始终清理后写入标准错误。 */
 function writeError(code: DiagnosticCode, message: string): void {
-  process.stderr.write(`${red('canship:')} [${code}] ${cleanForOutput(message)}\n`)
+  const detail = process.argv.includes('--share-summary')
+    ? 'Summary generation failed. Re-run without --share-summary locally for details.'
+    : cleanForOutput(message)
+  process.stderr.write(`${red('canship:')} [${code}] ${detail}\n`)
 }
 
 /** 清理参数错误并中止当前处理流程。 */
@@ -125,6 +130,7 @@ function selectionPhrase(selection: RuleSelection | null): string | null {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
+    shareSummary: false,
     init: null,
     baselinePolicy: {},
     baselineAccept: [],
@@ -282,6 +288,9 @@ function parseArgs(argv: string[]): Args {
       case '--doctor':
         args.doctor = true
         break
+      case '--share-summary':
+        args.shareSummary = true
+        break
       case '--baseline-review':
         args.baselineReview = true
         break
@@ -334,6 +343,7 @@ const HELP = `
         --open        With --report, open the report in the default browser
                       (skipped in CI and non-interactive shells)
         --json        Output raw JSON (for CI or tooling)
+        --share-summary  Print counts and scope flags only; supports --json; no upload
         --best-effort Allow exit 0 for an incomplete scan with no findings;
                       findings still exit 1 or 2
         --baseline[=F]       Hide findings already recorded in F, so only new
@@ -395,6 +405,12 @@ async function main(): Promise<void> {
   if (args.version) {
     process.stdout.write(`${VERSION}\n`)
     return finish(0)
+  }
+  if (args.shareSummary && (args.init !== null || args.doctor || args.buildInfo || args.listRules || args.explainConfig ||
+      args.baselineReview || args.baselinePrune || args.baselineAccept.length || args.baselineMigrate !== null ||
+      args.baselineWrite !== null || args.baselineWriteDefault || args.fixPrompt || args.report !== null ||
+      args.sarif !== null || args.changedSince !== null || args.open || args.verbose)) {
+    argumentError('--share-summary cannot be combined with detailed reports, changed views, or other operations')
   }
   if (args.init !== null) {
     if (process.argv.slice(2).some(arg => !['--init', '--init=config', '--init=ci'].includes(arg))) argumentError('--init is a standalone preview mode; it accepts no path or other options')
@@ -643,6 +659,13 @@ async function main(): Promise<void> {
       }
       throw err
     }
+  }
+
+  if (args.shareSummary) {
+    const summary = createShareSummary(result, { bestEffort, baselineApplied: baselinePath !== null,
+      baselineSuppressed, baselineStale, baselineExpired, configEnabled: !args.noConfig, honorIgnoreMarkers: !args.noIgnoreMarkers })
+    process.stdout.write(args.json ? `${JSON.stringify(summary, null, 2)}\n` : renderShareSummary(summary))
+    return finish(summary.exitCode)
   }
 
   // 仅清理展示路径，扫描仍使用原始路径。

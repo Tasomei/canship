@@ -83,6 +83,7 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 | `--report[=file]` | Write HTML; default `canship-report.html` |
 | `--open` | Open `--report` output; disabled in CI and non-interactive shells |
 | `--json` | Print JSON |
+| `--share-summary` | Print counts and scope flags without project text; supports `--json`, never uploads |
 | `--sarif[=file]` | Write SARIF 2.1.0; default `canship.sarif` |
 | `--fix-prompt` | Print repair instructions and separate manual actions |
 | `--no-excerpts` | Remove excerpts from all reports |
@@ -104,6 +105,8 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 | `--build-info` | Show channel, source revision, dirty state and capabilities; supports `--json` |
 
 `--json` and `--fix-prompt` are mutually exclusive; either supports HTML and SARIF output.
+
+`--share-summary` counts all confidence levels after rule selection, source suppressions, and baselines, with the normal scan exit status. It omits paths, titles, identifiers, excerpts, and diagnostic details; handled failures show only a code and local troubleshooting advice. Detailed reports and changed-file views cannot be combined with it. JSON uses `kind: "share-summary"`, not the scan-report schema. Counts may still be sensitive; review before sharing.
 
 `--init` is a standalone preview: stdout contains the template; stderr names its intended destination. Review before saving. CI previews use the scanner's package version; confirm that version is published and review the Action pin before enabling the workflow.
 
