@@ -89,6 +89,7 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 | `--changed-since=ref` | 展示变更文件结果，保留全量扫描退出码 |
 | `--only=ids` / `--skip=ids` | 选择或排除规则及命名空间，逗号分隔，可重复 |
 | `--list-rules` | 列出规则而不扫描，支持 `--only` / `--skip` 筛选及 `--json` |
+| `--explain-config` | 展示生效设置、来源及规则选择，不执行扫描，支持 `--json` |
 | `--baseline[=file]` / `--baseline-write[=file]` | 抑制或记录结果，默认 `canship-baseline.json` |
 | `--baseline-migrate[=file]` | 输出迁移后的基线 JSON，保留原文件 |
 | `--no-config` / `--no-ignore-markers` | 忽略项目配置或源码抑制注释 |
@@ -107,6 +108,8 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 ```json
 { "skip": ["cors/wildcard-with-credentials"], "all": false }
 ```
+
+`--explain-config` 与扫描使用相同的配置解析逻辑，不读取源码或基线内容、不检查 Git 历史、不写文件。退出 `0` 仅表示配置解析成功，不代表扫描完整或基线有效。JSON 使用 `kind: "effective-config"`，不属于扫描报告格式。输出保留路径，分享前须审阅；不能与报告输出、基线写入或迁移、`--changed-since` 组合。
 
 独占行注释 `canship-ignore-file` 排除整个文件；`canship-ignore-next-line [rule]` 抑制下一行，可限定单条规则。报告披露排除项；主动抑制不标记扫描不完整，可能使退出码降为 `0`。扫描不可信项目时使用 `--no-config --no-ignore-markers`。
 

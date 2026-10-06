@@ -65,6 +65,20 @@ try {
     return dir
   }
   const clean = sample('clean', { 'index.ts': 'export const value = 1;' })
+  // 安装包的配置预览必须保持只读，且采用相同的命令行优先级。
+  const configured = sample('configured', {
+    'canship.config.json': JSON.stringify({ only: ['firebase'], baseline: 'missing.json' }),
+  })
+  const explained = cli([configured, '--explain-config', '--json', '--only=injection/sql', '--no-excerpts'])
+  assert.equal(explained.status, 0)
+  const effective = JSON.parse(explained.stdout)
+  assert.equal(effective.kind, 'effective-config')
+  assert.equal(effective.scanPerformed, false)
+  assert.deepEqual(effective.rules.enabled, ['injection/sql'])
+  assert.equal(effective.rules.source, 'cli')
+  assert.equal(effective.settings.noExcerpts.value, true)
+  assert.equal(effective.settings.baseline.value, join(configured, 'missing.json'))
+  assert.equal(cli([configured, '--explain-config', '--report']).status, 3)
   // 从实际安装包按包名导入，验证入口无 CLI 副作用及声明文件可被消费。
   const consumer = join(install, 'consumer.mjs')
   writeFileSync(consumer, `import { scan, summarize, listRules } from 'canship';

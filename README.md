@@ -89,6 +89,7 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 | `--changed-since=ref` | Show changed-file findings; preserve full-scan status |
 | `--only=ids` / `--skip=ids` | Select/exclude rules or namespaces; comma-separated, repeatable |
 | `--list-rules` | List rules without scanning; supports `--only` / `--skip` and `--json` |
+| `--explain-config` | Show effective settings, sources, and selected rules without scanning; supports `--json` |
 | `--baseline[=file]` / `--baseline-write[=file]` | Suppress/record findings; default `canship-baseline.json` |
 | `--baseline-migrate[=file]` | Print a migrated baseline as JSON; preserve the source file |
 | `--no-config` / `--no-ignore-markers` | Ignore project configuration/source suppression comments |
@@ -107,6 +108,8 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 ```json
 { "skip": ["cors/wildcard-with-credentials"], "all": false }
 ```
+
+`--explain-config` resolves the same settings as a scan. It does not read source or baseline contents, check Git history, or write files. Exit `0` confirms configuration resolution, not scan coverage or baseline validity. JSON uses `kind: "effective-config"`, not the scan-report schema. Paths remain visible; review output before sharing. Report output, baseline writes/migration, and `--changed-since` cannot be combined with this mode.
 
 A standalone `canship-ignore-file` comment excludes a file. `canship-ignore-next-line [rule]` suppresses the next line, optionally for one rule. Exclusions are disclosed and may reduce status to `0` without marking coverage incomplete. For untrusted projects, use `--no-config --no-ignore-markers`.
 

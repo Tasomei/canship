@@ -30,9 +30,11 @@ import { changedFilesSince, changedFileView, ChangeViewError } from './changes.j
 import { canOpen, openReport } from './open.js'
 import { VERSION, getBuildInfo, getCapabilities, buildLabel } from './build-info.js'
 import type { DiagnosticCode } from './diagnostics.js'
+import { explainConfig, renderConfigExplanation } from './report/config.js'
 
 interface Args {
   buildInfo: boolean
+  explainConfig: boolean
   baselineMigrate: string | null
   root: string
   showAll: boolean
@@ -165,6 +167,7 @@ function parseArgs(argv: string[]): Args {
     listRules: false,
     baselineMigrate: null,
     buildInfo: false,
+    explainConfig: false,
     noExcerpts: false,
     changedSince: null,
     verbose: false,
@@ -264,6 +267,9 @@ function parseArgs(argv: string[]): Args {
       case '--build-info':
         args.buildInfo = true
         break
+      case '--explain-config':
+        args.explainConfig = true
+        break
       case '--no-excerpts':
         args.noExcerpts = true
         break
@@ -321,6 +327,8 @@ const HELP = `
         --sarif[=F]   Write a SARIF 2.1.0 log for CI code scanning
                       (default canship.sarif)
         --no-config   Ignore canship.config.json in the scanned directory
+        --explain-config  Show effective settings and their sources without scanning;
+                          supports --json; does not validate baseline contents
         --no-ignore-markers
                       Disregard canship-ignore-file and canship-ignore-next-line
                       markers; use with --no-config for untrusted projects
@@ -357,6 +365,11 @@ async function main(): Promise<void> {
   if (args.version) {
     process.stdout.write(`${VERSION}\n`)
     return finish(0)
+  }
+  if (args.explainConfig && (args.buildInfo || args.listRules || args.fixPrompt || args.report !== null ||
+      args.sarif !== null || args.baselineWrite !== null || args.baselineWriteDefault || args.baselineMigrate !== null ||
+      args.changedSince !== null || args.verbose || args.open)) {
+    argumentError('--explain-config cannot be combined with report, baseline-write, migration, changed-view, verbose, open, or other information modes')
   }
   if (args.buildInfo) {
     if (process.argv.slice(2).some(arg => !['--build-info','--json'].includes(arg))) argumentError('--build-info only supports --json')
@@ -413,8 +426,11 @@ async function main(): Promise<void> {
 
   // 从扫描目录加载配置。
   let config
+  let configPath: string | null = null
   try {
-    config = args.noConfig ? {} : loadConfig(args.root).config
+    const loaded = args.noConfig ? { config: {}, path: null } : loadConfig(args.root)
+    config = loaded.config
+    configPath = loaded.path
   } catch (err) {
     if (err instanceof ConfigError) {
       writeError('CONFIG_INVALID', err.message)
@@ -453,6 +469,23 @@ async function main(): Promise<void> {
         : config.baseline !== undefined
           ? insideProject(args.root, config.baseline)
           : null
+
+  if (args.explainConfig) {
+    // 使用扫描分支已解析的值，避免配置预览与实际执行采用不同优先级。
+    const explanation = explainConfig({
+      root: args.root, configPath, configDisabled: args.noConfig, only, skip,
+      ruleSource: cliSelection ? 'cli' : config.only !== undefined || config.skip !== undefined ? 'config' : 'default',
+      settings: {
+        all: { value: showAll, source: args.showAll ? 'cli' : config.all !== undefined ? 'config' : 'default' },
+        baseline: { value: baselinePath, source: args.baseline !== null || args.baselineDefault ? 'cli' : config.baseline !== undefined ? 'config' : 'default' },
+        honorIgnoreMarkers: { value: !args.noIgnoreMarkers, source: args.noIgnoreMarkers ? 'cli' : 'default' },
+        noExcerpts: { value: args.noExcerpts, source: args.noExcerpts ? 'cli' : 'default' },
+        bestEffort: { value: bestEffort, source: bestEffort ? 'cli' : 'default' },
+      },
+    })
+    process.stdout.write(args.json ? `${JSON.stringify(explanation, null, 2)}\n` : renderConfigExplanation(explanation))
+    return finish(0)
+  }
 
   const scanned = await scan(args.root, { only, skip, honorIgnoreMarkers: !args.noIgnoreMarkers })
 
