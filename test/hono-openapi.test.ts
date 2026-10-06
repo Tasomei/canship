@@ -192,3 +192,158 @@ test('OpenAPI webhook handlers are checked even when hidden from the generated s
     "app.openapi({method:'post',path:'/webhook',hide:true,responses:{}},async(c)=>{const event=await c.req.json();if(event.type==='invoice.paid')await markPaid(event.data.object.id);});")
   assert.deepEqual(list.map(f => f.ruleId), ['webhook/unverified-signature'])
 })
+
+const protectedConfig = `{method:'delete',path:'/items/{id}',middleware:${guard},responses:{}}`
+const routeModule = (definition: string) => imports + auth + definition
+const importedApp = (statement: string, reference = 'route') => imports + admin + statement +
+  `const app=new OpenAPIHono();app.openapi(${reference},${handler});`
+
+for (const [statement, definition] of [
+  ["import {route} from './config';", `export const route=createRoute(${protectedConfig});`],
+  ["import {remove as route} from './config';", `export const remove=createRoute(${protectedConfig});`],
+  ["import {route} from './config';", `const local=createRoute(${protectedConfig});export {local as route};`],
+  ["import route from './config';", `export default createRoute(${protectedConfig});`],
+  ["import route from './config';", `const local=createRoute(${protectedConfig});export default local;`],
+  ["import route from './config';", `const local=createRoute(${protectedConfig});export {local as default};`],
+] as const) {
+  test(`static imported route configuration protects the handler: ${definition.slice(0, 45)}`, async () => {
+    assert.deepEqual(await check(importedApp(statement), { 'src/config.ts': routeModule(definition) }), [])
+  })
+}
+
+test('imported open configuration preserves its literal path', async () => {
+  const list = await check(importedApp("import {route} from './config';"), {
+    'src/config.ts': imports + `export const route=createRoute(${config});`,
+  })
+  assert.equal(list.length, 1)
+  assert.equal(list[0]!.title, 'Anyone can call /items/:id and it queries your database as admin')
+})
+
+for (const reexport of ["export {route} from './config';", "export * from './config';", "import {route} from './config';export {route};"]) {
+  test(`barrel exports resolve only their declared source: ${reexport}`, async () => {
+    assert.deepEqual(await check(importedApp("import {route} from './routes';"), {
+      'src/routes.ts': reexport,
+      'src/config.ts': routeModule(`export const route=createRoute(${protectedConfig});`),
+    }), [])
+  })
+}
+
+test('default re-exports and renamed exports preserve the configuration origin', async () => {
+  assert.deepEqual(await check(importedApp("import {remove as route} from './routes';"), {
+    'src/routes.ts': "export {default as remove} from './config';",
+    'src/config.ts': routeModule(`export default createRoute(${protectedConfig});`),
+  }), [])
+})
+
+test('namespace imports resolve exported configuration members', async () => {
+  assert.deepEqual(await check(importedApp("import * as routes from './config';", 'routes.remove'), {
+    'src/config.ts': routeModule(`export const remove=createRoute(${protectedConfig});`),
+  }), [])
+})
+
+test('a configuration file supplies middleware names, not a same-named caller function', async () => {
+  const list = await check(importedApp(auth + `const requireUser=${guard};import {route} from './config';`), {
+    'src/config.ts': imports + 'const requireUser=async(c,next)=>next();' +
+      "export const route=createRoute({method:'delete',path:'/items',middleware:requireUser,responses:{}});",
+  })
+  assert.equal(list.length, 1)
+})
+
+test('real middleware in the configuration file is not replaced by a caller namesake', async () => {
+  assert.deepEqual(await check(importedApp("const requireUser=async(c,next)=>next();import {route} from './config';"), {
+    'src/config.ts': imports + auth + `const requireUser=${guard};` +
+      "export const route=createRoute({method:'delete',path:'/items',middleware:requireUser,responses:{}});",
+  }), [])
+})
+
+test('an imported route middleware remains a scanned handler in its source file', async () => {
+  const list = await check(imports + "import {route} from './config';const app=new OpenAPIHono();app.openapi(route,c=>c.json({}));", {
+    'src/config.ts': imports + admin + `export const route=createRoute({method:'delete',path:'/items',middleware:async(c,next)=>{await db.from('items').delete();await next();},responses:{}});`,
+  })
+  assert.deepEqual(list.map(f => [f.ruleId, f.file]), [['api/admin-db-access-without-auth', 'src/config.ts']])
+})
+
+for (const mutation of ['route.middleware=[];', 'const alias=route;alias.middleware=[];', "Object.assign(route,{middleware:[]});"]) {
+  test(`consumer-side configuration mutation preserves findings: ${mutation}`, async () => {
+    const list = await check(importedApp("import {route} from './config';" + mutation), {
+      'src/config.ts': routeModule(`export const route=createRoute(${protectedConfig});`),
+    })
+    assert.equal(list.length, 1)
+  })
+}
+
+test('source-side mutations cannot provide imported middleware proof', async () => {
+  const list = await check(importedApp("import {route} from './config';"), {
+    'src/config.ts': routeModule(`export const route=createRoute(${protectedConfig});route.middleware=[];`),
+  })
+  assert.equal(list.length, 1)
+})
+
+for (const definition of [
+  `const route=createRoute(${protectedConfig});`,
+  `export let route=createRoute(${protectedConfig});`,
+  `const route=createRoute(${protectedConfig});export type {route};`,
+]) {
+  test(`private, mutable or type-only exports cannot suppress findings: ${definition.slice(0, 20)}`, async () => {
+    const list = await check(importedApp("import {route} from './config';"), { 'src/config.ts': routeModule(definition) })
+    assert.equal(list.length, 1)
+  })
+}
+
+test('cyclic re-exports terminate without hiding the route handler', async () => {
+  const list = await check(importedApp("import {route} from './a';"), {
+    'src/a.ts': "export {route} from './b';", 'src/b.ts': "export {route} from './a';",
+  })
+  assert.equal(list.length, 1)
+})
+
+test('conflicting star exports cannot borrow either middleware configuration', async () => {
+  const list = await check(importedApp("import {route} from './routes';"), {
+    'src/routes.ts': "export * from './a';export * from './b';",
+    'src/a.ts': routeModule(`export const route=createRoute(${protectedConfig});`),
+    'src/b.ts': routeModule(`export const route=createRoute(${protectedConfig});`),
+  })
+  assert.equal(list.length, 1)
+})
+
+for (const prefix of ['function register({route}){', 'function register([route]){', 'function register(input){const {route}=input;']) {
+  test(`destructured local bindings cannot borrow imported protection: ${prefix}`, async () => {
+    const list = await check(imports + admin + "import {route} from './config';" + prefix +
+      `const app=new OpenAPIHono();app.openapi(route,${handler});}`, {
+      'src/config.ts': routeModule(`export const route=createRoute(${protectedConfig});`),
+    })
+    assert.equal(list.length, 1)
+  })
+}
+
+test('a namespace import shadowed by a local object cannot prove protection', async () => {
+  const list = await check(imports + admin + "import * as routes from './config';function register(){const routes=input;" +
+    `const app=new OpenAPIHono();app.openapi(routes.remove,${handler});}`, {
+    'src/config.ts': routeModule(`export const remove=createRoute(${protectedConfig});`),
+  })
+  assert.equal(list.length, 1)
+})
+
+test('deep re-export chains are bounded and keep the handler visible', async () => {
+  const modules: Record<string, string> = { 'src/final.ts': routeModule(`export const route=createRoute(${protectedConfig});`) }
+  for (let i=0;i<12;i++) modules[`src/routes${i}.ts`] = `export {route} from './${i===11 ? 'final' : `routes${i+1}`}';`
+  const list = await check(importedApp("import {route} from './routes0';"), modules)
+  assert.equal(list.length, 1)
+})
+
+test('same-named module configurations remain isolated', async () => {
+  const list = await check(imports + admin + "import {route as safe} from './safe';import {route as open} from './open';const app=new OpenAPIHono();" +
+    `app.openapi(safe,${handler});app.openapi(open,${handler});`, {
+    'src/safe.ts': routeModule(`export const route=createRoute(${protectedConfig});`),
+    'src/open.ts': imports + "export const route=createRoute({method:'delete',path:'/public/items',responses:{}});",
+  })
+  assert.equal(list.length, 1)
+  assert.equal(list[0]!.title, 'Anyone can call /public/items and it queries your database as admin')
+})
+
+test('namespace import text inside a string does not supply configuration evidence', async () => {
+  const list = await check(importedApp("const documentation=\"import * as routes from './config'\";globalThis.routes=input;", 'routes.remove'), {
+    'src/config.ts': routeModule(`export const remove=createRoute(${protectedConfig});`),
+  })
+  assert.equal(list.length, 1)
+})

@@ -195,6 +195,22 @@ void code; void id;
     assert.deepEqual(output.findings.map(f => f.ruleId), guarded ? [] : ['api/admin-db-access-without-auth'])
     assert.equal(checked.status, guarded ? 0 : 1)
   }
+  // 跨文件配置的中间件必须在定义文件中解析，消费者的修改不能借用原配置放行。
+  for (const mutated of [false, true]) {
+    const target = sample(`openapi-import-${mutated}`, {
+      'server.ts': `import {OpenAPIHono} from '@hono/zod-openapi';import {route} from './routes';${admin}
+        ${mutated ? 'route.middleware=[];' : ''}
+        const app=new OpenAPIHono();app.openapi(route,async(c)=>{${write}return c.json({});});`,
+      'routes.ts': "export {route} from './config';",
+      'config.ts': `import {createRoute} from '@hono/zod-openapi';import {bearerAuth} from 'hono/bearer-auth';
+        export const route=createRoute({method:'delete',path:'/items',middleware:bearerAuth({token:process.env.AUTH_TOKEN}),responses:{}});`,
+    })
+    const checked = cli([target, '--json', '--all'])
+    const output = JSON.parse(checked.stdout)
+    assert.equal(output.partial, false)
+    assert.deepEqual(output.findings.map(f => f.ruleId), mutated ? ['api/admin-db-access-without-auth'] : [])
+    assert.equal(checked.status, mutated ? 1 : 0)
+  }
   console.log(JSON.stringify({ version, packageFiles: expected.length, runtimeDependencies: 0, smoke: 'passed' }))
 } finally {
   // 仅移除本次创建的隔离安装与样本目录。

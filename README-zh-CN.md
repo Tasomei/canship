@@ -51,7 +51,7 @@ npx canship
 
 Express、Hono、Fastify 路由会跟进被调项目函数中的写入，最多两层（处理函数 → service → model）；文件约定路由只报告路由文件内的写入。路由分析不覆盖 SvelteKit 页面 load 和 remote function；凭据、CORS 等内容规则仍适用。
 
-OpenAPI 路由配置支持内联对象和同文件常量，路径须为字面量，别名解析有界。导入、动态或修改过的配置不提供保护证明。`security` 声明和校验回调不等于鉴权；暂不支持批量 `openapiRoutes()` 注册。
+OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路径须为字面量，最多解析八步。中间件按定义文件解析。动态配置、已检测到的修改及多源 `export *` 不提供保护证明；不分析任意模块副作用。`security` 声明和校验回调不等于鉴权；暂不支持批量 `openapiRoutes()` 注册。
 
 ## 结果
 

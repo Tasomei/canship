@@ -51,7 +51,7 @@ Input analysis follows assignments, destructuring, string construction, and reso
 
 For Express, Hono, and Fastify routes, writes inside called project functions are followed two levels (handler → service → model); file-based routes report writes in the route file only. SvelteKit page loads and remote functions are outside route analysis. Content-based checks, including credentials and CORS, still apply.
 
-OpenAPI route configuration supports inline objects and same-file constants, with literal paths and bounded alias resolution. Imported, dynamic, or modified configuration cannot prove protection. OpenAPI `security` declarations and validation hooks are not authentication. Bulk `openapiRoutes()` registration is not supported.
+OpenAPI configuration supports inline objects, constants, and static ESM imports/re-exports, with literal paths and at most eight resolution steps. Middleware retains its defining file. Dynamic configuration, detected mutations, and multiple `export *` sources cannot prove protection; arbitrary module side effects are not modelled. `security` declarations and validation hooks are not authentication. Bulk `openapiRoutes()` registration is not supported.
 
 ## Results
 

@@ -47,7 +47,7 @@ function analyse(file: ScanFile): Analysed {
   return result
 }
 
-interface Arg { text: string; source: string; at: number }
+interface Arg { text: string; source: string; at: number; file?: ScanFile }
 
 /** 顶层逗号分隔的实参，保留位置；文本取屏蔽字符串后的代码，source 取原文。 */
 function argsOf(a: Analysed, open: number, close: number): Arg[] {
@@ -72,8 +72,9 @@ function argsOf(a: Analysed, open: number, close: number): Arg[] {
 function flatten(a: Analysed, args: Arg[]): Arg[] {
   return args.flatMap(arg => {
     if (!arg.text.startsWith('[')) return [arg]
-    const close = a.pairs.get(arg.at)
-    return close === undefined ? [arg] : argsOf(a, arg.at, close)
+    const owner = arg.file ? analyse(arg.file) : a
+    const close = owner.pairs.get(arg.at)
+    return close === undefined ? [arg] : argsOf(owner, arg.at, close).map(item => ({ ...item, file: owner.file }))
   })
 }
 
@@ -355,17 +356,28 @@ function openapiMiddleware(a: Analysed, arg: Arg, depth = 0): Arg[] {
   return call && a.pairs.get(arg.at + call[0].length - 1) === arg.at + arg.text.length - 1 ? [arg] : []
 }
 
-/** 同文件的 OpenAPI 配置；展开、计算属性和可变来源不提供路径或鉴权证明。 */
-function openapiEntries(a: Analysed, arg: Arg, depth = 0): Map<string, Entry> {
+/** OpenAPI 配置沿静态 ESM 导入与重导出解析，成员位置保留原文件。 */
+function openapiEntries(a: Analysed, arg: Arg, files: ScanFile[], depth = 0): Map<string, Entry> {
   if (depth >= 8) return new Map()
-  const root = /^([A-Za-z_$][\w$]*)(?:\s*\(|$)/.exec(arg.text)?.[1]
-  if (root && a.bodies.some(body => body.start < arg.at && arg.at < body.end &&
-      paramNamesOf(a, { file: a.file, start: body.start, end: body.end }).includes(root))) return new Map()
+  const root = /^([A-Za-z_$][\w$]*)(?:\s*[.(]|$)/.exec(arg.text)?.[1]
+  if (root) {
+    const token = new RegExp(`(?<![\\w$])${root.replace(/\$/g, '\\$')}(?![\\w$])`)
+    // 解构形参及局部解构声明不能回退为外层导入。
+    if (a.bodies.some(body => body.start < arg.at && arg.at < body.end &&
+        token.test(a.code.slice(body.declaration, body.start)))) return new Map()
+    for (const match of a.code.matchAll(/\b(?:const|let|var)\s*([\[{])/g)) {
+      const open = match.index + match[0].length - 1
+      const close = a.pairs.get(open)
+      if (close !== undefined && token.test(a.code.slice(open, close + 1))) return new Map()
+    }
+  }
   if (arg.text.startsWith('{')) {
     const close = a.pairs.get(arg.at)
     if (close === undefined || !/^\s*(?:as\s+const|satisfies\s+[\w$.]+)?\s*$/.test(arg.text.slice(close - arg.at + 1))) return new Map()
     if (argsOf(a, arg.at, close).some(part => /^(?:\.\.\.|\[|(?:get|set)\s+)/.test(part.text))) return new Map()
-    return entriesOf(a, arg)
+    return new Map([...entriesOf(a, arg)].map(([key, entry]) => [key, {
+      ...entry, value: entry.value ? { ...entry.value, file: a.file } : null,
+    }]))
   }
   const call = /^([A-Za-z_$][\w$]*)\s*\(/.exec(arg.text)
   if (call) {
@@ -376,45 +388,95 @@ function openapiEntries(a: Analysed, arg: Arg, depth = 0): Map<string, Entry> {
     const close = a.pairs.get(open)
     if (close !== arg.at + arg.text.length - 1) return new Map()
     const args = argsOf(a, open, close)
-    return args.length === 1 ? openapiEntries(a, args[0]!, depth + 1) : new Map()
+    return args.length === 1 ? openapiEntries(a, args[0]!, files, depth + 1) : new Map()
+  }
+  if (root && !unchangedOpenapiReference(a, root)) return new Map()
+  const member = /^([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)$/.exec(arg.text)
+  if (member) {
+    const escaped = member[1]!.replace(/\$/g, '\\$')
+    if (new RegExp(`\\b(?:const|let|var|function|class)\\s+${escaped}(?![\\w$])`).test(a.code)) return new Map()
+    const namespace = new RegExp(`\\bimport\\s+\\*\\s+as\\s+${escaped}\\s+from\\s*['"]([^'"]+)['"]`).exec(a.source)
+    const module = namespace && a.code.slice(namespace.index, namespace.index + 6) === 'import'
+      ? moduleFor(namespace[1]!, a.file, files) : null
+    return module ? openapiExportEntries(analyse(module), member[2]!, files, depth + 1) : new Map()
   }
   if (!/^[A-Za-z_$][\w$]*$/.test(arg.text)) return new Map()
   const name = arg.text.replace(/\$/g, '\\$')
   // 同名声明或形参不借用其他作用域中的配置。
   const declarations = [...a.code.matchAll(new RegExp(`\\b(const|let|var)\\s+${name}\\s*(?::[^=;]{0,200})?=(?![=>])\\s*`, 'g'))]
+  if (declarations.length === 0) {
+    const imports = bindingsOf(a.file).imports.filter(item => item.local === arg.text && item.spec)
+    const imported = imports.length === 1 ? imports[0] : undefined
+    const module = imported ? moduleFor(imported.spec!, a.file, files) : null
+    return module ? openapiExportEntries(analyse(module), imported!.imported, files, depth + 1) : new Map()
+  }
   if (declarations.length !== 1 || declarations[0]![1] !== 'const') return new Map()
   const declaration = declarations[0]!
   if (declaration.index >= arg.at) return new Map()
   for (const [open, close] of a.pairs) {
     if (a.code[open] === '{' && open < declaration.index && declaration.index < close && !(open < arg.at && arg.at < close)) return new Map()
   }
+  const from = declaration.index + declaration[0].length
+  const end = expressionEnd(a, from)
+  const text = a.code.slice(from, end).trimEnd()
+  return openapiEntries(a, { at: from, text, source: a.source.slice(from, from + text.length) }, files, depth + 1)
+}
+
+/** 导入端与定义端均检查直接修改及别名修改，不依赖 const 关键字判断不可变。 */
+function unchangedOpenapiReference(a: Analysed, name: string): boolean {
   // const 不保证对象不可变；成员修改及其别名修改均不能提供保护证明。
-  const aliases = new Set([arg.text])
+  const aliases = new Set([name])
   const assignedAliases = [...a.code.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*(?=[;,\n]|$)/g)]
   for (let pass = 0; pass < 8; pass++) {
     const size = aliases.size
     for (const match of assignedAliases) if (aliases.has(match[2]!)) aliases.add(match[1]!)
-    if (aliases.size > 64) return new Map()
+    if (aliases.size > 64) return false
     if (aliases.size === size) break
-    if (pass === 7) return new Map()
+    if (pass === 7) return false
   }
   for (const alias of aliases) {
     const escaped = alias.replace(/\$/g, '\\$')
     const mutable = new RegExp(`(?<![\\w$.])${escaped}\\s*(?:\\.\\s*[\\w$]+|\\[[^\\]]{0,200}\\])+(?:\\s*(?:=|\\?\\?=|\\|\\|=|&&=)|\\s*\\()|\\bdelete\\s+${escaped}(?![\\w$])|\\bObject\\s*\\.\\s*(?:assign|defineProperty|defineProperties)\\s*\\(\\s*${escaped}(?![\\w$])`)
-    if (mutable.test(a.code)) return new Map()
+    if (mutable.test(a.code)) return false
   }
-  const from = declaration.index + declaration[0].length
-  const end = expressionEnd(a, from)
-  const text = a.code.slice(from, end).trimEnd()
-  return openapiEntries(a, { at: from, text, source: a.source.slice(from, from + text.length) }, depth + 1)
+  return true
+}
+
+/** 仅跟进实际导出的配置；循环、过深引用和多源星号导出保留告警。 */
+function openapiExportEntries(a: Analysed, name: string, files: ScanFile[], depth: number): Map<string, Entry> {
+  if (depth >= 8) return new Map()
+  if (name === 'default') {
+    const declaration = /\bexport\s+default\s+/.exec(a.code)
+    if (declaration) {
+      const at = declaration.index + declaration[0].length
+      const text = a.code.slice(at, expressionEnd(a, at)).trimEnd()
+      return openapiEntries(a, { at, text, source: a.source.slice(at, at + text.length) }, files, depth + 1)
+    }
+  } else if (new RegExp(`\\bexport\\s+const\\s+${name.replace(/\$/g, '\\$')}\\s*(?=[:=])`).test(a.code)) {
+    return openapiEntries(a, { text: name, source: name, at: a.code.length }, files, depth + 1)
+  }
+  const bindings = bindingsOf(a.file)
+  const matches = bindings.exports.filter(item => item.local === name)
+  if (matches.length > 1) return new Map()
+  const binding = matches[0]
+  if (binding?.spec) {
+    const module = moduleFor(binding.spec, a.file, files)
+    return module ? openapiExportEntries(analyse(module), binding.imported, files, depth + 1) : new Map()
+  }
+  if (binding) return openapiEntries(a, { text: binding.imported, source: binding.imported, at: a.code.length }, files, depth + 1)
+  if (name !== 'default' && bindings.stars.length === 1) {
+    const module = moduleFor(bindings.stars[0]!, a.file, files)
+    if (module) return openapiExportEntries(analyse(module), name, files, depth + 1)
+  }
+  return new Map()
 }
 
 /**
  * Hono 实例上的调用：app.get(path, …mw, handler)、app.on(method, path, …)、app.use(path?, …mw)、app.route(prefix, sub)，
- * OpenAPIHono 的 openapi(config, handler, hook?)；配置仅解析内联对象与同文件常量。
+ * OpenAPIHono 的 openapi(config, handler, hook?)；配置可沿静态模块引用解析。
  * 以及 new Hono().get(…).post(…) 链；链中省略路径的方法沿用上一个路径。
  */
-function honoOps(a: Analysed, name: string, chainFrom: number | undefined, openapi = false): { registrations: Registration[]; uses: Use[] } {
+function honoOps(a: Analysed, name: string, chainFrom: number | undefined, files: ScanFile[], openapi = false): { registrations: Registration[]; uses: Use[] } {
   const registrations: Registration[] = []
   const uses: Use[] = []
   // 路径数组（app.on('POST', ['/a', '/b'], …)）中的每条路径各自登记一条路由。
@@ -423,13 +485,14 @@ function honoOps(a: Analysed, name: string, chainFrom: number | undefined, opena
     const args = argsOf(a, open, close)
     if (method === 'openapi') {
       if (!openapi || !args[0] || !args[1]) return previous
-      const entries = openapiEntries(a, args[0])
+      const entries = openapiEntries(a, args[0], files)
       const path = entries.get('path')?.value
       const resolved = path ? literalOf(path) : null
       const routingPath = resolved?.replace(/\/\{(.+?)\}/g, '/:$1') ?? null
       const middleware = entries.get('middleware')?.value
       // 第三个实参是校验回调，不是路由处理函数，也不提供鉴权证明。
-      registrations.push({ path: routingPath, middleware: middleware ? openapiMiddleware(a, middleware) : [],
+      const owner = middleware?.file ? analyse(middleware.file) : a
+      registrations.push({ path: routingPath, middleware: middleware ? openapiMiddleware(owner, middleware).map(arg => ({ ...arg, file: owner.file })) : [],
         handler: args[1], handlerRange: null, at })
       return [routingPath]
     }
@@ -824,7 +887,7 @@ function exportedPlugin(t: Analysed, files: ScanFile[], depth: number): CodeRang
 }
 
 const toRefs = (a: Analysed, args: Arg[]): MiddlewareRef[] =>
-  args.map(arg => ({ text: arg.source, at: arg.at, file: a.file }))
+  args.map(arg => ({ text: arg.source, at: arg.at, file: arg.file ?? a.file }))
 
 /** 被挂载的 Router 所在文件：require('./routes/x') 或导入的本地名称。 */
 function mountedFile(a: Analysed, arg: Arg, files: ScanFile[]): ScanFile | null {
@@ -900,13 +963,13 @@ interface Ops { registrations: Registration[]; uses: Use[]; registers: Register[
 const opsCache = new WeakMap<Site, Ops>()
 
 /** 实例范围内的注册、中间件与插件注册调用。 */
-function opsOf(site: Site): Ops {
+function opsOf(site: Site, files: ScanFile[]): Ops {
   const cached = opsCache.get(site)
   if (cached) return cached
   const { a, name } = site
   let ops: Ops
   if (site.framework === 'express') ops = { registrations: expressRegistrations(a, name), uses: expressUses(a, name), registers: [] }
-  else if (site.framework === 'hono') ops = { ...honoOps(a, name, site.chainFrom, site.openapi), registers: [] }
+  else if (site.framework === 'hono') ops = { ...honoOps(a, name, site.chainFrom, files, site.openapi), registers: [] }
   else ops = fastifyOps(a, name)
   const result = {
     registrations: ops.registrations.filter(reg => within(site, reg.at)),
@@ -919,7 +982,7 @@ function opsOf(site: Site): Ops {
 
 /** 实例上不限路径、作用于之后注册内容的中间件（Express 的 use() 中排除被挂载的 Router）。 */
 function generalMiddleware(site: Site, before: number, files: ScanFile[]): MiddlewareRef[] {
-  const args = opsOf(site).uses
+  const args = opsOf(site, files).uses
     .filter(use => !use.mount && use.at < before && (use.prefix === null ||
       (site.framework !== 'hono' && use.prefix === '/') || /^\/?\*$/.test(use.prefix)))
     .flatMap(use => use.args)
@@ -990,7 +1053,7 @@ function normalizePath(path: string): string {
 function registeredSites(site: Site, files: ScanFile[]): Site[] {
   const { a } = site
   const found: Site[] = []
-  for (const reg of opsOf(site).registers) {
+  for (const reg of opsOf(site, files).registers) {
     const options = entriesOf(a, reg.options)
     const prefixArg = options.get('prefix')?.value
     const prefix = joinPath(site.prefix, (prefixArg && pathOf(a, prefixArg)) ?? '')
@@ -1083,7 +1146,7 @@ function serverIndex(files: ScanFile[]): ServerIndex {
   const byRoot = new Map<Site, Route[]>()
   for (const site of sites) {
     const { a } = site
-    const { registrations, uses } = opsOf(site)
+    const { registrations, uses } = opsOf(site, files)
     const routes = byRouterFile.get(a.file) ?? []
     for (const reg of registrations) {
       if (shadowed(site, reg.at)) continue
@@ -1108,7 +1171,7 @@ function serverIndex(files: ScanFile[]): ServerIndex {
       // 前置回调同样处理请求，包含具名及跨文件处理函数。
       // 它们各自作为入口检查，只受排在其前面的中间件保护。
       callbacks.forEach((callback, index) => {
-        const range = handlerOf(a, callback, files)
+        const range = handlerOf(callback.file ? analyse(callback.file) : a, callback, files)
         if (range) add(range, callbacks.slice(0, index))
       })
     }
@@ -1123,7 +1186,7 @@ function serverIndex(files: ScanFile[]): ServerIndex {
   for (const site of sites) {
     if (site.framework === 'fastify') continue
     const { a } = site
-    const uses = opsOf(site).uses
+    const uses = opsOf(site, files).uses
     for (const use of uses) {
       if (site.framework === 'hono' && !use.mount) continue
       use.args.forEach((arg, index) => {
