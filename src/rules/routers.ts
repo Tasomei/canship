@@ -22,7 +22,7 @@ const GENERICS = String.raw`(?:<[^()]{0,300}>\s*)?`
 /** Fastify 在处理函数之前运行、可以拒绝请求的钩子。 */
 const FASTIFY_HOOKS = /^(?:onRequest|preParsing|preValidation|preHandler)$/
 /** Hono 实例上的链式调用：路由、中间件与子应用挂载。 */
-const HONO_CALL = `${METHODS}|on|use|route`
+const HONO_CALL = `${METHODS}|on|use|route|openapi`
 
 interface Analysed {
   file: ScanFile
@@ -114,14 +114,14 @@ function entriesOf(a: Analysed, arg: Arg | undefined): Map<string, Entry> {
   return entries
 }
 
-interface FrameworkNames { express: Set<string>; router: Set<string>; hono: Set<string>; fastify: Set<string>; types: Set<NodeFramework> }
+interface FrameworkNames { express: Set<string>; router: Set<string>; hono: Set<string>; openapi: Set<string>; fastify: Set<string>; types: Set<NodeFramework> }
 
 /**
  * 文件中框架的本地名称：express 的默认、命名空间与 require 结果及 Router 别名；Hono 与 OpenAPIHono 构造函数；
  * fastify 工厂函数。只导入类型时记录框架，用于识别类型标注的参数。
  */
 function frameworkNamesOf(a: Analysed): FrameworkNames | null {
-  const names: FrameworkNames = { express: new Set(), router: new Set(), hono: new Set(), fastify: new Set(), types: new Set() }
+  const names: FrameworkNames = { express: new Set(), router: new Set(), hono: new Set(), openapi: new Set(), fastify: new Set(), types: new Set() }
   const named = (list: string, wanted: RegExp, into: Set<string>, fallback?: (name: string) => void): void => {
     for (const part of list.split(',')) {
       const m = /^\s*(?:type\s+)?([A-Za-z_$][\w$]*)\s*(?:(?:as|:)\s*([A-Za-z_$][\w$]*))?\s*$/.exec(part)
@@ -143,6 +143,7 @@ function frameworkNamesOf(a: Analysed): FrameworkNames | null {
       names.types.add('fastify')
     } else {
       if (!typeOnly && m[3]) named(m[3], /^(?:Hono|OpenAPIHono)$/, names.hono)
+      if (!typeOnly && m[3] && m[5] === '@hono/zod-openapi') named(m[3], /^OpenAPIHono$/, names.openapi)
       names.types.add('hono')
     }
   }
@@ -153,7 +154,10 @@ function frameworkNamesOf(a: Analysed): FrameworkNames | null {
     } else if (m[3] === 'fastify') {
       if (m[1]) names.fastify.add(m[1])
       if (m[2]) named(m[2], /^fastify$/, names.fastify)
-    } else if (m[2]) named(m[2], /^(?:Hono|OpenAPIHono)$/, names.hono)
+    } else if (m[2]) {
+      named(m[2], /^(?:Hono|OpenAPIHono)$/, names.hono)
+      if (m[3] === '@hono/zod-openapi') named(m[2], /^OpenAPIHono$/, names.openapi)
+    }
     names.types.add(m[3] === 'express' || m[3] === 'fastify' ? m[3] : 'hono')
   }
   for (const m of a.source.matchAll(/\brequire\s*\(\s*['"](express|fastify)['"]\s*\)/g)) names.types.add(m[1] as NodeFramework)
@@ -161,7 +165,7 @@ function frameworkNamesOf(a: Analysed): FrameworkNames | null {
 }
 
 /** 一个实例：名称、所属框架、路径前缀（Hono 的 basePath），以及创建处之后可接链式调用的位置。 */
-interface Instance { name: string; framework: NodeFramework; prefix: string; weak: boolean; chainFrom?: number }
+interface Instance { name: string; framework: NodeFramework; prefix: string; weak: boolean; chainFrom?: number; openapi?: boolean }
 
 /**
  * 应用与 Router 实例：express()、express.Router()、Router()、require('express')()；new Hono()（可接 basePath）；
@@ -187,7 +191,7 @@ function instancesOf(a: Analysed, names: FrameworkNames): Instance[] {
         prefix = (arg && pathOf(a, arg)) ?? ''
         if (baseClose !== undefined) close = baseClose
       }
-      add({ name: name!, framework: 'hono', prefix, weak: false, chainFrom: close })
+      add({ name: name!, framework: 'hono', prefix, weak: false, chainFrom: close, openapi: names.openapi.has(callee!) })
     } else if (!isNew && names.fastify.has(callee!) && router === undefined) {
       add({ name: name!, framework: 'fastify', prefix: '', weak: false })
     }
@@ -203,7 +207,7 @@ function instancesOf(a: Analysed, names: FrameworkNames): Instance[] {
   for (const [framework, type] of typed) {
     if (!names.types.has(framework)) continue
     for (const m of a.code.matchAll(new RegExp(String.raw`([A-Za-z_$][\w$]*)\s*\??:\s*(?:[A-Za-z_$][\w$]*\s*\.\s*)?${type}`, 'g'))) {
-      add({ name: m[1]!, framework, prefix: '', weak: true })
+      add({ name: m[1]!, framework, prefix: '', weak: true, openapi: framework === 'hono' && /\bOpenAPIHono\b/.test(m[0]) })
     }
   }
   return found
@@ -338,17 +342,97 @@ function expressUses(a: Analysed, name: string): Use[] {
   return found.sort((x, y) => x.at - y.at)
 }
 
+/** OpenAPI 中间件仅接受完整引用、调用或数组，不截取条件表达式的局部证据。 */
+function openapiMiddleware(a: Analysed, arg: Arg, depth = 0): Arg[] {
+  if (depth >= 8) return []
+  if (arg.text.startsWith('[')) {
+    const close = a.pairs.get(arg.at)
+    if (close === undefined || !/^\s*(?:as\s+const)?\s*$/.test(arg.text.slice(close - arg.at + 1))) return []
+    return argsOf(a, arg.at, close).flatMap(item => openapiMiddleware(a, item, depth + 1))
+  }
+  if (/^[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*$/.test(arg.text) || FUNCTION_EXPRESSION.test(arg.text)) return [arg]
+  const call = /^[A-Za-z_$][\w$.]*\s*\(/.exec(arg.text)
+  return call && a.pairs.get(arg.at + call[0].length - 1) === arg.at + arg.text.length - 1 ? [arg] : []
+}
+
+/** 同文件的 OpenAPI 配置；展开、计算属性和可变来源不提供路径或鉴权证明。 */
+function openapiEntries(a: Analysed, arg: Arg, depth = 0): Map<string, Entry> {
+  if (depth >= 8) return new Map()
+  const root = /^([A-Za-z_$][\w$]*)(?:\s*\(|$)/.exec(arg.text)?.[1]
+  if (root && a.bodies.some(body => body.start < arg.at && arg.at < body.end &&
+      paramNamesOf(a, { file: a.file, start: body.start, end: body.end }).includes(root))) return new Map()
+  if (arg.text.startsWith('{')) {
+    const close = a.pairs.get(arg.at)
+    if (close === undefined || !/^\s*(?:as\s+const|satisfies\s+[\w$.]+)?\s*$/.test(arg.text.slice(close - arg.at + 1))) return new Map()
+    if (argsOf(a, arg.at, close).some(part => /^(?:\.\.\.|\[|(?:get|set)\s+)/.test(part.text))) return new Map()
+    return entriesOf(a, arg)
+  }
+  const call = /^([A-Za-z_$][\w$]*)\s*\(/.exec(arg.text)
+  if (call) {
+    const binding = bindingsOf(a.file).imports.find(item => item.local === call[1])
+    if (binding?.imported !== 'createRoute' || binding.spec !== '@hono/zod-openapi') return new Map()
+    if (new RegExp(`\\b(?:const|let|var|function)\\s+${call[1]!.replace(/\$/g, '\\$')}(?![\\w$])`).test(a.code)) return new Map()
+    const open = arg.at + call[0].length - 1
+    const close = a.pairs.get(open)
+    if (close !== arg.at + arg.text.length - 1) return new Map()
+    const args = argsOf(a, open, close)
+    return args.length === 1 ? openapiEntries(a, args[0]!, depth + 1) : new Map()
+  }
+  if (!/^[A-Za-z_$][\w$]*$/.test(arg.text)) return new Map()
+  const name = arg.text.replace(/\$/g, '\\$')
+  // 同名声明或形参不借用其他作用域中的配置。
+  const declarations = [...a.code.matchAll(new RegExp(`\\b(const|let|var)\\s+${name}\\s*(?::[^=;]{0,200})?=(?![=>])\\s*`, 'g'))]
+  if (declarations.length !== 1 || declarations[0]![1] !== 'const') return new Map()
+  const declaration = declarations[0]!
+  if (declaration.index >= arg.at) return new Map()
+  for (const [open, close] of a.pairs) {
+    if (a.code[open] === '{' && open < declaration.index && declaration.index < close && !(open < arg.at && arg.at < close)) return new Map()
+  }
+  // const 不保证对象不可变；成员修改及其别名修改均不能提供保护证明。
+  const aliases = new Set([arg.text])
+  const assignedAliases = [...a.code.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*(?=[;,\n]|$)/g)]
+  for (let pass = 0; pass < 8; pass++) {
+    const size = aliases.size
+    for (const match of assignedAliases) if (aliases.has(match[2]!)) aliases.add(match[1]!)
+    if (aliases.size > 64) return new Map()
+    if (aliases.size === size) break
+    if (pass === 7) return new Map()
+  }
+  for (const alias of aliases) {
+    const escaped = alias.replace(/\$/g, '\\$')
+    const mutable = new RegExp(`(?<![\\w$.])${escaped}\\s*(?:\\.\\s*[\\w$]+|\\[[^\\]]{0,200}\\])+(?:\\s*(?:=|\\?\\?=|\\|\\|=|&&=)|\\s*\\()|\\bdelete\\s+${escaped}(?![\\w$])|\\bObject\\s*\\.\\s*(?:assign|defineProperty|defineProperties)\\s*\\(\\s*${escaped}(?![\\w$])`)
+    if (mutable.test(a.code)) return new Map()
+  }
+  const from = declaration.index + declaration[0].length
+  const end = expressionEnd(a, from)
+  const text = a.code.slice(from, end).trimEnd()
+  return openapiEntries(a, { at: from, text, source: a.source.slice(from, from + text.length) }, depth + 1)
+}
+
 /**
  * Hono 实例上的调用：app.get(path, …mw, handler)、app.on(method, path, …)、app.use(path?, …mw)、app.route(prefix, sub)，
+ * OpenAPIHono 的 openapi(config, handler, hook?)；配置仅解析内联对象与同文件常量。
  * 以及 new Hono().get(…).post(…) 链；链中省略路径的方法沿用上一个路径。
  */
-function honoOps(a: Analysed, name: string, chainFrom: number | undefined): { registrations: Registration[]; uses: Use[] } {
+function honoOps(a: Analysed, name: string, chainFrom: number | undefined, openapi = false): { registrations: Registration[]; uses: Use[] } {
   const registrations: Registration[] = []
   const uses: Use[] = []
   // 路径数组（app.on('POST', ['/a', '/b'], …)）中的每条路径各自登记一条路由。
   type Paths = Array<string | null>
   const visit = (method: string, open: number, close: number, at: number, previous: Paths): Paths => {
     const args = argsOf(a, open, close)
+    if (method === 'openapi') {
+      if (!openapi || !args[0] || !args[1]) return previous
+      const entries = openapiEntries(a, args[0])
+      const path = entries.get('path')?.value
+      const resolved = path ? literalOf(path) : null
+      const routingPath = resolved?.replace(/\/\{(.+?)\}/g, '/:$1') ?? null
+      const middleware = entries.get('middleware')?.value
+      // 第三个实参是校验回调，不是路由处理函数，也不提供鉴权证明。
+      registrations.push({ path: routingPath, middleware: middleware ? openapiMiddleware(a, middleware) : [],
+        handler: args[1], handlerRange: null, at })
+      return [routingPath]
+    }
     if (method === 'use') {
       const prefixes = args[0] ? usePrefixes(a, args[0]) : null
       const middleware = flatten(a, prefixes === null ? args : args.slice(1))
@@ -807,6 +891,7 @@ interface Site {
   inherited: MiddlewareRef[]
   weak?: boolean
   chainFrom?: number
+  openapi?: boolean
 }
 
 const within = (site: Site, at: number): boolean => site.range === null || (site.range.start <= at && at <= site.range.end)
@@ -821,7 +906,7 @@ function opsOf(site: Site): Ops {
   const { a, name } = site
   let ops: Ops
   if (site.framework === 'express') ops = { registrations: expressRegistrations(a, name), uses: expressUses(a, name), registers: [] }
-  else if (site.framework === 'hono') ops = { ...honoOps(a, name, site.chainFrom), registers: [] }
+  else if (site.framework === 'hono') ops = { ...honoOps(a, name, site.chainFrom, site.openapi), registers: [] }
   else ops = fastifyOps(a, name)
   const result = {
     registrations: ops.registrations.filter(reg => within(site, reg.at)),
@@ -855,7 +940,7 @@ function passedSites(site: Site, files: ScanFile[]): Site[] {
     const name = paramNamesOf(target, range)[index]
     if (!name) return
     // 传出前在实例上注册的、不限路径的中间件对传出后的路由同样生效。
-    found.push({ a: target, name, framework: site.framework, range: { start: range.start, end: range.end }, prefix: site.prefix,
+    found.push({ a: target, name, framework: site.framework, openapi: Boolean(site.openapi), range: { start: range.start, end: range.end }, prefix: site.prefix,
       root: site.root ?? site, inherited: [...site.inherited, ...generalMiddleware(site, at, files)] })
   }
   for (const m of a.source.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\(/g)) {
@@ -965,7 +1050,7 @@ function serverIndex(files: ScanFile[]): ServerIndex {
   const sites: Site[] = []
   const seen = new Set<string>()
   const add = (site: Site): boolean => {
-    const key = `${site.a.file.path}\0${site.name}\0${site.range?.start ?? -1}\0${site.prefix}`
+    const key = `${site.a.file.path}\0${site.name}\0${site.range?.start ?? -1}\0${site.prefix}\0${Boolean(site.openapi)}`
     if (seen.has(key)) return false
     seen.add(key)
     sites.push(site)
@@ -977,7 +1062,7 @@ function serverIndex(files: ScanFile[]): ServerIndex {
     const names = frameworkNamesOf(a)
     if (!names) continue
     for (const instance of instancesOf(a, names)) {
-      add({ a, name: instance.name, framework: instance.framework, range: null, prefix: instance.prefix, inherited: [],
+      add({ a, name: instance.name, framework: instance.framework, openapi: Boolean(instance.openapi), range: null, prefix: instance.prefix, inherited: [],
         weak: instance.weak, ...(instance.chainFrom === undefined ? {} : { chainFrom: instance.chainFrom }) })
     }
   }

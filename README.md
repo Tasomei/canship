@@ -4,7 +4,7 @@ A local static scanner for JavaScript and TypeScript web apps. Checks exposed cr
 
 [简体中文](./README-zh-CN.md)
 
-> Documentation for `0.7.1`. Check the installed version with `npx canship --version`.
+> Development branch. For npm `0.7.1`, see the [release documentation](https://github.com/Tasomei/canship/blob/v0.7.1/README.md). Check your version with `npx canship --version`.
 
 ## Quick start
 
@@ -40,7 +40,7 @@ Credential formats include OpenAI, Anthropic, AWS, Stripe, GitHub, and npm. Fire
 | Remix / React Router | `loader` and `action` exports in `app/routes` |
 | Astro | Endpoints in `src/pages` |
 | Express | `app`/`Router` routes, including `.route()` chains, mounted routers, and controllers in other files |
-| Hono | `app.get()`-style routes, chains, `basePath`, and sub-apps mounted with `app.route()` |
+| Hono | Method routes, `OpenAPIHono.openapi()`, chains, `basePath`, and `app.route()` sub-apps |
 | Fastify | Shorthand and `route()` declarations, `register()` prefixes and encapsulation, `@fastify/autoload` directories |
 
 Recognised Next.js/Astro middleware may suppress covered auth findings; Server Functions need local checks. Express/Hono/Fastify require resolved rejection logic or known auth libraries. Fastify decorator and plugin evidence is scoped to the local instance.
@@ -49,7 +49,9 @@ Session checks and webhook verification (Stripe, Polar, Clerk, Svix, QStash) mus
 
 Input analysis follows assignments, destructuring, string construction, and resolvable cross-file passthrough helpers. Helper names alone do not prove sanitisation.
 
-For Express, Hono, and Fastify routes, writes inside called project functions are followed two levels (handler → service → model); file-based routes report writes in the route file only. SvelteKit page loads, remote functions, and Hono `app.openapi()` routes are outside route analysis. Content-based checks, including credentials and CORS, still apply.
+For Express, Hono, and Fastify routes, writes inside called project functions are followed two levels (handler → service → model); file-based routes report writes in the route file only. SvelteKit page loads and remote functions are outside route analysis. Content-based checks, including credentials and CORS, still apply.
+
+OpenAPI route configuration supports inline objects and same-file constants, with literal paths and bounded alias resolution. Imported, dynamic, or modified configuration cannot prove protection. OpenAPI `security` declarations and validation hooks are not authentication. Bulk `openapiRoutes()` registration is not supported.
 
 ## Results
 

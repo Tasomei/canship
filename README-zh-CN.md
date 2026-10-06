@@ -4,7 +4,7 @@
 
 [English](./README.md)
 
-> 本文对应 `0.7.1`。使用 `npx canship --version` 确认已安装版本。
+> 本文对应开发分支。npm `0.7.1` 请参阅[发行版文档](https://github.com/Tasomei/canship/blob/v0.7.1/README-zh-CN.md)。使用 `npx canship --version` 确认版本。
 
 ## 快速开始
 
@@ -40,7 +40,7 @@ npx canship
 | Remix / React Router | `app/routes` 中的 `loader`、`action` 导出 |
 | Astro | `src/pages` 中的端点 |
 | Express | `app`/`Router` 路由，含 `.route()` 链、挂载的子路由和其他文件中的控制器 |
-| Hono | `app.get()` 等路由、链式调用、`basePath`，以及 `app.route()` 挂载的子应用 |
+| Hono | 方法路由、`OpenAPIHono.openapi()`、链式调用、`basePath`、`app.route()` 子应用 |
 | Fastify | 简写与 `route()` 声明、`register()` 前缀与封装作用域、`@fastify/autoload` 目录 |
 
 已识别的 Next.js/Astro 中间件可抑制匹配路由的鉴权结果；Server Function 需在函数内检查。Express/Hono/Fastify 仅接受已解析的拒绝逻辑或已知鉴权库。Fastify 装饰器和插件的保护证据限定于当前实例。
@@ -49,7 +49,9 @@ npx canship
 
 输入追踪支持赋值、解构、字符串构造及可解析的跨文件透传函数，不以辅助函数名称证明输入已净化。
 
-Express、Hono、Fastify 路由会跟进被调项目函数中的写入，最多两层（处理函数 → service → model）；文件约定路由只报告路由文件内的写入。路由分析不覆盖 SvelteKit 页面 load、remote function 和 Hono 的 `app.openapi()` 路由；凭据、CORS 等内容规则仍适用。
+Express、Hono、Fastify 路由会跟进被调项目函数中的写入，最多两层（处理函数 → service → model）；文件约定路由只报告路由文件内的写入。路由分析不覆盖 SvelteKit 页面 load 和 remote function；凭据、CORS 等内容规则仍适用。
+
+OpenAPI 路由配置支持内联对象和同文件常量，路径须为字面量，别名解析有界。导入、动态或修改过的配置不提供保护证明。`security` 声明和校验回调不等于鉴权；暂不支持批量 `openapiRoutes()` 注册。
 
 ## 结果
 

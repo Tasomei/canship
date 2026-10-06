@@ -180,6 +180,21 @@ void code; void id;
   assert.equal(exposed.status, 1)
   assert.equal(JSON.parse(exposed.stdout).partial, false)
   assert.deepEqual(JSON.parse(exposed.stdout).findings.map(f => f.ruleId), ['api/admin-db-access-without-auth'])
+  // OpenAPI 文档中的 security 不等于鉴权；真实路由中间件才可保护处理函数。
+  for (const guarded of [false, true]) {
+    const target = sample(`openapi-${guarded}`, {
+      'server.ts': `import {OpenAPIHono,createRoute} from '@hono/zod-openapi';
+        import {bearerAuth} from 'hono/bearer-auth';${admin}const app=new OpenAPIHono();
+        const route=createRoute({method:'delete',path:'/items/{id}',responses:{},
+          ${guarded ? 'middleware:bearerAuth({token:process.env.AUTH_TOKEN})' : 'security:[{bearerAuth:[]}]'}});
+        app.openapi(route,async(c)=>{${write}return c.json({});});`,
+    })
+    const checked = cli([target, '--json', '--all'])
+    const output = JSON.parse(checked.stdout)
+    assert.equal(output.partial, false)
+    assert.deepEqual(output.findings.map(f => f.ruleId), guarded ? [] : ['api/admin-db-access-without-auth'])
+    assert.equal(checked.status, guarded ? 0 : 1)
+  }
   console.log(JSON.stringify({ version, packageFiles: expected.length, runtimeDependencies: 0, smoke: 'passed' }))
 } finally {
   // 仅移除本次创建的隔离安装与样本目录。
