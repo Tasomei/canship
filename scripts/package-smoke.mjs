@@ -198,6 +198,10 @@ void code; void id;
   assert.equal(JSON.parse(report.stdout).excerptsOmitted, true)
   for (const text of [report.stdout, readFileSync(html, 'utf8'), readFileSync(sarif, 'utf8')]) assert.doesNotMatch(text, /PRIVATE_SMOKE_SENTINEL/)
   assert.equal(JSON.parse(readFileSync(sarif, 'utf8')).version, '2.1.0')
+  const reportHtml = readFileSync(html, 'utf8')
+  assert.match(reportHtml, /data-filter-conf="likely"/)
+  assert.match(reportHtml, /id="finding-[a-f0-9]{64}"/)
+  assert.match(reportHtml, /data-copy-ref=/)
   // 从实际安装包验收新增规则及终端视图，不执行样本代码。
   const releaseCases = [
     ['sql-input', 'app/api/items/route.ts',

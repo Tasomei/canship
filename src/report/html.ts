@@ -6,6 +6,7 @@
 import { createHash } from 'node:crypto'
 import type { Finding, ScanResult } from '../types.js'
 import { renderFixPrompt } from './prompt.js'
+import { fingerprintOf } from '../baseline.js'
 import {
   categoryCounts, categoryOf, CATEGORIES, changeViewNotice, groupByFile, locationOf, manualSteps, plural, SEVERITIES,
   skipPhrase, verdictOf,
@@ -73,7 +74,7 @@ const EVIDENCE_LABEL: Record<NonNullable<Finding['evidence']>[number]['kind'], s
   'auth-helper': 'auth helper',
 }
 
-function renderFinding(f: Finding, index: number): string {
+function renderFinding(f: Finding, index: number, anchor: string): string {
   const category = categoryOf(f.ruleId)
   const search = `${f.title} ${f.file ?? ''} ${f.ruleId}`.toLowerCase()
   const trace = f.evidence?.length
@@ -84,14 +85,14 @@ function renderFinding(f: Finding, index: number): string {
   const hand = f.humanOnly?.length
     ? `<div class="hand"><b>By hand</b><ul>${f.humanOnly.map(s => `<li>${linkify(esc(s))}</li>`).join('')}</ul></div>`
     : ''
-  return `<details class="f" data-i="${index}" data-sev="${f.severity}" data-cat="${esc(category)}" data-conf="${f.confidence}" data-file="${esc(f.file ?? '')}" data-text="${esc(search)}">
+  return `<details class="f" id="${anchor}" data-i="${index}" data-sev="${f.severity}" data-cat="${esc(category)}" data-conf="${f.confidence}" data-file="${esc(f.file ?? '')}" data-text="${esc(search)}">
 <summary class="row"><span class="sev ${f.severity}">${f.severity}</span><span class="main"><span class="title">${esc(f.title)}</span>${f.confidence === 'likely' ? '<span class="likely">likely</span>' : ''}<span class="loc"><span class="loc-line">${f.line !== null ? `line ${f.line}` : f.file ? 'whole file' : 'repository'}</span><span class="loc-full">${esc(locationOf(f))}</span></span></span><span class="cat">${esc(category)}</span></summary>
 <div class="body">
 <p class="rule">${esc(f.ruleId)}</p>
 ${f.excerpt ? `<pre class="excerpt"><code>${esc(f.excerpt)}</code></pre>` : ''}
 <div class="why">${paragraphs(f.why)}</div>
 ${trace}${fix}${hand}
-<p class="actions"><button type="button" class="link" data-copy="${index}">copy fix prompt</button></p>
+<p class="actions"><button type="button" class="link js-only" data-copy="${index}">copy fix prompt</button><button type="button" class="link js-only" data-copy-ref="${index}">copy reference</button><a class="link" href="#${anchor}" aria-label="Link to this finding">link</a></p>
 </div>
 </details>`
 }
@@ -100,9 +101,9 @@ ${trace}${fix}${hand}
 const SCRIPT = `(function(){
 var d=document,b=d.body;b.classList.add('js');
 var data={};try{data=JSON.parse(d.getElementById('canship-data').textContent||'{}')}catch(e){}
-var rows=[].slice.call(d.querySelectorAll('details.f')),list=d.getElementById('list'),st={sev:null,cat:null,q:'',g:'file'};
+var rows=[].slice.call(d.querySelectorAll('details.f')),list=d.getElementById('list'),st={sev:null,cat:null,conf:null,q:'',g:'file'};
 var SEV=['P0','P1','P2'],CAT=data.categories||[];
-function matches(r){return(!st.sev||r.dataset.sev===st.sev)&&(!st.cat||r.dataset.cat===st.cat)&&(!st.q||r.dataset.text.indexOf(st.q)>=0)}
+function matches(r){return(!st.sev||r.dataset.sev===st.sev)&&(!st.cat||r.dataset.cat===st.cat)&&(!st.conf||r.dataset.conf===st.conf)&&(!st.q||r.dataset.text.indexOf(st.q)>=0)}
 function keyOf(r){return st.g==='sev'?r.dataset.sev:st.g==='cat'?r.dataset.cat:r.dataset.file}
 function label(k){return st.g==='sev'?k+' \\u00b7 '+({P0:'critical',P1:'high',P2:'medium'})[k]:(k||'repository')}
 function render(){
@@ -119,23 +120,29 @@ function render(){
     var box=d.createElement('div');box.className='ledger';visible.forEach(function(r){box.appendChild(r)});list.appendChild(box);
   });
   list.classList.toggle('by-file',st.g==='file');
-  var count=d.getElementById('count');if(count)count.textContent=shown===rows.length?rows.length+' findings':shown+' of '+rows.length+' findings';
+  var count=d.getElementById('count');if(count)count.textContent=shown+' of '+rows.length+' findings in this report';
   var empty=d.getElementById('empty');if(empty)empty.hidden=shown>0;
-  [].forEach.call(d.querySelectorAll('[data-filter-sev]'),function(x){x.classList.toggle('on',(x.dataset.filterSev||null)===st.sev&&!st.cat)});
-  [].forEach.call(d.querySelectorAll('[data-group]'),function(x){x.classList.toggle('on',x.dataset.group===st.g)});
-  [].forEach.call(d.querySelectorAll('[data-mx-cat]'),function(x){x.classList.toggle('on',x.dataset.mxCat===st.cat&&x.dataset.mxSev===st.sev)});
+  function selected(x,on){x.classList.toggle('on',on);x.setAttribute('aria-pressed',String(on))}
+  [].forEach.call(d.querySelectorAll('[data-filter-sev]'),function(x){selected(x,(x.dataset.filterSev||null)===st.sev&&!st.cat)});
+  [].forEach.call(d.querySelectorAll('[data-filter-conf]'),function(x){selected(x,(x.dataset.filterConf||null)===st.conf)});
+  [].forEach.call(d.querySelectorAll('[data-group]'),function(x){selected(x,x.dataset.group===st.g)});
+  [].forEach.call(d.querySelectorAll('[data-mx-cat]'),function(x){selected(x,x.dataset.mxCat===st.cat&&x.dataset.mxSev===st.sev)});
 }
 [].forEach.call(d.querySelectorAll('[data-filter-sev]'),function(x){x.onclick=function(){st.sev=x.dataset.filterSev||null;st.cat=null;render()}});
+[].forEach.call(d.querySelectorAll('[data-filter-conf]'),function(x){x.onclick=function(){st.conf=x.dataset.filterConf||null;render()}});
 [].forEach.call(d.querySelectorAll('[data-group]'),function(x){x.onclick=function(){st.g=x.dataset.group;render()}});
 [].forEach.call(d.querySelectorAll('[data-mx-cat]'),function(x){x.onclick=function(){var same=st.cat===x.dataset.mxCat&&st.sev===x.dataset.mxSev;st.cat=same?null:x.dataset.mxCat;st.sev=same?null:x.dataset.mxSev;render()}});
 var q=d.getElementById('q');if(q)q.oninput=function(){st.q=q.value.toLowerCase();render()};
-var clear=d.getElementById('clear');if(clear)clear.onclick=function(){st.sev=null;st.cat=null;st.q='';if(q)q.value='';render()};
+function clearFilters(){st.sev=null;st.cat=null;st.conf=null;st.q='';if(q)q.value=''}
+var clear=d.getElementById('clear');if(clear)clear.onclick=function(){clearFilters();render()};
 function copy(text,btn){
-  function done(){var t=btn.textContent;btn.textContent='copied';setTimeout(function(){btn.textContent=t},1200)}
-  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done,fallback)}else fallback();
-  function fallback(){var a=d.createElement('textarea');a.value=text;d.body.appendChild(a);a.select();try{d.execCommand('copy');done()}catch(e){}d.body.removeChild(a)}
+  function feedback(message){var t=btn.textContent;btn.textContent=message;setTimeout(function(){btn.textContent=t},1200)}
+  function done(){feedback('copied')}
+  function fallback(){var previous=d.activeElement,a=d.createElement('textarea');a.value=text;d.body.appendChild(a);a.select();try{if(d.execCommand('copy'))done();else feedback('copy unavailable')}catch(e){feedback('copy unavailable')}finally{d.body.removeChild(a);if(previous&&previous.focus)previous.focus()}}
+  try{if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done,fallback)}else fallback()}catch(e){fallback()}
 }
 [].forEach.call(d.querySelectorAll('[data-copy]'),function(x){x.onclick=function(e){e.preventDefault();var t=(data.prompts||{})[x.dataset.copy];if(t)copy(t,x)}});
+[].forEach.call(d.querySelectorAll('[data-copy-ref]'),function(x){x.onclick=function(e){e.preventDefault();var t=(data.references||{})[x.dataset.copyRef];if(t)copy(t,x)}});
 var store=null;try{store=window.localStorage}catch(e){}
 var prefix='canship:'+(data.key||'')+':';
 [].forEach.call(d.querySelectorAll('.manual input[type=checkbox]'),function(c){
@@ -144,25 +151,31 @@ var prefix='canship:'+(data.key||'')+':';
   c.onchange=function(){c.closest('li').classList.toggle('done',c.checked);try{if(store){if(c.checked)store.setItem(prefix+c.dataset.step,'1');else store.removeItem(prefix+c.dataset.step)}}catch(e){}};
 });
 var print=d.getElementById('print');if(print)print.onclick=function(){window.print()};
-window.addEventListener('beforeprint',function(){rows.forEach(function(r){r.open=true})});
+var printState=null;
+window.addEventListener('beforeprint',function(){if(printState)return;printState={filters:Object.assign({},st),open:rows.map(function(r){return r.open})};clearFilters();render();rows.forEach(function(r){r.open=true})});
+window.addEventListener('afterprint',function(){if(!printState)return;st=printState.filters;if(q)q.value=st.q;rows.forEach(function(r,i){r.open=printState.open[i]});printState=null;render()});
+function revealHash(){var hash=window.location&&window.location.hash;if(!hash||!/^#finding-[a-f0-9]{64}(?:-[0-9]+)?$/.test(hash))return;var row=rows.find(function(r){return r.id===hash.slice(1)});if(!row)return;if(!matches(row)){clearFilters();render()}row.open=true;row.scrollIntoView({block:'center'});var summary=row.querySelector('summary');if(summary)summary.focus()}
+window.addEventListener('hashchange',revealHash);
 render();
+revealHash();
 })();`
 
 const SCRIPT_HASH = createHash('sha256').update(SCRIPT, 'utf8').digest('base64')
 
 const STYLE = `
 :root{color-scheme:light dark;
-  --paper:#fcfcfa;--ink:#1b1b18;--ink-2:#5c5b56;--ink-3:#8f8d86;--rule:#dddbd3;--rule-2:#bdbab0;--hover:#f3f2ed;
+  --paper:#fcfcfa;--ink:#1b1b18;--ink-2:#5c5b56;--ink-3:#6b6963;--rule:#dddbd3;--rule-2:#bdbab0;--hover:#f3f2ed;
   --p0:#b3261e;--p1:#946200;--p2:#5c5b56;--ok:#2f6b2f;
   --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
   --code:ui-monospace,"Cascadia Mono","SF Mono",Menlo,Consolas,monospace}
 @media (prefers-color-scheme:dark){:root{
-  --paper:#171715;--ink:#e9e7e0;--ink-2:#a8a69e;--ink-3:#77756e;--rule:#2e2d29;--rule-2:#4a4843;--hover:#1f1f1c;
+  --paper:#171715;--ink:#e9e7e0;--ink-2:#a8a69e;--ink-3:#aaa79c;--rule:#2e2d29;--rule-2:#4a4843;--hover:#1f1f1c;
   --p0:#f2877f;--p1:#e0b050;--p2:#a8a69e;--ok:#8fcf8f}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.6 var(--serif);font-variant-numeric:lining-nums tabular-nums}
 button,input{font:inherit;color:inherit;background:none;border:0;padding:0}
 a{color:inherit}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 .page{max-width:1040px;margin:0 auto;padding:28px 32px 80px}
 .P0{color:var(--p0)}.P1{color:var(--p1)}.P2{color:var(--p2)}
 .faint{color:var(--ink-3)}
@@ -191,7 +204,7 @@ table.matrix{border-collapse:collapse;width:100%}
 .matrix td button{min-width:28px;text-align:right;cursor:pointer;border-bottom:1px solid transparent}
 .matrix td button:hover{border-bottom-color:currentColor}
 .matrix td button.on{border-bottom:2px solid currentColor}
-.matrix .zero{color:var(--rule-2)}
+.matrix .zero{color:var(--ink-3)}
 .matrix tfoot td{border-bottom:0;color:var(--ink-2)}
 ol.manual{margin:0;padding:0;list-style:none}
 ol.manual li{display:grid;grid-template-columns:24px minmax(0,1fr);align-items:start;gap:8px;padding:6px 0;border-bottom:1px solid var(--rule);font-size:15px}
@@ -213,7 +226,8 @@ ol.manual .src{font-size:13.5px;color:var(--ink-3);overflow-wrap:anywhere}
 .head{display:grid;grid-template-columns:44px minmax(0,1fr) 130px;font-size:13.5px;color:var(--ink-3);padding:6px 0;border-bottom:1px solid var(--ink)}
 .group{padding:22px 0 6px;font-size:13.5px;color:var(--ink-3)}
 .group .gk{color:var(--ink);font-size:15.5px;overflow-wrap:anywhere}
-details.f{border-bottom:1px solid var(--rule)}
+details.f{border-bottom:1px solid var(--rule);scroll-margin-top:20px}
+details.f:target{border-left:2px solid var(--ink);padding-left:8px}
 summary.row{display:grid;grid-template-columns:44px minmax(0,1fr) 130px;align-items:start;padding:10px 0;cursor:pointer;list-style:none}
 summary.row::-webkit-details-marker{display:none}
 summary.row:hover{background:var(--hover)}
@@ -245,6 +259,7 @@ ol.steps li{margin-bottom:6px}
 .hand ul{margin:4px 0 0;padding-left:18px}
 .actions{margin:14px 0 0;font-size:14px}
 .actions .link{margin-left:0}
+.actions .link+.link{margin-left:16px}
 .incomplete{border-left:2px solid var(--p1);padding-left:14px}
 .incomplete ul{margin:0 0 8px;padding-left:18px}
 .notes p{margin:0 0 6px;color:var(--ink-2);font-size:14px}
@@ -318,12 +333,14 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
       : '<span class="zero">–</span>'}</td>`).join('')}<td>${row.total}</td></tr>`).join('')}</tbody><tfoot><tr><td>all</td>${totals.map(n => `<td>${n}</td>`).join('')}<td>${findings.length}</td></tr></tfoot></table>`
 
   const manual = steps.length > 0
-    ? `<ol class="manual">${steps.map((step, i) => `<li><span class="num">${i + 1}</span><input type="checkbox" data-step="${i}" aria-label="done"><div><div class="t">${linkify(esc(step.text))}</div><div class="src">${esc(step.locations.join(', '))}</div></div></li>`).join('')}</ol>`
+    ? `<ol class="manual">${steps.map((step, i) => `<li><span class="num">${i + 1}</span><input type="checkbox" data-step="${i}" aria-label="Mark step ${i + 1} complete: ${esc(step.text)}"><div><div class="t">${linkify(esc(step.text))}</div><div class="src">${esc(step.locations.join(', '))}</div></div></li>`).join('')}</ol>`
     : '<p class="faint">No manual steps for these findings.</p>'
 
   const groups = groupByFile(findings)
   let index = 0
   const prompts: Record<string, string> = {}
+  const references: Record<string, string> = {}
+  const occurrences = new Map<string, number>()
   const allPrompt = renderFixPrompt(findings)
   if (allPrompt) prompts['all'] = allPrompt
   const list = groups.map(group => {
@@ -331,7 +348,12 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
       index++
       const prompt = renderFixPrompt([f])
       if (prompt) prompts[String(index)] = prompt
-      return renderFinding(f, index)
+      const identity = fingerprintOf(f)
+      const occurrence = (occurrences.get(identity) ?? 0) + 1
+      occurrences.set(identity, occurrence)
+      const anchor = `finding-${identity}${occurrence === 1 ? '' : `-${occurrence}`}`
+      references[String(index)] = `${f.ruleId} · ${locationOf(f)}\n#${anchor}`
+      return renderFinding(f, index, anchor)
     }).join('\n')
     return `<div class="group"><span class="gk">${esc(group.file ?? 'repository')}</span> — ${group.findings.length}</div><div class="ledger">${items}</div>`
   }).join('\n')
@@ -344,12 +366,13 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
 <section class="section last">
 <h2>Findings</h2>
 <div class="controls">
-<span><span class="lbl">severity</span><button type="button" data-filter-sev="">all</button>${SEVERITIES.map(s => `<button type="button" data-filter-sev="${s}">${s}</button>`).join('')}</span>
-<span><span class="lbl">group by</span><button type="button" data-group="file">file</button><button type="button" data-group="sev">severity</button><button type="button" data-group="cat">category</button></span>
+<span role="group" aria-label="Severity"><span class="lbl">severity</span><button type="button" data-filter-sev="">all</button>${SEVERITIES.map(s => `<button type="button" data-filter-sev="${s}">${s}</button>`).join('')}</span>
+<span role="group" aria-label="Confidence"><span class="lbl">confidence</span><button type="button" data-filter-conf="">all</button><button type="button" data-filter-conf="certain">certain</button><button type="button" data-filter-conf="likely">likely</button></span>
+<span role="group" aria-label="Group findings"><span class="lbl">group by</span><button type="button" data-group="file">file</button><button type="button" data-group="sev">severity</button><button type="button" data-group="cat">category</button></span>
 <input id="q" type="search" placeholder="filter by text or path" aria-label="Filter findings">
 <button type="button" class="clear" id="clear">clear filters</button>
 </div>
-<p id="count"></p>
+<p id="count" role="status" aria-live="polite"></p>
 <div class="head"><span>sev</span><span>finding</span><span class="c">category</span></div>
 <div id="list" class="by-file">${list}</div>
 <p id="empty" class="faint" hidden>No findings match these filters.</p>
@@ -393,7 +416,7 @@ ${result.skipped.map(s => `<li><code>${esc(s.path)}</code> — ${esc(skipPhrase(
   ].filter(Boolean)
 
   const data = { key: createHash('sha256').update(`${opts.root}\0${opts.generatedAt}`).digest('hex').slice(0, 16),
-    categories: CATEGORIES, prompts }
+    categories: CATEGORIES, prompts, references }
 
   return `<!doctype html>
 <html lang="en">
