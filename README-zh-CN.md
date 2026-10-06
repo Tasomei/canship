@@ -88,7 +88,7 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 | `--no-excerpts` | 移除所有报告中的摘录 |
 | `--changed-since=ref` | 展示变更文件结果，保留全量扫描退出码 |
 | `--only=ids` / `--skip=ids` | 选择或排除规则及命名空间，逗号分隔，可重复 |
-| `--list-rules` | 列出规则而不扫描，支持 `--json` |
+| `--list-rules` | 列出规则而不扫描，支持 `--only` / `--skip` 筛选及 `--json` |
 | `--baseline[=file]` / `--baseline-write[=file]` | 抑制或记录结果，默认 `canship-baseline.json` |
 | `--no-config` / `--no-ignore-markers` | 忽略项目配置或源码抑制注释 |
 | `--best-effort` | 允许没有结果的不完整扫描退出 `0` |

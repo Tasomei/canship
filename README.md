@@ -88,7 +88,7 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 | `--no-excerpts` | Remove excerpts from all reports |
 | `--changed-since=ref` | Show changed-file findings; preserve full-scan status |
 | `--only=ids` / `--skip=ids` | Select/exclude rules or namespaces; comma-separated, repeatable |
-| `--list-rules` | List rules without scanning; supports `--json` |
+| `--list-rules` | List rules without scanning; supports `--only` / `--skip` and `--json` |
 | `--baseline[=file]` / `--baseline-write[=file]` | Suppress/record findings; default `canship-baseline.json` |
 | `--no-config` / `--no-ignore-markers` | Ignore project configuration/source suppression comments |
 | `--best-effort` | Allow incomplete coverage with no findings to exit `0` |

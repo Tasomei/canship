@@ -72,8 +72,8 @@ export const RULE_CATALOG: readonly RuleDescription[] = [
   })),
 ]
 
-export function renderRuleCatalog(): string {
-  return 'canship rules\n\n' + RULE_CATALOG.map(item =>
+export function renderRuleCatalog(rules: readonly RuleDescription[] = RULE_CATALOG): string {
+  return 'canship rules\n\n' + rules.map(item =>
     `${item.id}\n  ${item.name}\n  ${item.reportsFindings ? `${item.severity}; ${item.confidence}` : 'Public identifier; not reported'}\n  Scope: ${item.scope}\n  Limit: ${item.limitation}`,
   ).join('\n\n') + '\n\nExample and fixture contexts may lower confidence. No credential validity or deployed configuration is verified.\n'
 }

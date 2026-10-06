@@ -46,6 +46,10 @@ try {
   assert.equal(cli(['--version']).stdout.trim(), version)
   assert.match(cli(['--help']).stdout, /--no-excerpts/)
   assert.equal(JSON.parse(cli(['--list-rules', '--json']).stdout).kind, 'rule-catalog')
+  const catalog = cli(['--list-rules', '--only=injection/sql', '--json'])
+  assert.equal(catalog.status, 0)
+  assert.deepEqual(JSON.parse(catalog.stdout).rules.map(rule => rule.id), ['injection/sql'])
+  assert.equal(cli(['--list-rules', '--only=,,,']).status, 3)
   function sample(name, files) {
     const dir = join(root, name)
     mkdirSync(dir)

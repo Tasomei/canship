@@ -20,7 +20,7 @@ import {
   DEFAULT_BASELINE_PATH,
 } from './baseline.js'
 import { ConfigError, CONFIG_FILENAME, loadConfig } from './config.js'
-import { isKnownSelector } from './rules/index.js'
+import { isKnownSelector, ruleMatches } from './rules/index.js'
 import { RULE_CATALOG, renderRuleCatalog } from './rules/catalog.js'
 import { changedFilesSince, changedFileView, ChangeViewError } from './changes.js'
 import { canOpen, openReport } from './open.js'
@@ -172,10 +172,12 @@ function parseArgs(argv: string[]): Args {
       if (!arg.startsWith(`${name}=`)) return null
       const value = arg.slice(name.length + 1)
       if (!value) argumentError(`${name}= needs at least one rule id`)
-      return value
+      const values = value
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean)
+      if (values.length === 0) argumentError(`${name}= needs at least one rule id`)
+      return values
     }
     const only = list('--only')
     if (only !== null) {
@@ -301,7 +303,7 @@ const HELP = `
         --no-ignore-markers
                       Disregard canship-ignore-file and canship-ignore-next-line
                       markers; use with --no-config for untrusted projects
-        --list-rules  List rule IDs, scope, and limits; add --json for structured output
+        --list-rules  List rule IDs, scope, and limits; supports --only/--skip and --json
         --no-excerpts Omit source excerpts from every report; paths and descriptions remain
         --changed-since=REF  Show changed-file findings since the local merge base;
                              scan scope and exit status remain unchanged
@@ -336,12 +338,20 @@ async function main(): Promise<void> {
   }
 
   if (args.listRules) {
-    if (process.argv.slice(2).some(arg => arg !== '--list-rules' && arg !== '--json')) {
-      argumentError('--list-rules only supports --json; scan options and paths cannot be combined with it')
+    if (process.argv.slice(2).some(arg => arg !== '--list-rules' && arg !== '--json' && !/^--(?:only|skip)=/.test(arg))) {
+      argumentError('--list-rules only supports --only, --skip, and --json; scan options and paths cannot be combined with it')
     }
+    // 目录查询不读取项目配置，但选择器仍须校验，避免拼写错误返回空目录。
+    for (const selector of [...args.only, ...args.skip]) {
+      if (!isKnownSelector(selector)) argumentError(`unknown rule selector: ${selector}`)
+    }
+    if (args.only.length > 0 && args.skip.length > 0) argumentError('rule selection cannot use both only and skip')
+    const rules = RULE_CATALOG.filter(rule =>
+      (args.only.length === 0 || args.only.some(selector => ruleMatches(selector, rule.id))) &&
+      !args.skip.some(selector => ruleMatches(selector, rule.id)))
     process.stdout.write(args.json
-      ? `${JSON.stringify({ schemaVersion: 1, kind: 'rule-catalog', version: VERSION, rules: RULE_CATALOG }, null, 2)}\n`
-      : renderRuleCatalog())
+      ? `${JSON.stringify({ schemaVersion: 1, kind: 'rule-catalog', version: VERSION, rules }, null, 2)}\n`
+      : renderRuleCatalog(rules))
     return
   }
 
