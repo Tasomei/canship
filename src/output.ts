@@ -21,7 +21,8 @@ function owned(text: string, kind: OutputKind): boolean {
   } catch { return false }
 }
 
-export function writeOutput(path: string, content: string, kind: OutputKind): void {
+/** 与实际写入共用目标校验；本函数不创建或修改文件。 */
+export function inspectOutput(path: string, kind: OutputKind) {
   const requested = resolve(path)
   if (stat(requested)?.isSymbolicLink()) throw new Error('Output target must not be a symbolic link.')
   // 固定父目录的真实位置，兼容 macOS /var 等系统目录别名。
@@ -30,6 +31,11 @@ export function writeOutput(path: string, content: string, kind: OutputKind): vo
   if (before && (!before.isFile() || before.size > 16 * 1024 * 1024 || !owned(readFileSync(target,'utf8'),kind))) {
     throw new Error('Refusing to replace a file that is not a recognized canship output. Choose another output path.')
   }
+  return { target, before }
+}
+
+export function writeOutput(path: string, content: string, kind: OutputKind): void {
+  const { target, before } = inspectOutput(path, kind)
   const temporary = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`)
   let created = false
   try {

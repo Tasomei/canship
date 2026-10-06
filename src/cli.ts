@@ -1,7 +1,7 @@
 /** 命令行入口：解析选项、生成报告并计算退出码。 */
 
-import { isAbsolute, relative as relative_, resolve } from 'node:path'
-import { existsSync, realpathSync, statSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { existsSync, statSync } from 'node:fs'
 import { writeOutput } from './output.js'
 import { scan, cleanForOutput } from './engine.js'
 import type { RuleSelection } from './types.js'
@@ -31,8 +31,11 @@ import { canOpen, openReport } from './open.js'
 import { VERSION, getBuildInfo, getCapabilities, buildLabel } from './build-info.js'
 import type { DiagnosticCode } from './diagnostics.js'
 import { explainConfig, renderConfigExplanation } from './report/config.js'
+import { insideProject, ProjectPathError } from './project-path.js'
+import { diagnose, renderDoctor } from './doctor.js'
 
 interface Args {
+  doctor: boolean
   buildInfo: boolean
   explainConfig: boolean
   baselineMigrate: string | null
@@ -97,41 +100,6 @@ function optionalValue(arg: string, name: string, fallback: string): string | nu
   return value
 }
 
-/** 配置中的基线路径必须位于扫描目录内。 */
-function insideProject(root: string, relative: string): string {
-  const target = resolve(root, relative)
-  // 解析符号链接后检查边界，避免路径绕过。
-  const inside = relative_(realPathOf(root), realPathOf(target))
-  if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
-    argumentError(
-      `${CONFIG_FILENAME}: "baseline" must stay inside the project, and ${relative} does not`,
-    )
-  }
-  return target
-}
-
-/** 向上查找最近存在的祖先并解析真实路径。 */
-function realPathOf(path: string): string {
-  let at = path
-  const rest: string[] = []
-  // 限制祖先查找深度，避免异常路径产生过多系统调用。
-  for (let depth = 0; depth < MAX_REAL_PATH_DEPTH; depth++) {
-    try {
-      const real = realpathSync(at)
-      return rest.length === 0 ? real : resolve(real, ...rest)
-    } catch {
-      const parent = resolve(at, '..')
-      if (parent === at) return path
-      rest.unshift(relative_(parent, at))
-      at = parent
-    }
-  }
-  return path
-}
-
-/** 真实路径解析的最大祖先层数。 */
-const MAX_REAL_PATH_DEPTH = 64
-
 /** 裸参数已提前处理，此默认值不会返回。 */
 const UNREACHABLE_DEFAULT = ''
 
@@ -147,6 +115,7 @@ function selectionPhrase(selection: RuleSelection | null): string | null {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
+    doctor: false,
     root: process.cwd(),
     showAll: false,
     json: false,
@@ -270,6 +239,9 @@ function parseArgs(argv: string[]): Args {
       case '--explain-config':
         args.explainConfig = true
         break
+      case '--doctor':
+        args.doctor = true
+        break
       case '--no-excerpts':
         args.noExcerpts = true
         break
@@ -329,6 +301,9 @@ const HELP = `
         --no-config   Ignore canship.config.json in the scanned directory
         --explain-config  Show effective settings and their sources without scanning;
                           supports --json; does not validate baseline contents
+        --doctor      Check runtime, directory, config, baseline and local Git;
+                      supports --json, --no-config and --baseline;
+                      --report/--sarif check paths only; no scanning or file writes
         --no-ignore-markers
                       Disregard canship-ignore-file and canship-ignore-next-line
                       markers; use with --no-config for untrusted projects
@@ -365,6 +340,18 @@ async function main(): Promise<void> {
   if (args.version) {
     process.stdout.write(`${VERSION}\n`)
     return finish(0)
+  }
+  if (args.doctor) {
+    if (args.buildInfo || args.listRules || args.explainConfig || args.fixPrompt || args.baselineMigrate !== null ||
+        args.baselineWrite !== null || args.baselineWriteDefault || args.changedSince !== null || args.open ||
+        args.verbose || args.showAll || args.bestEffort || args.only.length || args.skip.length || args.noExcerpts || args.noIgnoreMarkers) {
+      argumentError('--doctor supports only a path, --json, --no-config, --baseline, --report, and --sarif')
+    }
+    const report = diagnose({ root: args.root, noConfig: args.noConfig,
+      baseline: args.baseline !== null ? resolve(args.baseline) : args.baselineDefault ? resolve(args.root, DEFAULT_BASELINE_PATH) : null,
+      report: args.report, sarif: args.sarif })
+    process.stdout.write(args.json ? `${JSON.stringify(report, null, 2)}\n` : renderDoctor(report))
+    return finish(report.exitCode)
   }
   if (args.explainConfig && (args.buildInfo || args.listRules || args.fixPrompt || args.report !== null ||
       args.sarif !== null || args.baselineWrite !== null || args.baselineWriteDefault || args.baselineMigrate !== null ||
@@ -666,7 +653,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  if (err instanceof ArgumentError) writeError('INVALID_ARGUMENT',err.message)
+  if (err instanceof ArgumentError || err instanceof ProjectPathError) writeError('INVALID_ARGUMENT',err.message)
   else if (err instanceof ChangeViewError) writeError('GIT_REFERENCE_INVALID',err.message)
   else if (err instanceof BaselineError) writeError('BASELINE_INVALID',err.message)
   else writeError('INTERNAL_ERROR',String(err))

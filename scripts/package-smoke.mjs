@@ -87,6 +87,16 @@ try {
   assert.equal(invalid.status, 3)
   assert.equal(invalid.stdout, '')
   assert.match(invalid.stderr, /\[CONFIG_INVALID\].*canship\.config\.json:2:3:.*\(\/all\)/)
+  // 诊断输出独立于扫描格式；输出路径预检不得创建文件。
+  const diagnosticTarget = join(clean, 'diagnostic.html')
+  const doctor = cli([clean, '--doctor', '--json', `--report=${diagnosticTarget}`])
+  assert.equal(doctor.status, 0)
+  assert.equal(JSON.parse(doctor.stdout).kind, 'doctor')
+  assert.equal(JSON.parse(doctor.stdout).scanPerformed, false)
+  assert.throws(() => readFileSync(diagnosticTarget), { code: 'ENOENT' })
+  const badDoctor = cli([configured, '--doctor', '--json'])
+  assert.equal(badDoctor.status, 3)
+  assert.ok(JSON.parse(badDoctor.stdout).checks.some(check => check.code === 'BASELINE_INVALID'))
   // 从实际安装包按包名导入，验证入口无 CLI 副作用及声明文件可被消费。
   const consumer = join(install, 'consumer.mjs')
   writeFileSync(consumer, `import { scan, summarize, listRules } from 'canship';

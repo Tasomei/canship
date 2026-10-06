@@ -90,6 +90,7 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 | `--only=ids` / `--skip=ids` | 选择或排除规则及命名空间，逗号分隔，可重复 |
 | `--list-rules` | 列出规则而不扫描，支持 `--only` / `--skip` 筛选及 `--json` |
 | `--explain-config` | 展示生效设置、来源及规则选择，不执行扫描，支持 `--json` |
+| `--doctor` | 只读环境诊断，支持 `--json`、`--no-config`、`--baseline` 及输出路径预检 |
 | `--baseline[=file]` / `--baseline-write[=file]` | 抑制或记录结果，默认 `canship-baseline.json` |
 | `--baseline-migrate[=file]` | 输出迁移后的基线 JSON，保留原文件 |
 | `--no-config` / `--no-ignore-markers` | 忽略项目配置或源码抑制注释 |
@@ -100,6 +101,8 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 `--json` 与 `--fix-prompt` 互斥，均可同时输出 HTML 和 SARIF。
 
 `--changed-since` 比较本地共同祖先与工作区，包含未被忽略的新文件，不拉取远程、不缩小扫描范围。缺少 Git、引用或共同历史时退出 `3`；不能与 `--baseline-write` 组合。
+
+`--doctor` 检查 Node.js、目录访问、配置、基线结构及本地 Git 元数据。此模式下，`--report` / `--sarif` 仅预检目标，不写报告或测试文件。预检错误退出 `3`；退出 `0` 仍可能含警告，不代表扫描完整、基线匹配或后续写入成功。JSON 使用 `kind: "doctor"`；诊断不输出项目内容、基线条目、环境变量或远程地址。
 
 ## 配置
 

@@ -90,6 +90,7 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 | `--only=ids` / `--skip=ids` | Select/exclude rules or namespaces; comma-separated, repeatable |
 | `--list-rules` | List rules without scanning; supports `--only` / `--skip` and `--json` |
 | `--explain-config` | Show effective settings, sources, and selected rules without scanning; supports `--json` |
+| `--doctor` | Run read-only environment checks; supports `--json`, `--no-config`, `--baseline`, and output-path checks |
 | `--baseline[=file]` / `--baseline-write[=file]` | Suppress/record findings; default `canship-baseline.json` |
 | `--baseline-migrate[=file]` | Print a migrated baseline as JSON; preserve the source file |
 | `--no-config` / `--no-ignore-markers` | Ignore project configuration/source suppression comments |
@@ -100,6 +101,8 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 `--json` and `--fix-prompt` are mutually exclusive; either supports HTML and SARIF output.
 
 `--changed-since` compares the local merge base with the working tree, including non-ignored untracked files. It does not fetch or narrow scan scope. Missing Git, refs, or shared history exits `3`; it cannot be combined with `--baseline-write`.
+
+`--doctor` checks Node.js, directory access, configuration, baseline structure, and local Git metadata. In this mode, `--report` / `--sarif` only check destinations; no reports or test files are written. Exit `3` indicates preflight errors; `0` may include warnings and does not establish scan coverage, baseline matches, or successful future writes. JSON uses `kind: "doctor"`; diagnostics omit project content, baseline entries, environment variables, and remote addresses.
 
 ## Configuration
 
