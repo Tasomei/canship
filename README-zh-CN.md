@@ -91,6 +91,7 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 | `--list-rules` | 列出规则而不扫描，支持 `--only` / `--skip` 筛选及 `--json` |
 | `--explain-config` | 展示生效设置、来源及规则选择，不执行扫描，支持 `--json` |
 | `--doctor` | 只读环境诊断，支持 `--json`、`--no-config`、`--baseline` 及输出路径预检 |
+| `--init[=config\|ci]` | 输出最小配置或固定版本的 CI 模板，不读取或修改项目文件 |
 | `--baseline[=file]` / `--baseline-write[=file]` | 抑制或记录结果，默认 `canship-baseline.json` |
 | `--baseline-migrate[=file]` | 输出迁移后的基线 JSON，保留原文件 |
 | `--baseline-review` | 对照基线与当前结果，支持 `--baseline[=file]` 及 `--json` |
@@ -103,6 +104,8 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 | `--build-info` | 显示构建渠道、提交摘要、修改状态和能力边界，支持 `--json` |
 
 `--json` 与 `--fix-prompt` 互斥，均可同时输出 HTML 和 SARIF。
+
+`--init` 为独立预览模式：标准输出为模板，标准错误提示保存位置，审阅后自行保存。CI 模板使用扫描器的包版本，启用前须确认该版本已发布，并审阅固定的 Action 提交。
 
 `--changed-since` 比较本地共同祖先与工作区，包含未被忽略的新文件，不拉取远程、不缩小扫描范围。缺少 Git、引用或共同历史时退出 `3`；不能与 `--baseline-write` 组合。
 

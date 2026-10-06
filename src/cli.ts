@@ -36,9 +36,11 @@ import type { DiagnosticCode } from './diagnostics.js'
 import { explainConfig, renderConfigExplanation } from './report/config.js'
 import { insideProject, ProjectPathError } from './project-path.js'
 import { diagnose, renderDoctor } from './doctor.js'
+import { renderInit } from './init.js'
 import { canPruneBaseline, createBaselineReview, renderBaselineReview, serializeBaselineCandidate } from './report/baseline-review.js'
 
 interface Args {
+  init: 'config' | 'ci' | null
   baselinePolicy: BaselinePolicy
   baselineAccept: BaselineAcceptance[]
   baselineReview: boolean
@@ -123,6 +125,7 @@ function selectionPhrase(selection: RuleSelection | null): string | null {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
+    init: null,
     baselinePolicy: {},
     baselineAccept: [],
     baselineReview: false,
@@ -157,6 +160,12 @@ function parseArgs(argv: string[]): Args {
   const positional: string[] = []
 
   for (const arg of argv) {
+    if (arg === '--init' || arg.startsWith('--init=')) {
+      const kind = arg === '--init' ? 'config' : arg.slice('--init='.length)
+      if (args.init !== null || (kind !== 'config' && kind !== 'ci')) argumentError('--init accepts config or ci, once only')
+      args.init = kind
+      continue
+    }
     if (arg.startsWith('--baseline-reason=')) {
       if (args.baselinePolicy.reason !== undefined) argumentError('--baseline-reason can be specified only once')
       args.baselinePolicy.reason = arg.slice('--baseline-reason='.length)
@@ -349,6 +358,7 @@ const HELP = `
         --doctor      Check runtime, directory, config, baseline and local Git;
                       supports --json, --no-config and --baseline;
                       --report/--sarif check paths only; no scanning or file writes
+        --init[=config|ci]  Print a configuration or CI template; never write files
         --no-ignore-markers
                       Disregard canship-ignore-file and canship-ignore-next-line
                       markers; use with --no-config for untrusted projects
@@ -384,6 +394,14 @@ async function main(): Promise<void> {
   }
   if (args.version) {
     process.stdout.write(`${VERSION}\n`)
+    return finish(0)
+  }
+  if (args.init !== null) {
+    if (process.argv.slice(2).some(arg => !['--init', '--init=config', '--init=ci'].includes(arg))) argumentError('--init is a standalone preview mode; it accepts no path or other options')
+    process.stdout.write(renderInit(args.init, VERSION))
+    process.stderr.write(args.init === 'config'
+      ? 'canship: preview only. Review before saving as canship.config.json; no file was changed.\n'
+      : 'canship: CI preview only. Review the pinned Action and verify that the scanner version is published before saving as .github/workflows/canship.yml. Installation uses the network; scanning does not. No file was changed.\n')
     return finish(0)
   }
   if (Object.keys(args.baselinePolicy).length > 0) {

@@ -91,6 +91,7 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 | `--list-rules` | List rules without scanning; supports `--only` / `--skip` and `--json` |
 | `--explain-config` | Show effective settings, sources, and selected rules without scanning; supports `--json` |
 | `--doctor` | Run read-only environment checks; supports `--json`, `--no-config`, `--baseline`, and output-path checks |
+| `--init[=config\|ci]` | Print a minimal configuration or pinned CI template without reading or changing project files |
 | `--baseline[=file]` / `--baseline-write[=file]` | Suppress/record findings; default `canship-baseline.json` |
 | `--baseline-migrate[=file]` | Print a migrated baseline as JSON; preserve the source file |
 | `--baseline-review` | Compare accepted and current findings; supports `--baseline[=file]` and `--json` |
@@ -103,6 +104,8 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 | `--build-info` | Show channel, source revision, dirty state and capabilities; supports `--json` |
 
 `--json` and `--fix-prompt` are mutually exclusive; either supports HTML and SARIF output.
+
+`--init` is a standalone preview: stdout contains the template; stderr names its intended destination. Review before saving. CI previews use the scanner's package version; confirm that version is published and review the Action pin before enabling the workflow.
 
 `--changed-since` compares the local merge base with the working tree, including non-ignored untracked files. It does not fetch or narrow scan scope. Missing Git, refs, or shared history exits `3`; it cannot be combined with `--baseline-write`.
 

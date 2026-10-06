@@ -47,6 +47,12 @@ try {
     return result
   }
   assert.equal(cli(['--version']).stdout.trim(), version)
+  const init = cli(['--init'])
+  assert.equal(init.status, 0)
+  assert.deepEqual(JSON.parse(init.stdout), { all: false })
+  const ciPreview = cli(['--init=ci'])
+  assert.equal(ciPreview.status, 0)
+  assert.ok(ciPreview.stdout.includes(`version: '${version}'`))
   const identity = JSON.parse(cli(['--build-info', '--json']).stdout)
   assert.equal(identity.kind, 'build-info')
   assert.equal(identity.version, version)
