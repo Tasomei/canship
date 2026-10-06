@@ -1,0 +1,103 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/Tasomei/canship/main/schemas/config-v1.schema.json",
+  "title": "Canship configuration",
+  "description": "Project settings for the local static scanner. CLI flags override these settings.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Editor schema reference. Canship never fetches or executes this value."
+    },
+    "baseline": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Existing baseline path inside the scan directory. Findings are accepted, not fixed; runtime checks enforce path containment and validate the file."
+    },
+    "only": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/selector"
+      },
+      "description": "Run matching rule IDs or namespaces. Cannot be combined with skip."
+    },
+    "skip": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/selector"
+      },
+      "description": "Exclude matching rule IDs or namespaces. Cannot be combined with only."
+    },
+    "all": {
+      "type": "boolean",
+      "default": false,
+      "description": "Show likely findings. Hidden findings still affect exit status."
+    }
+  },
+  "not": {
+    "required": [
+      "only",
+      "skip"
+    ]
+  },
+  "definitions": {
+    "selector": {
+      "type": "string",
+      "enum": [
+        "api",
+        "api/admin-db-access-without-auth",
+        "api/db-write-without-auth",
+        "auth",
+        "auth/unverified-session",
+        "cors",
+        "cors/reflected-origin-with-credentials",
+        "cors/wildcard-with-credentials",
+        "exposure",
+        "exposure/private-name-in-public-env",
+        "exposure/secret-in-public-env",
+        "exposure/supabase-service-role-in-client",
+        "firebase",
+        "firebase/open-rules",
+        "firebase/test-mode-rules",
+        "gitleak",
+        "gitleak/env-in-history",
+        "gitleak/env-tracked",
+        "injection",
+        "injection/command",
+        "injection/sql",
+        "redirect",
+        "redirect/open",
+        "secrets",
+        "secrets/hardcoded",
+        "secrets/hardcoded/anthropic",
+        "secrets/hardcoded/aws-access-key-id",
+        "secrets/hardcoded/db-connection-string",
+        "secrets/hardcoded/github-token",
+        "secrets/hardcoded/google-api-key",
+        "secrets/hardcoded/groq",
+        "secrets/hardcoded/huggingface",
+        "secrets/hardcoded/npm-token",
+        "secrets/hardcoded/openai",
+        "secrets/hardcoded/openrouter",
+        "secrets/hardcoded/perplexity",
+        "secrets/hardcoded/private-key",
+        "secrets/hardcoded/replicate",
+        "secrets/hardcoded/sendgrid",
+        "secrets/hardcoded/slack-token",
+        "secrets/hardcoded/stripe-live",
+        "secrets/hardcoded/supabase-secret-key",
+        "secrets/hardcoded/xai",
+        "ssrf",
+        "ssrf/request-url",
+        "supabase",
+        "supabase/permissive-policy",
+        "supabase/public-bucket-listing",
+        "supabase/rls-not-enabled",
+        "webhook",
+        "webhook/unverified-signature"
+      ]
+    }
+  }
+}

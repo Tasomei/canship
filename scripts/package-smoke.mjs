@@ -20,7 +20,7 @@ function npm(args, cwd) {
 try {
   const packed = JSON.parse(npm(['pack', '--ignore-scripts', '--json', '--pack-destination', root], repository))[0]
   const expected = ['LICENSE', 'README-zh-CN.md', 'README.md', 'dist/cli.js', 'dist/index.js', 'dist/index.d.ts',
-    'package.json', 'schemas/scan-report-v1.schema.json'].sort()
+    'package.json', 'schemas/scan-report-v1.schema.json', 'schemas/config-v1.schema.json'].sort()
   assert.deepEqual(packed.files.map(file => file.path).sort(), expected)
   const install = join(root, 'installed')
   mkdirSync(install)
@@ -31,6 +31,9 @@ try {
   assert.equal(pkg.version, version)
   assert.equal(Object.keys(pkg.dependencies ?? {}).length, 0)
   assert.equal(pkg.bin.canship, 'dist/cli.js')
+  assert.equal(pkg.exports['./schemas/config-v1.schema.json'], './schemas/config-v1.schema.json')
+  assert.deepEqual(readFileSync(join(packageRoot, 'schemas/config-v1.schema.json')),
+    readFileSync(join(repository, 'schemas/config-v1.schema.json')))
   assert.equal(npm(['exec', '--offline', '--yes=false', '--', 'canship', '--version'], install).trim(), version)
   assert.match(readFileSync(join(packageRoot, 'README.md'), 'utf8'), /A local static scanner/)
   for (const name of ['README.md', 'README-zh-CN.md']) {
@@ -67,7 +70,7 @@ try {
   const clean = sample('clean', { 'index.ts': 'export const value = 1;' })
   // 安装包的配置预览必须保持只读，且采用相同的命令行优先级。
   const configured = sample('configured', {
-    'canship.config.json': JSON.stringify({ only: ['firebase'], baseline: 'missing.json' }),
+    'canship.config.json': JSON.stringify({ $schema: './missing-schema.json', only: ['firebase'], baseline: 'missing.json' }),
   })
   const explained = cli([configured, '--explain-config', '--json', '--only=injection/sql', '--no-excerpts'])
   assert.equal(explained.status, 0)
@@ -79,6 +82,11 @@ try {
   assert.equal(effective.settings.noExcerpts.value, true)
   assert.equal(effective.settings.baseline.value, join(configured, 'missing.json'))
   assert.equal(cli([configured, '--explain-config', '--report']).status, 3)
+  const invalidConfig = sample('invalid-config', { 'canship.config.json': '{\n  "all": "wrong"\n}' })
+  const invalid = cli([invalidConfig, '--explain-config', '--json'])
+  assert.equal(invalid.status, 3)
+  assert.equal(invalid.stdout, '')
+  assert.match(invalid.stderr, /\[CONFIG_INVALID\].*canship\.config\.json:2:3:.*\(\/all\)/)
   // 从实际安装包按包名导入，验证入口无 CLI 副作用及声明文件可被消费。
   const consumer = join(install, 'consumer.mjs')
   writeFileSync(consumer, `import { scan, summarize, listRules } from 'canship';

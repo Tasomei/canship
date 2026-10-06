@@ -105,6 +105,8 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 
 `canship.config.json` accepts `baseline`, `only`, `skip`, and `all`. CLI options take precedence; `only` and `skip` are mutually exclusive.
 
+For editor completion, set `$schema` to the bundled [configuration schema](./schemas/config-v1.schema.json), e.g. `./node_modules/canship/schemas/config-v1.schema.json` after local installation. Canship does not fetch this reference. Invalid fields include a field path and line/column; JSON syntax errors include a location when available. Schema validation does not verify baseline files or path containment.
+
 ```json
 { "skip": ["cors/wildcard-with-credentials"], "all": false }
 ```

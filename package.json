@@ -37,6 +37,7 @@
     },
     "./package.json": "./package.json",
     "./schemas/scan-report-v1.schema.json": "./schemas/scan-report-v1.schema.json",
+    "./schemas/config-v1.schema.json": "./schemas/config-v1.schema.json",
     "./dist/cli.js": "./dist/cli.js"
   },
   "bin": {

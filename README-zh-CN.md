@@ -105,6 +105,8 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 
 `canship.config.json` 支持 `baseline`、`only`、`skip`、`all`。命令行参数优先，`only` 与 `skip` 互斥。
 
+将 `$schema` 指向随包提供的[配置 Schema](./schemas/config-v1.schema.json)可启用编辑器补全；本地安装后可用 `./node_modules/canship/schemas/config-v1.schema.json`。Canship 不请求该地址。字段错误显示字段路径及行列；JSON 语法错误在可定位时显示位置。Schema 不验证基线文件及路径边界。
+
 ```json
 { "skip": ["cors/wildcard-with-credentials"], "all": false }
 ```
