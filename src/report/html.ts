@@ -297,7 +297,7 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
     verdict = `<h1 class="verdict warn">No new findings — ${baselineSuppressed} ${plural(baselineSuppressed, 'finding')} accepted by the baseline.</h1>`
     explanation = `This is not a finding-free result. Those problems still exist. Re-run without --baseline to see ${baselineSuppressed === 1 ? 'it' : 'them'}.`
   } else {
-    verdict = '<h1 class="verdict clean">No exposed credentials found.</h1>'
+    verdict = '<h1 class="verdict clean">No findings in enabled checks.</h1>'
   }
 
   const facts = [
@@ -354,19 +354,8 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
 <p id="empty" class="faint" hidden>No findings match these filters.</p>
 </section>` : `
 <section class="section last checked">
-<h2>Checked for</h2>
-<ul>
-<li>API keys hardcoded in source code</li>
-<li>Server-side secrets exposed to the browser via public env prefixes</li>
-<li>Supabase service_role keys reachable from the client</li>
-<li><code>.env</code> files committed to git, including in history</li>
-<li>Supabase tables with no Row Level Security, or policies open to everyone</li>
-<li>Firebase rules left open to anyone</li>
-<li>API routes and server actions that query your database with no sign-in check</li>
-<li>CORS that lets other sites act as your signed-in visitors</li>
-<li>Request input in SQL, commands, outbound URLs, and redirects within supported handlers</li>
-<li>Unverified Supabase sessions and Stripe webhook events</li>
-</ul>
+<h2>Scan scope</h2>
+<p>${result.ruleSelection === null ? 'All built-in rule groups enabled.' : 'Only the selected rule groups were enabled; see the selection below.'}</p>
 <p><strong>No findings means no matches in the selected scope — not that your app is secure.</strong> Checks are bounded and syntax-based. Request-input analysis stays within supported handlers; business authorisation, rate limiting and dependency vulnerabilities are not verified. Rule selection and exclusions are disclosed below.</p>
 </section>`
 

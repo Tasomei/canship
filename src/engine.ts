@@ -19,6 +19,7 @@ import { resolveGitExecutable } from './git.js'
 import { redactAll, truncate } from './redact.js'
 import { createHash } from 'node:crypto'
 import { reportOpenapiBatchCoverage } from './rules/routers.js'
+import { diagnosticCodeOf } from './diagnostics.js'
 
 const SEVERITY_ORDER: Record<Finding['severity'], number> = { P0: 0, P1: 1, P2: 2 }
 const CONFIDENCE_ORDER: Record<Finding['confidence'], number> = { certain: 0, likely: 1 }
@@ -260,6 +261,7 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
     durationMs: Date.now() - started,
     errors: errors.map((e) => ({
       ...e,
+      code: e.code ?? diagnosticCodeOf(e),
       file: e.file === null ? null : clean(e.file),
       message: clean(e.message),
     })),

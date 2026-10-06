@@ -57,7 +57,7 @@ OpenAPI configuration supports inline objects, constants, and static ESM imports
 
 ## Results
 
-Reports are in English. The terminal groups findings by file; `--verbose` adds excerpts, explanations, evidence, and fixes. HTML is a self-contained offline report with filters, grouping, manual steps, and copyable fix prompts.
+Reports are in English. The terminal groups findings by file; `--verbose` adds excerpts, explanations, evidence, and fixes. Follow-up commands retain scan targets and privacy options. HTML is a self-contained offline report with filters, grouping, manual steps, and copyable fix prompts.
 
 ![HTML report](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
 
@@ -157,7 +157,7 @@ console.log(summarize(result))
 
 `scan()` returns all confidence levels. Options: `only`, `skip`, `honorIgnoreMarkers` (default `true`), `noExcerpts` (default `false`). It does not load configuration, apply baselines, write reports, or set process exit status. Invalid arguments throw. `listRules()` returns the rule catalogue.
 
-JSON uses [schemaVersion 1](./schemas/scan-report-v1.schema.json). Check `partial`, `errors`, `skipped`, and `filesScanned` independently of exit status. SARIF includes evidence locations and execution diagnostics.
+JSON uses [schemaVersion 1](./schemas/scan-report-v1.schema.json). Check `partial`, `errors`, `skipped`, and `filesScanned` independently of exit status. New reports include stable `errors[].code` values; older reports may omit them. SARIF includes evidence locations and execution diagnostics.
 
 ## Privacy and limits
 

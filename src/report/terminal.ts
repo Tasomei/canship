@@ -2,6 +2,7 @@
 
 import type { Finding, ScanResult, SkipReason } from '../types.js'
 import { bold, dim, red, green, yellow, gray } from '../colors.js'
+import { followupCommand } from './commands.js'
 import {
   categoryCounts, categoryOf, changeViewNotice, groupByFile, locationOf, manualSteps, plural, SEVERITIES, SKIP_LABEL, verdictOf,
 } from './shared.js'
@@ -27,6 +28,8 @@ export interface RenderOptions {
   exitCode?: 0 | 1 | 2 | 3
   /** 输出宽度；默认取终端列数。 */
   width?: number
+  /** 原命令的读取选项；不安全或已脱敏的参数不生成可复制命令。 */
+  rerunArgs?: readonly string[] | null
 }
 
 /** 结果行的缩进：严重度 4 列、行号 4 列及间隔。 */
@@ -78,7 +81,7 @@ export function renderReport(result: ScanResult, opts: RenderOptions): string {
   const { findings } = result
   if (findings.length === 0) {
     out.push(...renderClean(result, opts, width))
-    out.push(...renderNext(opts, width))
+    out.push(...renderNext(result, opts, width))
     return out.join('\n')
   }
 
@@ -106,7 +109,7 @@ export function renderReport(result: ScanResult, opts: RenderOptions): string {
     notes.push(dim(`${opts.hiddenLikely} lower-confidence ${plural(opts.hiddenLikely, 'finding')} hidden. Run with --all to see ${opts.hiddenLikely === 1 ? 'it' : 'them'}.`))
   }
   if (notes.length > 0) out.push(...notes, '')
-  out.push(...renderNext(opts, width))
+  out.push(...renderNext(result, opts, width))
   return out.join('\n')
 }
 
@@ -216,17 +219,27 @@ function renderFinding(f: Finding, width: number, verbose: boolean): string[] {
 }
 
 /** 页尾列出下一步命令及退出码原因。 */
-function renderNext(opts: RenderOptions, width: number): string[] {
+function renderNext(result: ScanResult, opts: RenderOptions, width: number): string[] {
   const out: string[] = []
-  const commands = [
-    ...(opts.verbose ? [] : [`${dim('details')} canship --verbose`]),
-    `${dim('report')} canship --report --open`,
-    `${dim('fix prompt')} canship --fix-prompt`,
-  ]
-  out.push(...joinFitting(commands, '   ', width))
+  const args = opts.rerunArgs ?? []
+  const command = (label: string, flags: string[]): string => `${dim(label)} ${followupCommand(args, flags)}`
+  if (opts.rerunArgs === null) {
+    out.push(dim('Re-run with the same target and options; command omitted to protect sensitive or unsafe arguments.'))
+  } else if (result.filesScanned === 0) {
+    out.push(dim('Check the target directory and exclusions, then scan again.'))
+  } else {
+    const commands: string[] = []
+    if (opts.hiddenLikely > 0) commands.push(command('review likely', ['--all', '--verbose']))
+    else if (result.findings.length > 0 && !opts.verbose) commands.push(command('details', ['--verbose']))
+    if (result.partial) commands.push(command('retry', []))
+    commands.push(command('report', ['--report', '--open']))
+    if (result.findings.length > 0) commands.push(command('fix prompt', ['--fix-prompt']))
+    if (result.findings.length === 0 && opts.hiddenLikely === 0) commands.push(`${dim('rules')} npx canship --list-rules`)
+    out.push(...joinFitting(commands, '   ', width))
+  }
   if (opts.exitCode !== undefined) {
     const reason = {
-      0: 'no findings',
+      0: result.partial ? 'incomplete coverage accepted; no remaining findings' : 'no remaining findings',
       1: 'blocking findings present',
       2: 'findings present, none blocking',
       3: 'scan incomplete',
@@ -291,7 +304,7 @@ function renderClean(result: ScanResult, opts: RenderOptions, width: number): st
     const suppressed = opts.baselineSuppressed ?? 0
     out.push(yellow(bold(`No new findings — ${suppressed} ${plural(suppressed, 'finding')} accepted by the baseline.`)))
   } else {
-    out.push(green(bold('No exposed credentials found.')))
+    out.push(green(bold('No findings in enabled checks.')))
   }
   out.push(...facts)
   if (result.changeView) for (const line of wrapText(changeViewNotice(result.changeView), width)) out.push(yellow(line))
@@ -300,28 +313,15 @@ function renderClean(result: ScanResult, opts: RenderOptions, width: number): st
   if (baseline.length > 0) out.push(...baseline, '')
 
   // 明确静态检查的能力边界。
-  out.push(bold('Checked for'))
-  for (const item of [
-    'API keys hardcoded in source code',
-    'Server-side secrets exposed to the browser via public env prefixes',
-    'Supabase service_role keys reachable from the client',
-    '.env files committed to git, including in history',
-    'Supabase tables with no Row Level Security, or policies open to everyone',
-    'Firebase rules left open to anyone',
-    'API routes and server actions that query your database with no sign-in check',
-    'CORS that lets other sites act as your signed-in visitors',
-    'Request input in SQL, commands, outbound URLs, and redirects within supported handlers',
-    'Unverified Supabase sessions and Stripe webhook events',
-  ]) out.push(`${dim('  · ')}${item}`)
-  out.push('')
-  out.push(dim('Input analysis is bounded and handler-local; business authorisation, rate limiting and dependency vulnerabilities are not verified.'))
+  if (result.ruleSelection === null) out.push(dim('All built-in rule groups enabled.'))
+  out.push(dim('Static analysis only; runtime behaviour and business authorisation are not verified.'))
   // 结束语必须保留隐藏、忽略和筛选信息。
   if (opts.hiddenLikely > 0) {
     out.push(dim('This is not a finding-free result. Review the hidden items with --all.'))
   } else if (result.ignoredFindings.length > 0) {
     out.push(dim('This is not a finding-free result — some were silenced in the source. See below.'))
   } else {
-    out.push(dim('A clean result means these checks passed — not that your app is secure.'))
+    out.push(dim('No findings does not prove security.'))
   }
   const notes = [...renderIncomplete(result, width), ...renderIgnored(result)]
   if (opts.hiddenLikely > 0) {

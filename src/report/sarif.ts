@@ -136,6 +136,7 @@ export function renderSarif(result: ScanResult, opts: SarifOptions): string {
     })),
     ...result.errors.map((e) => ({
       level: e.kind === 'crashed' ? 'error' : 'warning',
+      ...(e.code ? { descriptor: { id: e.code } } : {}),
       message: { text: `${e.ruleId}: ${e.message}` },
     })),
     ...suppressionNotes(result, opts),

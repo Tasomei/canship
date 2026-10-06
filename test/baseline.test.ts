@@ -255,7 +255,7 @@ describe('a baseline is never silent', () => {
 
   test('the terminal still shows a green tick without one', () => {
     const out = renderReport(emptyScan, { root: '/p', showingLikely: false, hiddenLikely: 0 })
-    assert.match(out, /No exposed credentials found/)
+    assert.match(out, /No findings in enabled checks\./)
   })
 
   test('the HTML report carries the count with it', () => {

@@ -5,44 +5,22 @@ import { scan as scanEngine } from './engine.js'
 import { isKnownSelector } from './rules/index.js'
 import { RULE_CATALOG } from './rules/catalog.js'
 import type { RuleDescription } from './rules/catalog.js'
-import { verdictOf } from './report/shared.js'
+export { summarize } from './summary.js'
+export type { ScanSummary } from './summary.js'
 import type { ScanOptions as EngineOptions, ScanResult } from './types.js'
 
 export type { Finding, EvidenceStep, ChangeView, Severity, Confidence, ScanResult, ScanError, SkippedFile, RuleSelection } from './types.js'
 export type { RuleDescription } from './rules/catalog.js'
+export type { DiagnosticCode } from './diagnostics.js'
 
 export interface ScanOptions extends EngineOptions {
   /** 移除结果摘录；路径、标题及说明仍需在分享前审阅。 */
   noExcerpts?: boolean
 }
 
-export interface ScanSummary {
-  findings: number
-  blocking: number
-  likely: number
-  partial: boolean
-  /** 与 CLI 默认策略一致；不自动设置 process.exitCode。 */
-  exitCode: 0 | 1 | 2 | 3
-}
-
 /** 返回独立副本，避免调用方修改内部规则目录。 */
 export function listRules(): RuleDescription[] {
   return RULE_CATALOG.map(rule => ({ ...rule }))
-}
-
-/** 统计全部结果；结果退出码优先，完整性始终单独保留。 */
-export function summarize(result: ScanResult): ScanSummary {
-  const verdict = verdictOf(result.findings)
-  const findings = result.changeView?.totalFindings ?? result.findings.length
-  const blocking = result.changeView?.totalBlocking ?? verdict.blocking
-  const partial = result.partial || result.filesScanned === 0 || result.errors.length > 0 || result.skipped.length > 0
-  return {
-    findings,
-    blocking,
-    likely: result.changeView?.totalLikely ?? verdict.unsure,
-    partial,
-    exitCode: blocking > 0 ? 1 : findings > 0 ? 2 : partial ? 3 : 0,
-  }
 }
 
 /** 扫描指定目录，返回全部置信度结果；不自动应用基线或项目配置。 */

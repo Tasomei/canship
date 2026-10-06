@@ -147,6 +147,8 @@ export interface ScanError {
   message: string
   /** 区分执行异常与已知扫描缺口。 */
   kind: 'crashed' | 'incomplete'
+  /** 稳定诊断代码；旧报告可能没有此字段。 */
+  code?: import('./diagnostics.js').DiagnosticCode
 }
 
 /** 变更视图的比较基准、隐藏数量及完整扫描统计。 */

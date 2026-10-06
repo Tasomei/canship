@@ -57,7 +57,7 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 
 ## 结果
 
-报告正文为英文。终端按文件分组，`--verbose` 展开摘录、说明、证据和修复步骤。HTML 为自包含离线报告，支持筛选、分组、人工操作清单及修复提示复制。
+报告正文为英文。终端按文件分组，`--verbose` 展开摘录、说明、证据和修复步骤；后续命令保留扫描目标与隐私选项。HTML 为自包含离线报告，支持筛选、分组、人工操作清单及修复提示复制。
 
 ![HTML 报告](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
 
@@ -157,7 +157,7 @@ console.log(summarize(result))
 
 `scan()` 返回全部置信度结果，支持 `only`、`skip`、`honorIgnoreMarkers`（默认 `true`）、`noExcerpts`（默认 `false`）。不加载配置、不应用基线、不写报告、不设置进程退出码；无效参数抛出异常。`listRules()` 返回规则目录。
 
-JSON 使用 [schemaVersion 1](./schemas/scan-report-v1.schema.json)。须独立于退出码检查 `partial`、`errors`、`skipped`、`filesScanned`。SARIF 包含证据位置和执行诊断。
+JSON 使用 [schemaVersion 1](./schemas/scan-report-v1.schema.json)。须独立于退出码检查 `partial`、`errors`、`skipped`、`filesScanned`。新报告提供稳定的 `errors[].code`，旧报告可能缺少该字段。SARIF 包含证据位置和执行诊断。
 
 ## 隐私与限制
 

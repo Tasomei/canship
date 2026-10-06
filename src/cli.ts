@@ -10,7 +10,8 @@ import { renderHtml } from './report/html.js'
 import { renderSarif } from './report/sarif.js'
 import { createJsonReport } from './report/json.js'
 import { bold, cyan, dim, red, yellow } from './colors.js'
-import { verdictOf } from './report/shared.js'
+import { scanExitCode } from './summary.js'
+import { followupArgs } from './report/commands.js'
 import {
   applyBaseline,
   buildBaseline,
@@ -494,9 +495,7 @@ async function main(): Promise<void> {
   const shown = showAll ? result.findings : result.findings.filter((f) => f.confidence === 'certain')
   const hiddenLikely = showAll ? 0 : result.findings.filter((f) => f.confidence === 'likely').length
   // 严重确定结果优先，其次为其他结果，最后判断完整性；报告写入失败时另行退出 3。
-  const exitCode: 0 | 1 | 2 | 3 = verdictOf(fullResult.findings).blocking > 0 ? 1
-    : fullResult.findings.length > 0 ? 2
-      : result.partial && !bestEffort ? 3 : 0
+  const exitCode = scanExitCode(fullResult, bestEffort)
 
   if (args.fixPrompt) {
     const prompt = renderFixPrompt(shown, {
@@ -541,6 +540,7 @@ async function main(): Promise<void> {
           verbose: args.verbose,
           version: VERSION,
           exitCode,
+          rerunArgs: followupArgs(process.argv.slice(2)),
         },
       )}\n`,
     )

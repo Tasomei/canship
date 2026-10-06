@@ -77,10 +77,11 @@ test('the summary, manual steps and file groups match the terminal layout', () =
 
 test('a clean scan keeps the scope disclosure and the clean verdict marker', () => {
   const clean = renderHtml(result([]), { root: '/p', generatedAt: '' })
-  assert.match(clean, /<h1 class="verdict clean">No exposed credentials found\.<\/h1>/)
+  assert.match(clean, /<h1 class="verdict clean">No findings in enabled checks\.<\/h1>/)
   assert.match(clean, /not that your app is secure/)
   assert.doesNotMatch(clean, /<details class="f"/)
-  assert.match(clean, /Request input in SQL/)
+  assert.match(clean, /All built-in rule groups enabled/)
+  assert.match(clean, /Request-input analysis stays within supported handlers/)
   assert.doesNotMatch(clean, /injection are not covered/)
 })
 

@@ -38,7 +38,8 @@
           "ruleId": { "type": "string" },
           "file": { "type": ["string", "null"] },
           "message": { "type": "string" },
-          "kind": { "enum": ["crashed", "incomplete"] }
+          "kind": { "enum": ["crashed", "incomplete"] },
+          "code": { "enum": ["RULE_EXECUTION_FAILED", "ANALYSIS_INCOMPLETE", "GIT_CHECK_INCOMPLETE", "ROUTE_UNRESOLVED", "FINDINGS_LIMIT"] }
         }
       }
     },
