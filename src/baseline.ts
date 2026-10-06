@@ -172,7 +172,7 @@ export interface BaselineApplication {
 }
 
 /** 按计数消耗指纹额度；超出额度的重复问题仍需报告。 */
-function matchBaseline(findings: Finding[], baseline: BaselineFile): BaselineApplication & { accepted: Finding[] } {
+function matchBaseline(findings: Finding[], baseline: BaselineFile): BaselineApplication & { accepted: Finding[]; remaining: Map<string, number> } {
   if (![2, BASELINE_VERSION].includes(baseline.version)) throw new BaselineError('Unsupported baseline version.')
   const remaining = new Map<string, number>()
   const legacy = new Map<string, BaselineEntry[]>()
@@ -205,7 +205,7 @@ function matchBaseline(findings: Finding[], baseline: BaselineFile): BaselineApp
   let stale = 0
   for (const left of remaining.values()) stale += left
 
-  return { kept, suppressed, stale, accepted }
+  return { kept, suppressed, stale, accepted, remaining }
 }
 
 export function applyBaseline(findings: Finding[], baseline: BaselineFile): BaselineApplication {
@@ -218,4 +218,53 @@ export function migrateBaseline(findings: Finding[], baseline: BaselineFile): Ba
   const matched = matchBaseline(findings, baseline)
   if (matched.stale > 0) throw new BaselineError('Baseline migration requires all accepted entries to match. Review stale entries first; no output was written.')
   return buildBaseline(matched.accepted)
+}
+
+/** 按接受次数预览维护结果；未匹配不等于问题已修复。 */
+export function reviewBaseline(findings: Finding[], baseline: BaselineFile) {
+  const matched = matchBaseline(findings, baseline)
+  const unmatched: BaselineEntry[] = []
+  for (const entry of baseline.entries) {
+    const count = Math.min(entry.count, matched.remaining.get(entry.fingerprint) ?? 0)
+    if (count > 0) unmatched.push({ ...entry, count })
+    matched.remaining.set(entry.fingerprint, (matched.remaining.get(entry.fingerprint) ?? 0) - count)
+  }
+  return {
+    retained: buildBaseline(matched.accepted).entries,
+    unmatched,
+    unaccepted: buildBaseline(matched.kept).entries,
+    counts: { retained: matched.suppressed, unmatched: matched.stale, unaccepted: matched.kept.length },
+  }
+}
+
+/** 仅保留仍匹配的原接受额度，以当前格式输出；调用方负责验证扫描完整性。 */
+export function pruneBaseline(findings: Finding[], baseline: BaselineFile): BaselineFile {
+  return buildBaseline(matchBaseline(findings, baseline).accepted)
+}
+
+export interface BaselineAcceptance { fingerprint: string; count: number }
+
+/** 仅增加明确选定的接受次数，不清理原条目；旧格式必须能无损迁移。 */
+export function acceptBaseline(findings: Finding[], baseline: BaselineFile, selections: BaselineAcceptance[]): BaselineFile {
+  const current = baseline.version === 2 ? migrateBaseline(findings, baseline) : baseline
+  const remaining = buildBaseline(matchBaseline(findings, current).kept).entries
+  const requested = new Map<string, number>()
+  if (selections.length === 0) throw new BaselineError('Select at least one fingerprint from --baseline-review.')
+  for (const selection of selections) {
+    if (!/^[a-f0-9]{64}$/.test(selection.fingerprint) || !Number.isSafeInteger(selection.count) || selection.count < 1) {
+      throw new BaselineError('Acceptance requires a full v3 fingerprint and a positive integer count.')
+    }
+    const count = (requested.get(selection.fingerprint) ?? 0) + selection.count
+    if (!Number.isSafeInteger(count)) throw new BaselineError('Acceptance count is too large.')
+    requested.set(selection.fingerprint, count)
+  }
+  const entries = current.entries.map(entry => ({ ...entry }))
+  for (const [fingerprint, count] of requested) {
+    const found = remaining.find(entry => entry.fingerprint === fingerprint)
+    if (!found || count > found.count) throw new BaselineError('A selected fingerprint or count no longer matches unaccepted findings. Review again; no baseline was changed.')
+    const existing = entries.find(entry => entry.fingerprint === fingerprint)
+    if (existing) existing.count += count
+    else entries.push({ ...found, count })
+  }
+  return { version: BASELINE_VERSION, generatedAt: new Date().toISOString(), entries }
 }

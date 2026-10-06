@@ -93,6 +93,9 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 | `--doctor` | Run read-only environment checks; supports `--json`, `--no-config`, `--baseline`, and output-path checks |
 | `--baseline[=file]` / `--baseline-write[=file]` | Suppress/record findings; default `canship-baseline.json` |
 | `--baseline-migrate[=file]` | Print a migrated baseline as JSON; preserve the source file |
+| `--baseline-review` | Compare accepted and current findings; supports `--baseline[=file]` and `--json` |
+| `--baseline-prune` | Print a v3 candidate retaining only matched acceptances; preserve the source |
+| `--baseline-accept=ids` | Print a candidate accepting selected `fingerprint[:count]` entries; default count `1`, comma-separated and repeatable |
 | `--no-config` / `--no-ignore-markers` | Ignore project configuration/source suppression comments |
 | `--best-effort` | Allow incomplete coverage with no findings to exit `0` |
 | `-h`, `--help` / `-v`, `--version` | Show help/version |
@@ -119,6 +122,8 @@ For editor completion, set `$schema` to the bundled [configuration schema](./sch
 A standalone `canship-ignore-file` comment excludes a file. `canship-ignore-next-line [rule]` suppresses the next line, optionally for one rule. Exclusions are disclosed and may reduce status to `0` without marking coverage incomplete. For untrusted projects, use `--no-config --no-ignore-markers`.
 
 Baselines accept existing findings without fixing them. New baselines use v3: identity ignores title, language, and line moves, but changes when source evidence changes. v2 remains readable; SARIF retains the v2 fingerprint alongside v3.
+
+`--baseline-review` shows retained, unmatched, and unaccepted counts; unmatched does not mean fixed. Review and acceptance start empty only when the implicit default baseline is absent; explicit or configured missing files fail. `--baseline-prune` and `--baseline-accept` require complete, unfiltered coverage without source suppressions. Both print candidates without changing the source: pruning accepts nothing new; acceptance changes only selected counts and preserves unmatched v3 entries. Select full fingerprints from the review, then inspect and save the candidate to a different file. Legacy acceptance requires all old entries to match; use review/prune first if they do not. These commands use operation status, not finding severity; incomplete reviews exit `3`.
 
 `--baseline-migrate` requires a complete, unfiltered scan and matching existing entries. It accepts no new findings, prints v3 JSON, and leaves the old file unchanged. Review the output before saving it to a different file. Reports and baselines are written atomically; existing unrelated files and symbolic-link targets are not overwritten.
 

@@ -93,6 +93,9 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 | `--doctor` | 只读环境诊断，支持 `--json`、`--no-config`、`--baseline` 及输出路径预检 |
 | `--baseline[=file]` / `--baseline-write[=file]` | 抑制或记录结果，默认 `canship-baseline.json` |
 | `--baseline-migrate[=file]` | 输出迁移后的基线 JSON，保留原文件 |
+| `--baseline-review` | 对照基线与当前结果，支持 `--baseline[=file]` 及 `--json` |
+| `--baseline-prune` | 输出仅保留匹配接受记录的 v3 候选基线，保留原文件 |
+| `--baseline-accept=ids` | 输出接受所选 `fingerprint[:count]` 的候选基线，数量默认 `1`，逗号分隔，可重复 |
 | `--no-config` / `--no-ignore-markers` | 忽略项目配置或源码抑制注释 |
 | `--best-effort` | 允许没有结果的不完整扫描退出 `0` |
 | `-h`、`--help` / `-v`、`--version` | 显示帮助或版本 |
@@ -119,6 +122,8 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 独占行注释 `canship-ignore-file` 排除整个文件；`canship-ignore-next-line [rule]` 抑制下一行，可限定单条规则。报告披露排除项；主动抑制不标记扫描不完整，可能使退出码降为 `0`。扫描不可信项目时使用 `--no-config --no-ignore-markers`。
 
 基线表示接受已有结果，不代表问题已修复。新基线使用 v3：身份不受标题、语言和行号移动影响，来源证据变化仍会重新报告。v2 仍可读取，SARIF 同时保留 v2 与 v3 指纹。
+
+`--baseline-review` 展示保留、未匹配和未接受的数量；未匹配不等于已修复。仅隐式默认基线缺失时，预览与接受从空记录开始；显式或配置指定的文件缺失仍报错。`--baseline-prune` 与 `--baseline-accept` 要求扫描完整、未筛选规则且无源码抑制项，均只输出候选内容：清理不接受新结果，接受只增加所选数量并保留 v3 未匹配条目。从预览中选取完整指纹，审阅候选后另存文件。旧格式接受操作要求原条目全部匹配，否则先预览及清理。这些命令按操作状态退出，不按问题级别退出；不完整预览退出 `3`。
 
 `--baseline-migrate` 要求扫描完整、未筛选规则，且旧条目全部匹配；不接受新发现，只输出 v3 JSON，不修改原文件。审阅后另存新文件。报告与基线采用原子写入，不覆盖无关的已有文件或符号链接目标。
 

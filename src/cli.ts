@@ -17,12 +17,15 @@ import {
   applyBaseline,
   buildBaseline,
   migrateBaseline,
+  pruneBaseline,
+  acceptBaseline,
   serializeBaseline,
   readBaseline,
   writeBaseline,
   BaselineError,
   DEFAULT_BASELINE_PATH,
 } from './baseline.js'
+import type { BaselineAcceptance } from './baseline.js'
 import { ConfigError, CONFIG_FILENAME, loadConfig } from './config.js'
 import { isKnownSelector, ruleMatches } from './rules/index.js'
 import { RULE_CATALOG, renderRuleCatalog } from './rules/catalog.js'
@@ -33,8 +36,12 @@ import type { DiagnosticCode } from './diagnostics.js'
 import { explainConfig, renderConfigExplanation } from './report/config.js'
 import { insideProject, ProjectPathError } from './project-path.js'
 import { diagnose, renderDoctor } from './doctor.js'
+import { canPruneBaseline, createBaselineReview, renderBaselineReview } from './report/baseline-review.js'
 
 interface Args {
+  baselineAccept: BaselineAcceptance[]
+  baselineReview: boolean
+  baselinePrune: boolean
   doctor: boolean
   buildInfo: boolean
   explainConfig: boolean
@@ -115,6 +122,9 @@ function selectionPhrase(selection: RuleSelection | null): string | null {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
+    baselineAccept: [],
+    baselineReview: false,
+    baselinePrune: false,
     doctor: false,
     root: process.cwd(),
     showAll: false,
@@ -145,6 +155,15 @@ function parseArgs(argv: string[]): Args {
   const positional: string[] = []
 
   for (const arg of argv) {
+    if (arg.startsWith('--baseline-accept=')) {
+      const values = arg.slice('--baseline-accept='.length).split(',')
+      for (const value of values) {
+        const match = /^([a-f0-9]{64})(?::([1-9]\d*))?$/i.exec(value)
+        if (!match || !Number.isSafeInteger(Number(match[2] ?? 1))) argumentError('--baseline-accept requires fingerprint[:count] entries from --baseline-review')
+        args.baselineAccept.push({ fingerprint: match[1]!.toLowerCase(), count: Number(match[2] ?? 1) })
+      }
+      continue
+    }
     if (arg === '--baseline-migrate' || arg.startsWith('--baseline-migrate=')) {
       const value = arg === '--baseline-migrate' ? DEFAULT_BASELINE_PATH : arg.slice('--baseline-migrate='.length)
       if (!value || args.baselineMigrate !== null) argumentError('--baseline-migrate requires one baseline file')
@@ -242,6 +261,12 @@ function parseArgs(argv: string[]): Args {
       case '--doctor':
         args.doctor = true
         break
+      case '--baseline-review':
+        args.baselineReview = true
+        break
+      case '--baseline-prune':
+        args.baselinePrune = true
+        break
       case '--no-excerpts':
         args.noExcerpts = true
         break
@@ -294,6 +319,12 @@ const HELP = `
                              ones are reported (default ${DEFAULT_BASELINE_PATH})
         --baseline-write[=F] Record the current findings as a new baseline and exit
         --baseline-migrate[=F] Print an upgraded baseline as JSON; leave F unchanged
+        --baseline-review   Preview retained, unmatched and unaccepted findings;
+                             supports --baseline[=F] and --json
+        --baseline-prune    Print a baseline retaining only matched acceptances;
+                             leave the original unchanged; requires full coverage
+        --baseline-accept=IDS  Print a candidate accepting fingerprint[:count] entries
+                               from --baseline-review; default count 1; repeatable
         --only=IDS    Run matching rules (comma-separated, repeatable)
         --skip=IDS    Exclude matching rules
         --sarif[=F]   Write a SARIF 2.1.0 log for CI code scanning
@@ -340,6 +371,13 @@ async function main(): Promise<void> {
   if (args.version) {
     process.stdout.write(`${VERSION}\n`)
     return finish(0)
+  }
+  if (args.baselineReview || args.baselinePrune || args.baselineAccept.length) {
+    if ([args.baselineReview, args.baselinePrune, args.baselineAccept.length > 0].filter(Boolean).length > 1 || args.doctor || args.explainConfig || args.listRules || args.buildInfo ||
+        args.baselineMigrate !== null || args.baselineWrite !== null || args.baselineWriteDefault || args.report !== null ||
+        args.sarif !== null || args.fixPrompt || args.changedSince !== null || args.bestEffort || args.open || args.verbose || args.showAll) {
+      argumentError('baseline review/prune/accept cannot be combined with other operation, output, or view modes')
+    }
   }
   if (args.doctor) {
     if (args.buildInfo || args.listRules || args.explainConfig || args.fixPrompt || args.baselineMigrate !== null ||
@@ -475,6 +513,32 @@ async function main(): Promise<void> {
   }
 
   const scanned = await scan(args.root, { only, skip, honorIgnoreMarkers: !args.noIgnoreMarkers })
+
+  if (args.baselineReview || args.baselinePrune || args.baselineAccept.length) {
+    const source = baselinePath ?? resolve(args.root, DEFAULT_BASELINE_PATH)
+    // 仅隐式默认基线缺失时允许从空记录开始；显式路径缺失仍然报错。
+    const baselineMissing = baselinePath === null && !args.baselinePrune && !existsSync(source)
+    const baseline = baselineMissing ? buildBaseline([]) : readBaseline(source)
+    if (args.baselineAccept.length) {
+      if (!canPruneBaseline(scanned)) throw new BaselineError('Acceptance requires a complete, unfiltered scan without source suppressions. No baseline was changed.')
+      const candidate = acceptBaseline(scanned.findings, baseline, args.baselineAccept)
+      // 保留旧条目时逐字段脱敏，避免手工编辑的基线被原样输出。
+      candidate.entries = candidate.entries.map(entry => ({ ...entry, fingerprint: cleanForOutput(entry.fingerprint),
+        ruleId: cleanForOutput(entry.ruleId), file: entry.file === null ? null : cleanForOutput(entry.file), title: cleanForOutput(entry.title) }))
+      process.stdout.write(serializeBaseline(candidate))
+      process.stderr.write('canship: candidate baseline printed; only selected counts accepted. Source baseline unchanged. Review before saving to a different file.\n')
+      return finish(0)
+    }
+    if (args.baselinePrune) {
+      if (!canPruneBaseline(scanned)) throw new BaselineError('Pruning requires a complete, unfiltered scan without source suppressions. No baseline was changed.')
+      process.stdout.write(serializeBaseline(pruneBaseline(scanned.findings, baseline)))
+      process.stderr.write('canship: candidate baseline printed; no new findings accepted. Source baseline unchanged. Review before saving to a different file.\n')
+      return finish(0)
+    }
+    const review = createBaselineReview(scanned, baseline, !baselineMissing)
+    process.stdout.write(args.json ? `${JSON.stringify(review, null, 2)}\n` : renderBaselineReview(review))
+    return finish(scanned.partial || scanned.filesScanned === 0 || scanned.errors.length > 0 || scanned.skipped.length > 0 ? 3 : 0)
+  }
 
   if (args.baselineMigrate !== null) {
     if (scanned.partial || scanned.ruleSelection !== null) throw new BaselineError('Migration requires a complete scan without rule selection. No baseline was changed.')

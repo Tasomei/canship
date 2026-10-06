@@ -161,6 +161,17 @@ void code; void id;
   const migrated = cli([open, '--baseline-migrate'])
   assert.equal(migrated.status, 0)
   assert.equal(JSON.parse(migrated.stdout).version, 3)
+  const baselineReview = cli([open, '--baseline-review', '--json'])
+  assert.equal(baselineReview.status, 0)
+  assert.equal(JSON.parse(baselineReview.stdout).counts.retained, 1)
+  const pruned = cli([open, '--baseline-prune'])
+  assert.equal(pruned.status, 0)
+  assert.equal(JSON.parse(pruned.stdout).entries.length, 1)
+  const toAccept = JSON.parse(cli([readOnly, '--baseline-review', '--json']).stdout).unaccepted[0].fingerprint
+  const acceptedOne = cli([readOnly, `--baseline-accept=${toAccept}`])
+  assert.equal(acceptedOne.status, 0)
+  assert.equal(JSON.parse(acceptedOne.stdout).entries[0].count, 1)
+  assert.throws(() => readFileSync(join(readOnly, 'canship-baseline.json')), { code: 'ENOENT' })
   // 正常扫描不创建结果文件；输出指向项目源码时须保留原内容。
   const sourceBefore = readFileSync(join(clean,'index.ts'),'utf8')
   assert.equal(cli([clean, `--report=${join(clean,'index.ts')}`]).status,3)
