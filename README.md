@@ -161,7 +161,7 @@ console.log(summarize(result))
 
 `scan()` returns all confidence levels. Options: `only`, `skip`, `honorIgnoreMarkers` (default `true`), `noExcerpts` (default `false`). It does not load configuration, apply baselines, write reports, or set process exit status. Invalid arguments throw. `listRules()` returns the rule catalogue; `getBuildInfo()` and `getCapabilities()` identify the build and permission boundaries.
 
-JSON uses [schemaVersion 1](./schemas/scan-report-v1.schema.json). Check `partial`, `errors`, `skipped`, and `filesScanned` independently of exit status. New reports include stable `errors[].code` values; older reports may omit them. SARIF includes evidence locations and execution diagnostics.
+JSON uses [schemaVersion 1](./schemas/scan-report-v1.schema.json). Check `partial`, `errors`, `skipped`, and `filesScanned` independently of exit status. New reports include stable `errors[].code` values; older reports may omit them. CLI failures include `[CODE]` on stderr without corrupting JSON stdout. SARIF includes evidence locations and execution diagnostics.
 
 Build identity distinguishes development, prerelease, and release artifacts. Only a clean checkout matching the version tag is marked as a release; this label is not publisher authentication. JSON includes optional `build` metadata; consumers must tolerate absent metadata and unknown diagnostic codes. `--version` retains its package-version format.
 

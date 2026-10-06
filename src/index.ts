@@ -8,6 +8,7 @@ import type { RuleDescription } from './rules/catalog.js'
 export { summarize } from './summary.js'
 export type { ScanSummary } from './summary.js'
 import type { ScanOptions as EngineOptions, ScanResult } from './types.js'
+import { ScanInputError } from './diagnostics.js'
 
 export type { Finding, EvidenceStep, ChangeView, Severity, Confidence, ScanResult, ScanError, SkippedFile, RuleSelection } from './types.js'
 export type { RuleDescription } from './rules/catalog.js'
@@ -27,28 +28,28 @@ export function listRules(): RuleDescription[] {
 
 /** 扫描指定目录，返回全部置信度结果；不自动应用基线或项目配置。 */
 export async function scan(root: string, options: ScanOptions = {}): Promise<ScanResult> {
-  if (typeof root !== 'string' || root.length === 0) throw new TypeError('Scan root must be a non-empty path.')
+  if (typeof root !== 'string' || root.length === 0) throw new ScanInputError('Scan root must be a non-empty path.')
   if (options === null || typeof options !== 'object' || Array.isArray(options)) {
-    throw new TypeError('Scan options must be an object.')
+    throw new ScanInputError('Scan options must be an object.')
   }
   const allowed = new Set(['only', 'skip', 'honorIgnoreMarkers', 'noExcerpts'])
-  if (Object.keys(options).some(key => !allowed.has(key))) throw new TypeError('Unknown scan option.')
+  if (Object.keys(options).some(key => !allowed.has(key))) throw new ScanInputError('Unknown scan option.')
   for (const name of ['honorIgnoreMarkers', 'noExcerpts'] as const) {
-    if (options[name] !== undefined && typeof options[name] !== 'boolean') throw new TypeError('Expected a boolean scan option.')
+    if (options[name] !== undefined && typeof options[name] !== 'boolean') throw new ScanInputError('Expected a boolean scan option.')
   }
   for (const name of ['only', 'skip'] as const) {
     const values = options[name]
     if (values !== undefined && (!Array.isArray(values) ||
         [...values].some(value => typeof value !== 'string' || !isKnownSelector(value)))) {
-      throw new TypeError('Rule selectors must be an array of known IDs or namespaces.')
+      throw new ScanInputError('Rule selectors must be an array of known IDs or namespaces.')
     }
   }
-  if (options.only?.length && options.skip?.length) throw new TypeError('only and skip are mutually exclusive.')
+  if (options.only?.length && options.skip?.length) throw new ScanInputError('only and skip are mutually exclusive.')
   const directory = resolve(root)
   try {
     if (!statSync(directory).isDirectory()) throw new Error('not a directory')
   } catch {
-    throw new Error('Scan root must be an accessible directory.')
+    throw Object.assign(new Error('Scan root must be an accessible directory.'), {code:'SCAN_ROOT_UNAVAILABLE'})
   }
   const result = await scanEngine(directory, {
     only: [...(options.only ?? [])], skip: [...(options.skip ?? [])],

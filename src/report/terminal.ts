@@ -26,6 +26,8 @@ export interface RenderOptions {
   version?: string
   /** 预期退出码；由调用方按完整结果计算。 */
   exitCode?: 0 | 1 | 2 | 3
+  /** 文件输出失败等扫描之外的最终退出原因。 */
+  exitReason?: string
   /** 输出宽度；默认取终端列数。 */
   width?: number
   /** 原命令的读取选项；不安全或已脱敏的参数不生成可复制命令。 */
@@ -244,7 +246,7 @@ function renderNext(result: ScanResult, opts: RenderOptions, width: number): str
       2: 'findings present, none blocking',
       3: 'scan incomplete',
     }[opts.exitCode]
-    out.push(dim(`exit ${opts.exitCode} · ${reason}`))
+    out.push(dim(`exit ${opts.exitCode} · ${opts.exitReason ?? reason}`))
   }
   out.push('')
   return out

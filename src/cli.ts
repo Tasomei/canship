@@ -29,6 +29,7 @@ import { RULE_CATALOG, renderRuleCatalog } from './rules/catalog.js'
 import { changedFilesSince, changedFileView, ChangeViewError } from './changes.js'
 import { canOpen, openReport } from './open.js'
 import { VERSION, getBuildInfo, getCapabilities, buildLabel } from './build-info.js'
+import type { DiagnosticCode } from './diagnostics.js'
 
 interface Args {
   buildInfo: boolean
@@ -74,6 +75,11 @@ function finish(code: number): void {
 
 /** 参数错误由入口统一输出，避免提前终止异步写入。 */
 class ArgumentError extends Error {}
+
+/** 稳定代码供脚本识别；消息始终清理后写入标准错误。 */
+function writeError(code: DiagnosticCode, message: string): void {
+  process.stderr.write(`${red('canship:')} [${code}] ${cleanForOutput(message)}\n`)
+}
 
 /** 清理参数错误并中止当前处理流程。 */
 function argumentError(message: string): never {
@@ -394,10 +400,12 @@ async function main(): Promise<void> {
   }
 
   if (!existsSync(args.root) || !statSync(args.root).isDirectory()) {
-    process.stderr.write(`${red('canship:')} not a directory: ${cleanForOutput(args.root)}\n`)
+    writeError('SCAN_ROOT_UNAVAILABLE', `not a directory: ${args.root}`)
     return finish(3)
   }
   if (args.open && args.report === null) argumentError('--open requires --report')
+  const outputPath = (path: string): string => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path)
+  if (args.report && args.sarif && outputPath(args.report) === outputPath(args.sarif)) argumentError('HTML and SARIF outputs must use different paths')
   if (args.changedSince !== null && (args.baselineWrite !== null || args.baselineWriteDefault)) {
     argumentError('--changed-since cannot be combined with --baseline-write')
   }
@@ -409,7 +417,7 @@ async function main(): Promise<void> {
     config = args.noConfig ? {} : loadConfig(args.root).config
   } catch (err) {
     if (err instanceof ConfigError) {
-      process.stderr.write(`${red('canship:')} ${cleanForOutput(err.message)}\n`)
+      writeError('CONFIG_INVALID', err.message)
       return finish(3)
     }
     throw err
@@ -469,9 +477,7 @@ async function main(): Promise<void> {
     try {
       writeBaseline(target, baseline)
     } catch (err) {
-      process.stderr.write(
-        `${red('canship:')} could not write baseline to ${cleanForOutput(target)}\n${cleanForOutput(String(err))}\n`,
-      )
+      writeError('OUTPUT_WRITE_FAILED', `could not write baseline to ${target}: ${String(err)}`)
       return finish(3)
     }
     const accepted = scanned.findings.length
@@ -513,7 +519,7 @@ async function main(): Promise<void> {
       baselineStale = applied.stale
     } catch (err) {
       if (err instanceof BaselineError) {
-        process.stderr.write(`${red('canship:')} ${cleanForOutput(err.message)}\n`)
+        writeError('BASELINE_INVALID', err.message)
         return finish(3)
       }
       throw err
@@ -531,7 +537,9 @@ async function main(): Promise<void> {
   const shown = showAll ? result.findings : result.findings.filter((f) => f.confidence === 'certain')
   const hiddenLikely = showAll ? 0 : result.findings.filter((f) => f.confidence === 'likely').length
   // 严重确定结果优先，其次为其他结果，最后判断完整性；报告写入失败时另行退出 3。
-  const exitCode = scanExitCode(fullResult, bestEffort)
+  const reportMessages: string[] = []
+  const reportsWritten = writeReports()
+  const exitCode = reportsWritten ? scanExitCode(fullResult, bestEffort) : 3
 
   if (args.fixPrompt) {
     const prompt = renderFixPrompt(shown, {
@@ -577,85 +585,57 @@ async function main(): Promise<void> {
           verbose: args.verbose,
           version: buildLabel(),
           exitCode,
+          ...(!reportsWritten ? { exitReason: 'report output failed' } : {}),
           rerunArgs: followupArgs(process.argv.slice(2)),
         },
       )}\n`,
     )
   }
 
-  // SARIF 文件可与标准输出模式组合。
-  if (args.sarif) {
-    const target = resolve(args.sarif)
-    try {
-      writeOutput(
-        target,
-        renderSarif(
-          { ...result, findings: shown },
-          {
-            version: VERSION,
-            build: getBuildInfo(),
-            baselineSuppressed,
-            hiddenLikely,
-            ruleSelection: selectionPhrase(result.ruleSelection),
-          },
-        ),
-        'sarif',
-      )
-      if (!args.json && !args.fixPrompt) {
-        process.stdout.write(`SARIF written to ${cleanForOutput(target)}\n`)
-      }
-    } catch (err) {
-      process.stderr.write(
-        `${red('canship:')} could not write SARIF to ${cleanForOutput(target)}\n${cleanForOutput(String(err))}\n`,
-      )
-      return finish(3)
-    }
-  }
-
-  // HTML 报告独立写入文件。
-  if (args.report) {
-    const target = resolve(args.report)
-    try {
-      writeOutput(
-        target,
-        renderHtml(
-          { ...result, findings: shown },
-          {
-            root: displayRoot,
-            generatedAt: new Date().toISOString(),
-            version: buildLabel(),
-            hiddenLikely,
-            baselineSuppressed,
-            baselineStale,
-            baselinePath: baselinePath === null ? null : cleanForOutput(baselinePath),
-          },
-        ),
-        'html',
-      )
-      if (!args.json && !args.fixPrompt) {
-        process.stdout.write(`Report written to ${cleanForOutput(target)}\n`)
-      }
-      // 提示写入标准错误，避免破坏 JSON 或修复指令输出。
-      if (args.open) {
-        if (canOpen(process.env, process.stdout.isTTY === true)) {
-          openReport(target, message => process.stderr.write(`canship: ${cleanForOutput(message)}\n`), { root: args.root })
-        } else {
-          process.stderr.write('canship: not opening the report in CI or a non-interactive session\n')
-        }
-      }
-    } catch (err) {
-      process.stderr.write(
-        `${red('canship:')} could not write report to ${cleanForOutput(target)}\n${cleanForOutput(String(err))}\n`,
-      )
-      return finish(3)
-    }
-  }
-
+  for (const message of reportMessages) process.stdout.write(`${message}\n`)
   return finish(exitCode)
+
+  /** 先完成文件输出，再显示最终退出状态；失败时仍保留标准输出报告。 */
+  function writeReports(): boolean {
+    if (args.sarif) {
+      const target = resolve(args.sarif)
+      try {
+        writeOutput(target, renderSarif({ ...result, findings: shown }, {
+          version: VERSION, build: getBuildInfo(), baselineSuppressed, hiddenLikely,
+          ruleSelection: selectionPhrase(result.ruleSelection),
+        }), 'sarif')
+        if (!args.json && !args.fixPrompt) reportMessages.push(`SARIF written to ${cleanForOutput(target)}`)
+      } catch (err) {
+        writeError('OUTPUT_WRITE_FAILED', `could not write SARIF to ${target}: ${String(err)}`)
+        return false
+      }
+    }
+    if (args.report) {
+      const target = resolve(args.report)
+      try {
+        writeOutput(target, renderHtml({ ...result, findings: shown }, {
+          root: displayRoot, generatedAt: new Date().toISOString(), version: buildLabel(), hiddenLikely,
+          baselineSuppressed, baselineStale, baselinePath: baselinePath === null ? null : cleanForOutput(baselinePath),
+        }), 'html')
+        if (!args.json && !args.fixPrompt) reportMessages.push(`Report written to ${cleanForOutput(target)}`)
+        if (args.open) {
+          if (canOpen(process.env, process.stdout.isTTY === true)) {
+            openReport(target, message => process.stderr.write(`canship: ${cleanForOutput(message)}\n`), { root: args.root })
+          } else process.stderr.write('canship: not opening the report in CI or a non-interactive session\n')
+        }
+      } catch (err) {
+        writeError('OUTPUT_WRITE_FAILED', `could not write report to ${target}: ${String(err)}`)
+        return false
+      }
+    }
+    return true
+  }
 }
 
 main().catch((err: unknown) => {
-  if (err instanceof ArgumentError || err instanceof ChangeViewError || err instanceof BaselineError) process.stderr.write(`canship: ${cleanForOutput(err.message)}\n`)
-  else process.stderr.write(`${red('canship: unexpected error')}\n${cleanForOutput(String(err))}\n`)
+  if (err instanceof ArgumentError) writeError('INVALID_ARGUMENT',err.message)
+  else if (err instanceof ChangeViewError) writeError('GIT_REFERENCE_INVALID',err.message)
+  else if (err instanceof BaselineError) writeError('BASELINE_INVALID',err.message)
+  else writeError('INTERNAL_ERROR',String(err))
   finish(3)
 })

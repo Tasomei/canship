@@ -132,6 +132,9 @@ void code; void id;
   // 正常扫描不创建结果文件；输出指向项目源码时须保留原内容。
   const sourceBefore = readFileSync(join(clean,'index.ts'),'utf8')
   assert.equal(cli([clean, `--report=${join(clean,'index.ts')}`]).status,3)
+  const failedOutput = cli([clean, `--report=${join(clean,'index.ts')}`])
+  assert.match(failedOutput.stdout,/exit 3 · report output failed/)
+  assert.match(failedOutput.stderr,/\[OUTPUT_WRITE_FAILED\]/)
   assert.equal(readFileSync(join(clean,'index.ts'),'utf8'),sourceBefore)
   const privateExcerpt = sample('excerpt', { 'cors.ts': "const note='PRIVATE_SMOKE_SENTINEL'; app.use(cors({origin:true,credentials:true}));" })
   const html = join(root, 'report.html')
