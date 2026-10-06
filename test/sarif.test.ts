@@ -5,7 +5,7 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Finding, ScanResult } from '../src/types.js'
 import { renderSarif } from '../src/report/sarif.js'
-import { fingerprintOf } from '../src/baseline.js'
+import { fingerprintOf, legacyFingerprintOf } from '../src/baseline.js'
 
 function finding(over: Partial<Finding> = {}): Finding {
   return {
@@ -119,7 +119,8 @@ describe('fingerprints', () => {
   test('are the baseline fingerprint, not a second identity', () => {
     // SARIF 和基线共用身份算法。
     const f = finding()
-    assert.equal(sarif().runs[0].results[0].partialFingerprints.canshipFindingV2, fingerprintOf(f))
+    assert.equal(sarif().runs[0].results[0].partialFingerprints.canshipFindingV3, fingerprintOf(f))
+    assert.equal(sarif().runs[0].results[0].partialFingerprints.canshipFindingV2, legacyFingerprintOf(f))
   })
 
   test('do not change when a line moves', () => {

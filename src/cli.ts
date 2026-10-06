@@ -1,7 +1,8 @@
 /** 命令行入口：解析选项、生成报告并计算退出码。 */
 
 import { isAbsolute, relative as relative_, resolve } from 'node:path'
-import { existsSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, realpathSync, statSync } from 'node:fs'
+import { writeOutput } from './output.js'
 import { scan, cleanForOutput } from './engine.js'
 import type { RuleSelection } from './types.js'
 import { renderReport } from './report/terminal.js'
@@ -15,6 +16,8 @@ import { followupArgs } from './report/commands.js'
 import {
   applyBaseline,
   buildBaseline,
+  migrateBaseline,
+  serializeBaseline,
   readBaseline,
   writeBaseline,
   BaselineError,
@@ -31,6 +34,7 @@ declare const __CANSHIP_VERSION__: string | undefined
 const VERSION = typeof __CANSHIP_VERSION__ === 'string' ? __CANSHIP_VERSION__ : '0.0.0-dev'
 
 interface Args {
+  baselineMigrate: string | null
   root: string
   showAll: boolean
   json: boolean
@@ -155,6 +159,7 @@ function parseArgs(argv: string[]): Args {
     help: false,
     version: false,
     listRules: false,
+    baselineMigrate: null,
     noExcerpts: false,
     changedSince: null,
     verbose: false,
@@ -163,6 +168,12 @@ function parseArgs(argv: string[]): Args {
   const positional: string[] = []
 
   for (const arg of argv) {
+    if (arg === '--baseline-migrate' || arg.startsWith('--baseline-migrate=')) {
+      const value = arg === '--baseline-migrate' ? DEFAULT_BASELINE_PATH : arg.slice('--baseline-migrate='.length)
+      if (!value || args.baselineMigrate !== null) argumentError('--baseline-migrate requires one baseline file')
+      args.baselineMigrate = arg === '--baseline-migrate' ? '' : value
+      continue
+    }
     if (arg.startsWith('--changed-since=')) {
       if (args.changedSince !== null || arg === '--changed-since=') argumentError('--changed-since requires one non-empty reference')
       args.changedSince = arg.slice('--changed-since='.length)
@@ -296,6 +307,7 @@ const HELP = `
         --baseline[=F]       Hide findings already recorded in F, so only new
                              ones are reported (default ${DEFAULT_BASELINE_PATH})
         --baseline-write[=F] Record the current findings as a new baseline and exit
+        --baseline-migrate[=F] Print an upgraded baseline as JSON; leave F unchanged
         --only=IDS    Run matching rules (comma-separated, repeatable)
         --skip=IDS    Exclude matching rules
         --sarif[=F]   Write a SARIF 2.1.0 log for CI code scanning
@@ -359,6 +371,10 @@ async function main(): Promise<void> {
   if (args.json && args.fixPrompt) {
     argumentError('--json and --fix-prompt are mutually exclusive')
   }
+  if (args.baselineMigrate !== null && (args.baseline !== null || args.baselineDefault || args.baselineWrite !== null || args.baselineWriteDefault ||
+      args.report !== null || args.sarif !== null || args.json || args.fixPrompt || args.open || args.changedSince !== null || args.bestEffort || args.only.length || args.skip.length)) {
+    argumentError('--baseline-migrate cannot be combined with baseline, output, view, best-effort, or rule-selection options')
+  }
   // 读取和写入基线互斥，避免将已抑制的结果遗漏出新基线。
   if (
     (args.baseline !== null || args.baselineDefault) &&
@@ -421,6 +437,16 @@ async function main(): Promise<void> {
           : null
 
   const scanned = await scan(args.root, { only, skip, honorIgnoreMarkers: !args.noIgnoreMarkers })
+
+  if (args.baselineMigrate !== null) {
+    if (scanned.partial || scanned.ruleSelection !== null) throw new BaselineError('Migration requires a complete scan without rule selection. No baseline was changed.')
+    const source = args.baselineMigrate === '' ? resolve(args.root, DEFAULT_BASELINE_PATH) : resolve(args.baselineMigrate)
+    const migrated = migrateBaseline(scanned.findings, readBaseline(source))
+    process.stdout.write(serializeBaseline(migrated))
+    const accepted = migrated.entries.reduce((total, entry) => total + entry.count, 0)
+    process.stderr.write(`canship: migrated ${accepted} accepted findings; ${scanned.findings.length - accepted} current findings remain unaccepted. Source baseline unchanged.\n`)
+    return finish(0)
+  }
 
   // 写入基线后结束；成功表示记录完成，不表示问题已修复。
   if (args.baselineWrite !== null || args.baselineWriteDefault) {
@@ -550,7 +576,7 @@ async function main(): Promise<void> {
   if (args.sarif) {
     const target = resolve(args.sarif)
     try {
-      writeFileSync(
+      writeOutput(
         target,
         renderSarif(
           { ...result, findings: shown },
@@ -561,7 +587,7 @@ async function main(): Promise<void> {
             ruleSelection: selectionPhrase(result.ruleSelection),
           },
         ),
-        'utf8',
+        'sarif',
       )
       if (!args.json && !args.fixPrompt) {
         process.stdout.write(`SARIF written to ${cleanForOutput(target)}\n`)
@@ -578,7 +604,7 @@ async function main(): Promise<void> {
   if (args.report) {
     const target = resolve(args.report)
     try {
-      writeFileSync(
+      writeOutput(
         target,
         renderHtml(
           { ...result, findings: shown },
@@ -592,7 +618,7 @@ async function main(): Promise<void> {
             baselinePath: baselinePath === null ? null : cleanForOutput(baselinePath),
           },
         ),
-        'utf8',
+        'html',
       )
       if (!args.json && !args.fixPrompt) {
         process.stdout.write(`Report written to ${cleanForOutput(target)}\n`)
@@ -617,7 +643,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  if (err instanceof ArgumentError || err instanceof ChangeViewError) process.stderr.write(`canship: ${err.message}\n`)
+  if (err instanceof ArgumentError || err instanceof ChangeViewError || err instanceof BaselineError) process.stderr.write(`canship: ${cleanForOutput(err.message)}\n`)
   else process.stderr.write(`${red('canship: unexpected error')}\n${cleanForOutput(String(err))}\n`)
   finish(3)
 })

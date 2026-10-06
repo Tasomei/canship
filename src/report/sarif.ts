@@ -1,7 +1,7 @@
 /** 生成 SARIF 2.1.0 报告，用于代码扫描平台。 */
 
 import type { Finding, ScanResult } from '../types.js'
-import { fingerprintOf } from '../baseline.js'
+import { fingerprintOf, legacyFingerprintOf } from '../baseline.js'
 import { BLOCKING } from '../types.js'
 import { changeViewNotice } from './shared.js'
 
@@ -111,7 +111,7 @@ function resultsOf(findings: Finding[]): unknown[] {
               },
             },
           ],
-    partialFingerprints: { canshipFindingV2: fingerprintOf(f) },
+    partialFingerprints: { canshipFindingV2: legacyFingerprintOf(f), canshipFindingV3: fingerprintOf(f) },
     ...(f.evidence?.length ? {
       relatedLocations: f.evidence.map((step, index) => ({
         id: index + 1,

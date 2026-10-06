@@ -68,11 +68,11 @@ describe('fingerprint identity', () => {
     )
   })
 
-  test('rule, file and title each change it', () => {
+  test('rule and file change identity; presentation changes do not', () => {
     const base = fingerprintOf(finding())
     assert.notEqual(base, fingerprintOf(finding({ ruleId: 'secrets/hardcoded/stripe-live' })))
     assert.notEqual(base, fingerprintOf(finding({ file: 'lib/other.ts' })))
-    assert.notEqual(base, fingerprintOf(finding({ title: 'Something else entirely' })))
+    assert.equal(base, fingerprintOf(finding({ title: '另一种展示文案' })))
   })
 
   test('field values cannot be rearranged into each other', () => {

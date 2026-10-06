@@ -90,6 +90,7 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 | `--only=ids` / `--skip=ids` | Select/exclude rules or namespaces; comma-separated, repeatable |
 | `--list-rules` | List rules without scanning; supports `--only` / `--skip` and `--json` |
 | `--baseline[=file]` / `--baseline-write[=file]` | Suppress/record findings; default `canship-baseline.json` |
+| `--baseline-migrate[=file]` | Print a migrated baseline as JSON; preserve the source file |
 | `--no-config` / `--no-ignore-markers` | Ignore project configuration/source suppression comments |
 | `--best-effort` | Allow incomplete coverage with no findings to exit `0` |
 | `-h`, `--help` / `-v`, `--version` | Show help/version |
@@ -108,7 +109,9 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 
 A standalone `canship-ignore-file` comment excludes a file. `canship-ignore-next-line [rule]` suppresses the next line, optionally for one rule. Exclusions are disclosed and may reduce status to `0` without marking coverage incomplete. For untrusted projects, use `--no-config --no-ignore-markers`.
 
-Baselines accept existing findings without fixing them. Format v2 tolerates line moves but reports credential changes.
+Baselines accept existing findings without fixing them. New baselines use v3: identity ignores title, language, and line moves, but changes when source evidence changes. v2 remains readable; SARIF retains the v2 fingerprint alongside v3.
+
+`--baseline-migrate` requires a complete, unfiltered scan and matching existing entries. It accepts no new findings, prints v3 JSON, and leaves the old file unchanged. Review the output before saving it to a different file. Reports and baselines are written atomically; existing unrelated files and symbolic-link targets are not overwritten.
 
 Default paths are relative to the scan directory; explicit paths are relative to the working directory. Read/write modes are mutually exclusive. Missing, invalid, or v1 baselines exit `3`. A successful write exits `0`, with a warning for incomplete or selective scans.
 

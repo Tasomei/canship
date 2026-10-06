@@ -224,7 +224,7 @@ test('an old baseline fails explicitly and is left untouched', () => {
   const before = readFileSync(join(root, 'canship-baseline.json'), 'utf8')
   const result = cli(root, '--baseline', '--json')
   assert.equal(result.status, 3)
-  assert.match(result.stderr, /reads version 2/)
+  assert.match(result.stderr, /reads version 3/)
   assert.match(result.stderr, /--baseline-write/)
   assert.equal(readFileSync(join(root, 'canship-baseline.json'), 'utf8'), before)
 })

@@ -1,11 +1,12 @@
 /** 基线记录已接受的结果，仅报告新增问题；文件仍会披露路径、规则和标题。 */
 
 import { createHash } from 'node:crypto'
-import { readFileSync, statSync, writeFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
+import { writeOutput } from './output.js'
 import type { Finding } from './types.js'
 
 /** 基线格式版本；拒绝读取未知版本。 */
-export const BASELINE_VERSION = 2
+export const BASELINE_VERSION = 3
 
 /** 未指定路径时的基线文件名。 */
 export const DEFAULT_BASELINE_PATH = 'canship-baseline.json'
@@ -28,10 +29,15 @@ export interface BaselineFile {
   entries: BaselineEntry[]
 }
 
-/** 按规则、路径、标题和原始来源摘要生成指纹；不包含行号，以空字符分隔字段。 */
+/** 旧指纹仅用于兼容 v2；迁移时采用旧条目标题验证原证据。 */
+export function legacyFingerprintOf(f: Finding): string {
+  return createHash('sha256').update([f.ruleId, f.file ?? '', f.title, f.sourceFingerprint ?? f.excerpt ?? ''].join('\u0000')).digest('hex')
+}
+
+/** v3 身份不依赖行号、标题或语言；同规则同来源的多个问题以计数区分。 */
 export function fingerprintOf(f: Finding): string {
   // 摘录已经丢失密钥中间部分，不能再用于源文件结果的身份判断。
-  const identity = [f.ruleId, f.file ?? '', f.title, f.sourceFingerprint ?? f.excerpt ?? ''].join('\u0000')
+  const identity = ['v3', f.ruleId, f.file ?? '', f.sourceFingerprint ?? f.excerpt ?? ''].join('\u0000')
   return createHash('sha256').update(identity, 'utf8').digest('hex')
 }
 
@@ -70,7 +76,7 @@ export function serializeBaseline(baseline: BaselineFile): string {
 
 /** 写入基线；失败时抛出异常。 */
 export function writeBaseline(path: string, baseline: BaselineFile): void {
-  writeFileSync(path, serializeBaseline(baseline), 'utf8')
+  writeOutput(path, serializeBaseline(baseline), 'baseline')
 }
 
 /** 基线读取或校验错误。 */
@@ -127,7 +133,7 @@ export function readBaseline(path: string): BaselineFile {
   const obj = parsed as Record<string, unknown>
 
   const version = obj['version']
-  if (version !== BASELINE_VERSION) {
+  if (version !== 2 && version !== BASELINE_VERSION) {
     throw new BaselineError(
       `baseline ${path} has version ${String(version)}; this canship reads version ${BASELINE_VERSION}. ` +
         'Review the findings and regenerate the baseline with --baseline-write.',
@@ -152,7 +158,7 @@ export function readBaseline(path: string): BaselineFile {
   }
 
   const generatedAt = typeof obj['generatedAt'] === 'string' ? obj['generatedAt'] : ''
-  return { version: BASELINE_VERSION, generatedAt, entries }
+  return { version, generatedAt, entries }
 }
 
 /** 基线应用结果。 */
@@ -166,20 +172,31 @@ export interface BaselineApplication {
 }
 
 /** 按计数消耗指纹额度；超出额度的重复问题仍需报告。 */
-export function applyBaseline(findings: Finding[], baseline: BaselineFile): BaselineApplication {
+function matchBaseline(findings: Finding[], baseline: BaselineFile): BaselineApplication & { accepted: Finding[] } {
+  if (![2, BASELINE_VERSION].includes(baseline.version)) throw new BaselineError('Unsupported baseline version.')
   const remaining = new Map<string, number>()
+  const legacy = new Map<string, BaselineEntry[]>()
   for (const entry of baseline.entries) {
     remaining.set(entry.fingerprint, (remaining.get(entry.fingerprint) ?? 0) + entry.count)
+    if (baseline.version === 2) {
+      const key = JSON.stringify([entry.ruleId, entry.file])
+      legacy.set(key, [...(legacy.get(key) ?? []), entry])
+    }
   }
 
   const kept: Finding[] = []
   let suppressed = 0
+  const accepted: Finding[] = []
   for (const f of findings) {
-    const fp = fingerprintOf(f)
+    const fp = baseline.version === 2
+      ? legacy.get(JSON.stringify([f.ruleId, f.file]))?.find(entry => (remaining.get(entry.fingerprint) ?? 0) > 0 &&
+        legacyFingerprintOf({ ...f, title: entry.title }) === entry.fingerprint)?.fingerprint ?? ''
+      : fingerprintOf(f)
     const budget = remaining.get(fp) ?? 0
     if (budget > 0) {
       remaining.set(fp, budget - 1)
       suppressed++
+      accepted.push(f)
       continue
     }
     kept.push(f)
@@ -188,5 +205,17 @@ export function applyBaseline(findings: Finding[], baseline: BaselineFile): Base
   let stale = 0
   for (const left of remaining.values()) stale += left
 
+  return { kept, suppressed, stale, accepted }
+}
+
+export function applyBaseline(findings: Finding[], baseline: BaselineFile): BaselineApplication {
+  const { kept, suppressed, stale } = matchBaseline(findings, baseline)
   return { kept, suppressed, stale }
+}
+
+/** 只迁移仍匹配的接受记录；不接受新发现，不静默丢弃旧条目。 */
+export function migrateBaseline(findings: Finding[], baseline: BaselineFile): BaselineFile {
+  const matched = matchBaseline(findings, baseline)
+  if (matched.stale > 0) throw new BaselineError('Baseline migration requires all accepted entries to match. Review stale entries first; no output was written.')
+  return buildBaseline(matched.accepted)
 }
