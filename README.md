@@ -85,6 +85,7 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 | `--report[=file]` | Write HTML; default `canship-report.html` |
 | `--open` | Open `--report` output; disabled in CI and non-interactive shells |
 | `--json` | Print JSON |
+| `--workspace=path` | Scan explicit subprojects independently; repeatable, up to 32; terminal or JSON output |
 | `--compare=before.json` + `--with=after.json` | Compare saved scan reports without scanning; supports `--json` |
 | `--share-summary` | Print counts and scope flags without project text; supports `--json`, never uploads |
 | `--sarif[=file]` | Write SARIF 2.1.0; default `canship.sarif` |
@@ -96,7 +97,7 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 | `--list-rules` | List rules without scanning; supports `--only` / `--skip` and `--json` |
 | `--explain-config` | Show effective settings, sources, and selected rules without scanning; supports `--json` |
 | `--doctor` | Run read-only environment checks; supports `--json`, `--no-config`, `--baseline`, and output-path checks |
-| `--init[=config\|ci]` | Print a minimal configuration or pinned CI template without reading or changing project files |
+| `--init[=config\|ci\|ci-workspaces]` | Preview a minimal config, pinned CI workflow, or multi-project CI matrix; no file changes |
 | `--baseline[=file]` / `--baseline-write[=file]` | Suppress/record findings; default `canship-baseline.json` |
 | `--baseline-migrate[=file]` | Print a migrated baseline as JSON; preserve the source file |
 | `--baseline-review` | Compare accepted and current findings; supports `--baseline[=file]` and `--json` |
@@ -110,11 +111,15 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 
 `--json` and `--fix-prompt` are mutually exclusive; either supports HTML and SARIF output.
 
+Repeat `--workspace=apps/web --workspace=apps/admin` to scan selected directories separately. Paths must be literal, non-overlapping, and free of symlink components. Each project uses its own config and baseline; parent config and unselected sources are not inherited. CLI rule, exclusion, visibility, and privacy options override each project's settings; bare `--baseline` selects each project's default file. Results include configuration sources, per-project coverage, and full-confidence counts. A failed project makes the batch exit `3`; otherwise normal finding precedence applies. Only terminal and JSON (`kind: "workspace-report"`) are supported; use individual scans for HTML/SARIF or baseline maintenance.
+
 `--compare` reads two local v1 JSON reports (up to 10 MiB and 50,000 findings each). It lists added, persisting, and no-longer-observed records using stable identities and counts; missing source digests remain unpaired. Coverage gaps, filters, baselines, different roots, and changed or unverifiable scanner builds limit comparison. Exit `0` means no known comparison limitation, `2` means limited comparison, and `3` means invalid input—not the scan's release policy. Absence is not proof of remediation. No scanning or writes occur; titles, excerpts, and scan roots are omitted, but finding paths remain. This standalone mode accepts only `--json`; JSON uses `kind: "report-comparison"`.
 
 `--share-summary` counts all confidence levels after rule selection, source suppressions, and baselines, with the normal scan exit status. It omits paths, titles, identifiers, excerpts, and diagnostic details; handled failures show only a code and local troubleshooting advice. Detailed reports and changed-file views cannot be combined with it. JSON uses `kind: "share-summary"`, not the scan-report schema. Counts may still be sensitive; review before sharing.
 
 `--init` is a standalone preview: stdout contains the template; stderr names its intended destination. Review before saving. CI previews use the scanner's package version; confirm that version is published and review the Action pin before enabling the workflow.
+
+`--init=ci-workspaces` previews a matrix with independent jobs, `fail-fast: false`, and distinct SARIF categories. Replace sample paths and names before use. Project configuration and SARIF upload remain disabled; enabling upload also requires the appropriate permissions.
 
 `--changed-since` compares the local merge base with the working tree, including non-ignored untracked files. It does not fetch or narrow scan scope. Missing Git, refs, or shared history exits `3`; it cannot be combined with `--baseline-write`.
 

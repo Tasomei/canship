@@ -42,15 +42,17 @@ import { ScanCancelledError, ScanProgressError } from './scan-control.js'
 import { progressText } from './report/progress.js'
 import { createExclusions, isExclusionPath, MAX_EXCLUSIONS } from './exclusions.js'
 import { ComparisonError, compareReports, readComparisonInput, renderComparison } from './report/compare.js'
+import { MAX_WORKSPACES, WorkspaceError, scanWorkspaces, renderWorkspaces } from './workspaces.js'
 import { canPruneBaseline, createBaselineReview, renderBaselineReview, serializeBaselineCandidate } from './report/baseline-review.js'
 
 interface Args {
+  workspaces: string[]
   compare: string | null
   compareWith: string | null
   exclude: string[]
   noProgress: boolean
   shareSummary: boolean
-  init: 'config' | 'ci' | null
+  init: 'config' | 'ci' | 'ci-workspaces' | null
   baselinePolicy: BaselinePolicy
   baselineAccept: BaselineAcceptance[]
   baselineReview: boolean
@@ -164,6 +166,7 @@ function selectionPhrase(selection: RuleSelection | null): string | null {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
+    workspaces: [],
     compare: null,
     compareWith: null,
     exclude: [],
@@ -204,6 +207,12 @@ function parseArgs(argv: string[]): Args {
   const positional: string[] = []
 
   for (const arg of argv) {
+    if (arg.startsWith('--workspace=')) {
+      const value = arg.slice('--workspace='.length)
+      if (!isExclusionPath(value) || args.workspaces.length >= MAX_WORKSPACES) argumentError('--workspace requires 1–32 literal project-relative directories; no globs or traversal')
+      args.workspaces.push(value)
+      continue
+    }
     if (arg.startsWith('--compare=') || arg.startsWith('--with=')) {
       const key = arg.startsWith('--compare=') ? 'compare' : 'compareWith'
       const value = arg.slice(arg.indexOf('=') + 1)
@@ -219,7 +228,7 @@ function parseArgs(argv: string[]): Args {
     }
     if (arg === '--init' || arg.startsWith('--init=')) {
       const kind = arg === '--init' ? 'config' : arg.slice('--init='.length)
-      if (args.init !== null || (kind !== 'config' && kind !== 'ci')) argumentError('--init accepts config or ci, once only')
+      if (args.init !== null || (kind !== 'config' && kind !== 'ci' && kind !== 'ci-workspaces')) argumentError('--init accepts config, ci or ci-workspaces, once only')
       args.init = kind
       continue
     }
@@ -397,6 +406,8 @@ const HELP = `
         --open        With --report, open the report in the default browser
                       (skipped in CI and non-interactive shells)
         --json        Output raw JSON (for CI or tooling)
+        --workspace=PATH  Scan explicit, non-overlapping subprojects independently;
+                           repeatable, at most 32; terminal or --json output
         --compare=F --with=G  Compare earlier/later saved JSON reports; supports --json
                               no scan or writes; exit 0 complete, 2 limited, 3 invalid
         --share-summary  Print counts and scope flags only; supports --json; no upload
@@ -426,7 +437,7 @@ const HELP = `
         --doctor      Check runtime, directory, config, baseline and local Git;
                       supports --json, --no-config and --baseline;
                       --report/--sarif check paths only; no scanning or file writes
-        --init[=config|ci]  Print a configuration or CI template; never write files
+        --init[=config|ci|ci-workspaces]  Print a configuration or CI template; never write files
         --no-ignore-markers
                       Disregard canship-ignore-file and canship-ignore-next-line
                       markers; use with --no-config for untrusted projects
@@ -465,6 +476,22 @@ async function main(): Promise<void> {
     process.stdout.write(`${VERSION}\n`)
     return finish(0)
   }
+  if (args.workspaces.length) {
+    const allowed = new Set(['--json', '--all', '-a', '--verbose', '--no-config', '--no-ignore-markers', '--no-excerpts', '--best-effort', '--no-progress', '--baseline'])
+    const flags = process.argv.slice(2).filter(arg => arg.startsWith('-'))
+    if (flags.some(arg => !allowed.has(arg) && !/^--(?:workspace|only|skip|exclude)=/.test(arg))) {
+      argumentError('--workspace supports read-only scan options with terminal or --json output; use individual scans for reports, baseline maintenance, and other modes')
+    }
+    for (const selector of [...args.only, ...args.skip]) if (!isKnownSelector(selector)) argumentError('Unknown workspace rule selector.')
+    if (args.only.length && args.skip.length) argumentError('--only and --skip are mutually exclusive')
+    const result = await scanWorkspaces(args.root, args.workspaces, {
+      all: args.showAll, noConfig: args.noConfig, noExcerpts: args.noExcerpts, noIgnoreMarkers: args.noIgnoreMarkers,
+      bestEffort: args.bestEffort, baselineDefault: args.baselineDefault, only: args.only, skip: args.skip, exclude: args.exclude,
+    }, (root, options) => runScan({ ...args, root }, options))
+    process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n`
+      : renderWorkspaces(result, args.root, args.workspaces, flags.filter(arg => !arg.startsWith('--workspace=') && arg !== '--json'), args.verbose))
+    return finish(result.exitCode)
+  }
   if (args.compare !== null || args.compareWith !== null) {
     if (args.compare === null || args.compareWith === null || process.argv.slice(2).some(arg =>
       arg !== '--json' && !arg.startsWith('--compare=') && !arg.startsWith('--with='))) {
@@ -481,11 +508,11 @@ async function main(): Promise<void> {
     argumentError('--share-summary cannot be combined with detailed reports, changed views, or other operations')
   }
   if (args.init !== null) {
-    if (process.argv.slice(2).some(arg => !['--init', '--init=config', '--init=ci'].includes(arg))) argumentError('--init is a standalone preview mode; it accepts no path or other options')
+    if (process.argv.slice(2).some(arg => !['--init', '--init=config', '--init=ci', '--init=ci-workspaces'].includes(arg))) argumentError('--init is a standalone preview mode; it accepts no path or other options')
     process.stdout.write(renderInit(args.init, VERSION))
     process.stderr.write(args.init === 'config'
       ? 'canship: preview only. Review before saving as canship.config.json; no file was changed.\n'
-      : 'canship: CI preview only. Review the pinned Action and verify that the scanner version is published before saving as .github/workflows/canship.yml. Installation uses the network; scanning does not. No file was changed.\n')
+      : 'canship: CI preview only. Review project paths and the pinned Action, and verify that the scanner version is published before saving as .github/workflows/canship.yml. Installation uses the network; scanning does not. No file was changed.\n')
     return finish(0)
   }
   if (Object.keys(args.baselinePolicy).length > 0) {
@@ -858,6 +885,7 @@ main().catch((err: unknown) => {
   else if (err instanceof ChangeViewError) writeError('GIT_REFERENCE_INVALID',err.message)
   else if (err instanceof BaselineError) writeError('BASELINE_INVALID',err.message)
   else if (err instanceof ComparisonError) writeError('REPORT_COMPARISON_INVALID',err.message)
+  else if (err instanceof WorkspaceError) writeError('WORKSPACE_INVALID',err.message)
   else if (err instanceof ScanProgressError) writeError('PROGRESS_CALLBACK_FAILED',err.message)
   else writeError('INTERNAL_ERROR',String(err))
   finish(3)

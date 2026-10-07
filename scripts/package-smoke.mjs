@@ -74,6 +74,16 @@ try {
     return dir
   }
   const clean = sample('clean', { 'index.ts': 'export const value = 1;' })
+  const multiple = sample('workspaces', { 'apps/web/firestore.rules': 'match /items/{id} { allow write: if true; }',
+    'apps/admin/index.ts': 'export const ok=true;' })
+  const workspaces = cli([multiple, '--workspace=apps/web', '--workspace=apps/admin', '--json', '--no-excerpts'])
+  assert.equal(workspaces.status, 1)
+  const workspaceReport = JSON.parse(workspaces.stdout)
+  assert.equal(workspaceReport.kind, 'workspace-report')
+  assert.equal(workspaceReport.projects.length, 2)
+  assert.equal(workspaceReport.projects[0].report.findings[0].excerpt, null)
+  assert.equal(workspaceReport.projects[1].exitCode, 0)
+  assert.match(cli(['--init=ci-workspaces']).stdout, /fail-fast: false/)
   // 安装包的配置预览必须保持只读，且采用相同的命令行优先级。
   const configured = sample('configured', {
     'canship.config.json': JSON.stringify({ $schema: './missing-schema.json', only: ['firebase'], baseline: 'missing.json' }),

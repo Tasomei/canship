@@ -56,6 +56,23 @@ test('preview preserves an invalid existing config and emits content only on std
   assert.deepEqual(readdirSync(root).map(name => [name, readFileSync(join(root, name), 'utf8')]), before)
 })
 
+test('workspace CI preview isolates jobs and categories without enabling upload or project config', () => {
+  const text = renderInit('ci-workspaces', '0.7.1')
+  assert.match(text, /scan:\n    strategy:\n      fail-fast: false/)
+  assert.match(text, /- \{ name: web, path: apps\/web \}/)
+  assert.match(text, /- \{ name: admin, path: apps\/admin \}/)
+  assert.match(text, /path: \$\{\{ matrix.project.path \}\}/)
+  assert.match(text, /category: canship-\$\{\{ matrix.project.name \}\}/)
+  assert.match(text, /upload-sarif: false/)
+  assert.match(text, /use-config: false/)
+  assert.match(text, /contents: read/)
+  assert.doesNotMatch(text, /secrets\.|pull_request_target|security-events: write/)
+  const output = cli('--init=ci-workspaces')
+  assert.equal(output.status, 0, output.stderr)
+  assert.match(output.stdout, /matrix:/)
+  assert.match(output.stderr, /Review project paths/)
+})
+
 test('preview refuses ambiguous combinations and unsupported template names', () => {
   for (const flags of [['--init=unknown'], ['--init', '--init'], ['--init', '.'], ['--init', '--json'],
     ['--init', '--report'], ['--init', '--doctor'], ['--init', '--baseline-write']]) {

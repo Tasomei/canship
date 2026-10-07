@@ -85,6 +85,7 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 | `--report[=file]` | 写入 HTML，默认 `canship-report.html` |
 | `--open` | 打开 `--report` 输出；CI 和非交互终端中禁用 |
 | `--json` | 输出 JSON |
+| `--workspace=path` | 独立扫描指定子项目，可重复，最多 32 项；输出终端或 JSON 报告 |
 | `--compare=before.json` + `--with=after.json` | 比较已保存的扫描报告，不执行扫描，支持 `--json` |
 | `--share-summary` | 仅输出计数及范围标记，不含项目文本，支持 `--json`，不上传 |
 | `--sarif[=file]` | 写入 SARIF 2.1.0，默认 `canship.sarif` |
@@ -96,7 +97,7 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 | `--list-rules` | 列出规则而不扫描，支持 `--only` / `--skip` 筛选及 `--json` |
 | `--explain-config` | 展示生效设置、来源及规则选择，不执行扫描，支持 `--json` |
 | `--doctor` | 只读环境诊断，支持 `--json`、`--no-config`、`--baseline` 及输出路径预检 |
-| `--init[=config\|ci]` | 输出最小配置或固定版本的 CI 模板，不读取或修改项目文件 |
+| `--init[=config\|ci\|ci-workspaces]` | 预览最小配置、固定版本 CI 或多项目 CI 矩阵，不修改文件 |
 | `--baseline[=file]` / `--baseline-write[=file]` | 抑制或记录结果，默认 `canship-baseline.json` |
 | `--baseline-migrate[=file]` | 输出迁移后的基线 JSON，保留原文件 |
 | `--baseline-review` | 对照基线与当前结果，支持 `--baseline[=file]` 及 `--json` |
@@ -110,11 +111,15 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 
 `--json` 与 `--fix-prompt` 互斥，均可同时输出 HTML 和 SARIF。
 
+重复使用 `--workspace=apps/web --workspace=apps/admin` 独立扫描所选目录。路径须为字面相对路径，不得重叠或经过符号链接。各项目使用独立配置和基线，不继承父目录配置、不读取未选择的源码。命令行规则、排除、可见性及隐私选项覆盖各项目设置；裸 `--baseline` 读取各项目的默认基线。结果分别披露配置来源、覆盖状态及全部置信度计数。任一项目执行失败时整批退出 `3`，否则沿用扫描结果优先级。仅支持终端与 JSON（`kind: "workspace-report"`）；HTML/SARIF 及基线维护使用单项目扫描。
+
 `--compare` 读取两份本地 v1 JSON 报告，每份最多 10 MiB、50,000 条结果。按稳定身份与数量列出新增、持续存在和本次未再出现的记录；缺少来源摘要的记录不配对。覆盖缺口、筛选、基线、根目录差异及扫描器构建变更或不明均限制比较结论。退出 `0` 表示未发现已知比较限制，`2` 表示比较受限，`3` 表示输入无效，不沿用扫描的发布阻断策略。记录消失不等于已修复。不扫描、不写文件；输出省略标题、摘录和扫描根目录，但保留结果路径。此独立模式仅可搭配 `--json`，JSON 使用 `kind: "report-comparison"`。
 
 `--share-summary` 统计规则筛选、源码抑制及基线处理后的全部置信度结果，保留正常扫描退出码。不包含路径、标题、标识、摘录及诊断详情；受控错误仅显示代码与本地排查提示。不能同时输出详细报告或使用变更视图。JSON 使用 `kind: "share-summary"`，不属于扫描报告格式。数量本身仍可能敏感，分享前须审阅。
 
 `--init` 为独立预览模式：标准输出为模板，标准错误提示保存位置，审阅后自行保存。CI 模板使用扫描器的包版本，启用前须确认该版本已发布，并审阅固定的 Action 提交。
+
+`--init=ci-workspaces` 预览多项目矩阵，各任务独立运行，使用 `fail-fast: false` 和不同的 SARIF 类别。使用前替换示例目录与名称。项目配置和 SARIF 上传默认关闭，启用上传还需配置相应权限。
 
 `--changed-since` 比较本地共同祖先与工作区，包含未被忽略的新文件，不拉取远程、不缩小扫描范围。缺少 Git、引用或共同历史时退出 `3`；不能与 `--baseline-write` 组合。
 
