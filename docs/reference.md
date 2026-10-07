@@ -19,6 +19,8 @@ This reference describes the development branch; see the README for the publishe
 
 Recognised Next.js/Astro middleware may suppress covered auth findings; Server Functions need local checks. Express/Hono/Fastify require resolved rejection logic or known auth libraries. Fastify decorator and plugin evidence is scoped to the local instance.
 
+For Express/Hono/Fastify, conditional middleware cannot protect registrations outside its branch or function. Literal `true`/`false` branches and simple boolean short circuits are recognised; other conditions are not evaluated. Distinct helper-call contexts retain their own middleware evidence. This is bounded static registration analysis, not general control-flow execution.
+
 Project router factories support top-level `const app = make()` calls when a synchronous, zero-argument function returns a fresh Express, Hono/OpenAPIHono or Fastify instance. Static ESM imports, named/default re-exports and a single `export *` source are followed. Literal Hono `basePath()` prefixes are retained; middleware remains instance-local. Conditional or async returns, parameters, shared instances, mutation and arbitrary wrapper chains are not inferred. Resolution limits mark coverage incomplete; unsupported syntax may remain outside route discovery.
 
 Factory imports use the nearest `tsconfig.json` / `jsconfig.json` for single-target `paths` mappings with `baseUrl`, comments and trailing commas. Configuration inheritance and project references remain unresolved. Workspace resolution requires an explicit `dependencies` link (`workspace:*`, `workspace:^` or `workspace:~`) and a matching package in a `package.json` workspace list; patterns allow one segment wildcard. Only declared export subpaths are followed. Runtime export conditions must converge on one source; type-only branches, differing targets, duplicate package names and registry version ranges cannot establish that source. These mappings identify source candidates, not deployment behaviour: [TypeScript paths](https://www.typescriptlang.org/tsconfig/paths.html) do not rewrite runtime imports; [package exports](https://nodejs.org/api/packages.html#conditional-exports) may depend on the environment.
@@ -175,6 +177,7 @@ For support, start with `--doctor --json` and review the output locally. It omit
 | OpenAPI batches | 256 items per call, including spreads; 8 array levels |
 | Project router factories | 8 resolution steps; 4,000 expression characters; 256 candidates per file; 8 literal base-path calls |
 | Factory module metadata | 65,536 UTF-16 code units per config; 128 path mappings; 64 workspace patterns; 8 export-condition levels, 32 entries per level |
+| Route registration context | 512 regions per file; 32 statement levels; 4,000-character prefixes; 4,096 project graph sites; 256 inherited middleware references per site |
 | Findings | 100 per file, prioritising severity and confidence |
 | Git history | 100 relevant revisions per file; 30 seconds per command |
 | Auth helper resolution | 8 hops; 64 symbols per helper, 1,024 per route file |

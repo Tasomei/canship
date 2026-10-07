@@ -6,9 +6,12 @@
  * Fastify 插件文件经 register() 或 @fastify/autoload 从注册处进入。
  */
 import type { ScanContext, ScanFile } from '../types.js'
+import { createHash } from 'node:crypto'
 import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
 import { bindingsOf } from './bindings.js'
 import { factoryModuleResolver } from './factory-modules.js'
+import { registrationContext } from './registration-context.js'
+import type { RegistrationContext } from './registration-context.js'
 import {
   bindingModule, declarationOf, delimiterPairs, functionBodies, routeOf, serverActionRoutes,
   type FunctionBody, type MiddlewareRef, type Route,
@@ -133,6 +136,7 @@ function frameworkNamesOf(a: Analysed): FrameworkNames | null {
     }
   }
   for (const m of a.source.matchAll(/\bimport\s+(type\s+)?(?:([A-Za-z_$][\w$]*)\s*,?\s*)?(?:\{([^{}]*)\}|\*\s+as\s+([A-Za-z_$][\w$]*))?\s*from\s*['"](express|hono(?:\/tiny|\/quick)?|@hono\/zod-openapi|fastify)['"]/g)) {
+    if (a.code.slice(m.index, m.index + 6) !== 'import') continue
     const typeOnly = Boolean(m[1])
     if (m[5] === 'express') {
       if (!typeOnly && m[2]) names.express.add(m[2])
@@ -150,6 +154,7 @@ function frameworkNamesOf(a: Analysed): FrameworkNames | null {
     }
   }
   for (const m of a.source.matchAll(/\b(?:const|let|var)\s+(?:([A-Za-z_$][\w$]*)|\{([^{}]*)\})\s*=\s*require\s*\(\s*['"](express|hono(?:\/tiny|\/quick)?|@hono\/zod-openapi|fastify)['"]\s*\)(?!\s*\()/g)) {
+    if (!/^(?:const|let|var)\b/.test(a.code.slice(m.index))) continue
     if (m[3] === 'express') {
       if (m[1]) names.express.add(m[1])
       if (m[2]) named(m[2], /^Router$/, names.router)
@@ -162,7 +167,9 @@ function frameworkNamesOf(a: Analysed): FrameworkNames | null {
     }
     names.types.add(m[3] === 'express' || m[3] === 'fastify' ? m[3] : 'hono')
   }
-  for (const m of a.source.matchAll(/\brequire\s*\(\s*['"](express|fastify)['"]\s*\)/g)) names.types.add(m[1] as NodeFramework)
+  for (const m of a.source.matchAll(/\brequire\s*\(\s*['"](express|fastify)['"]\s*\)/g)) {
+    if (a.code.slice(m.index, m.index + 7) === 'require') names.types.add(m[1] as NodeFramework)
+  }
   return names.types.size ? names : null
 }
 
@@ -177,6 +184,7 @@ function instancesOf(a: Analysed, names: FrameworkNames): Instance[] {
   const found: Instance[] = []
   const add = (instance: Instance): void => { if (!found.some(other => other.name === instance.name)) found.push(instance) }
   for (const m of a.source.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]{0,100})?=\s*(?:await\s+)?(new\s+)?([A-Za-z_$][\w$]*)\s*(?:\.\s*(Router)\s*)?(<[^()]{0,300}>\s*)?\(/g)) {
+    if (!/^(?:const|let|var)\b/.test(a.code.slice(m.index))) continue
     const [, name, isNew, callee, router] = m
     if (!isNew && ((names.express.has(callee!) && (router === 'Router' || router === undefined)) || (names.router.has(callee!) && router === undefined))) {
       add({ name: name!, framework: 'express', prefix: '', weak: false })
@@ -199,6 +207,7 @@ function instancesOf(a: Analysed, names: FrameworkNames): Instance[] {
     }
   }
   for (const m of a.source.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?require\s*\(\s*['"](express|fastify)['"]\s*\)\s*(?:\.\s*(Router)\s*)?\(/g)) {
+    if (!/^(?:const|let|var)\b/.test(a.code.slice(m.index))) continue
     if (m[2] === 'express' || !m[3]) add({ name: m[1]!, framework: m[2] as NodeFramework, prefix: '', weak: false })
   }
   const typed: Array<[NodeFramework, string]> = [
@@ -1165,6 +1174,12 @@ const within = (site: Site, at: number): boolean => site.range === null || (site
 
 interface Ops { registrations: Registration[]; uses: Use[]; registers: Register[]; batchGaps?: number[] }
 const opsCache = new WeakMap<Site, Ops>()
+const contextCache = new WeakMap<ScanFile, RegistrationContext>()
+function contextOf(a: Analysed): RegistrationContext {
+  let context = contextCache.get(a.file)
+  if (!context) { context = registrationContext(a.code, a.pairs, a.bodies); contextCache.set(a.file, context) }
+  return context
+}
 
 /** 实例范围内的注册、中间件与插件注册调用。 */
 function opsOf(site: Site, files: ScanFile[]): Ops {
@@ -1175,10 +1190,11 @@ function opsOf(site: Site, files: ScanFile[]): Ops {
   if (site.framework === 'express') ops = { registrations: expressRegistrations(a, name), uses: expressUses(a, name), registers: [] }
   else if (site.framework === 'hono') ops = { ...honoOps(a, name, site.chainFrom, files, site.openapi), registers: [] }
   else ops = fastifyOps(a, name)
+  const context = contextOf(a)
   const result = {
-    registrations: ops.registrations.filter(reg => within(site, reg.at)),
-    uses: ops.uses.filter(use => within(site, use.at)),
-    registers: ops.registers.filter(reg => within(site, reg.at)),
+    registrations: ops.registrations.filter(reg => within(site, reg.at) && context.reachable(reg.at)),
+    uses: ops.uses.filter(use => within(site, use.at) && context.reachable(use.at)),
+    registers: ops.registers.filter(reg => within(site, reg.at) && context.reachable(reg.at)),
     batchGaps: (ops.batchGaps ?? []).filter(at => within(site, at)),
   }
   opsCache.set(site, result)
@@ -1188,7 +1204,7 @@ function opsOf(site: Site, files: ScanFile[]): Ops {
 /** 实例上不限路径、作用于之后注册内容的中间件（Express 的 use() 中排除被挂载的 Router）。 */
 function generalMiddleware(site: Site, before: number, files: ScanFile[]): MiddlewareRef[] {
   const args = opsOf(site, files).uses
-    .filter(use => !use.mount && use.at < before && (use.prefix === null ||
+    .filter(use => !use.mount && use.at < before && contextOf(site.a).covers(use.at, Number.isFinite(before) ? before : (site.range?.end ?? site.a.code.length) - 1) && (use.prefix === null ||
       (site.framework !== 'hono' && use.prefix === '/') || /^\/?\*$/.test(use.prefix)))
     .flatMap(use => use.args)
     .filter(arg => site.framework !== 'express' || mountedFile(site.a, arg, files) === null)
@@ -1203,7 +1219,7 @@ function passedSites(site: Site, files: ScanFile[]): Site[] {
   const { a } = site
   const found: Site[] = []
   const receive = (range: CodeRange | null, index: number, at: number): void => {
-    if (!range) return
+    if (!range || !contextOf(a).reachable(at)) return
     const target = analyse(range.file)
     const name = paramNamesOf(target, range)[index]
     if (!name) return
@@ -1307,7 +1323,7 @@ function registeredSites(site: Site, files: ScanFile[]): Site[] {
   return found
 }
 
-interface ServerIndex { byHandlerFile: Map<ScanFile, Route[]>; batchGaps: Map<ScanFile, number>; factoryGaps: Map<ScanFile, number> }
+interface ServerIndex { byHandlerFile: Map<ScanFile, Route[]>; batchGaps: Map<ScanFile, number>; factoryGaps: Map<ScanFile, number>; registrationGaps: Set<ScanFile> }
 const indexCache = new WeakMap<ScanFile[], ServerIndex>()
 
 /** 全部文件的 Node 框架路由，按处理函数所在文件分组；每次扫描只建立一次。 */
@@ -1316,12 +1332,20 @@ function serverIndex(files: ScanFile[]): ServerIndex {
   if (cached) return cached
   // 实例：导入框架的文件中直接创建的，以及经参数传入其他函数、经 register() 注册的（最多四层）。
   const sites: Site[] = []
+  const registrationGaps = new Set<ScanFile>()
   const factoryGaps = new Map<ScanFile, number>()
   const factories = projectFactoryResolver(files, factoryGaps)
   const seen = new Set<string>()
   const add = (site: Site): boolean => {
-    const key = `${site.a.file.path}\0${site.name}\0${site.range?.start ?? -1}\0${site.prefix}\0${Boolean(site.openapi)}`
+    if (site.inherited.length > 256) { registrationGaps.add(site.a.file); site.inherited = [] }
+    const root = site.root ?? site
+    // 同一函数的不同调用来源分别保留，不能用第一个受保护调用覆盖公开调用。
+    const identity = createHash('sha256').update(JSON.stringify([site.a.file.path, site.name, site.framework,
+      site.range?.start ?? -1, site.prefix, Boolean(site.openapi), root.a.file.path, root.name, root.range?.start ?? -1, root.prefix]))
+    for (const ref of site.inherited) identity.update(JSON.stringify([ref.file.path, ref.at]))
+    const key = identity.digest('hex')
     if (seen.has(key)) return false
+    if (sites.length >= 4096) { registrationGaps.add(site.a.file); return false }
     seen.add(key)
     sites.push(site)
     return true
@@ -1368,7 +1392,7 @@ function serverIndex(files: ScanFile[]): ServerIndex {
         if (reg.batch && !batchGaps.has(a.file)) batchGaps.set(a.file, reg.at)
         continue
       }
-      const before = uses.filter(use => !use.mount && use.at < reg.at && pathMatches(use.prefix, reg.path, site.framework))
+      const before = uses.filter(use => !use.mount && use.at < reg.at && contextOf(a).covers(use.at, reg.at) && pathMatches(use.prefix, reg.path, site.framework))
         .flatMap(use => use.args.filter(arg => site.framework !== 'express' || mountedFile(a, arg, files) === null))
       const url = reg.path === null ? '(dynamic path)' : joinPath(site.prefix, reg.path)
       const callbacks = flatten(a, reg.middleware)
@@ -1414,7 +1438,7 @@ function serverIndex(files: ScanFile[]): ServerIndex {
         const covers = (other: Use): boolean => site.framework === 'hono'
           ? other.prefix === null || (/\*$/.test(other.prefix) && pathMatches(other.prefix, use.prefix, 'hono'))
           : pathMatches(other.prefix, use.prefix, site.framework)
-        const earlier = uses.filter(other => !other.mount && other.at < use.at && covers(other))
+        const earlier = uses.filter(other => !other.mount && other.at < use.at && contextOf(a).covers(other.at, use.at) && covers(other))
           .flatMap(other => site.framework === 'hono' ? other.args : other.args.filter(isMiddleware))
         const middleware = [...site.inherited, ...toRefs(a, earlier), ...toRefs(a, use.args.slice(0, index).filter(isMiddleware))]
         const prefix = joinPath(site.prefix, use.prefix ?? '/')
@@ -1433,7 +1457,8 @@ function serverIndex(files: ScanFile[]): ServerIndex {
       byHandlerFile.set(route.file, list)
     }
   }
-  const index = { byHandlerFile, batchGaps, factoryGaps }
+  for (const site of sites) if (contextOf(site.a).limited) registrationGaps.add(site.a.file)
+  const index = { byHandlerFile, batchGaps, factoryGaps, registrationGaps }
   indexCache.set(files, index)
   return index
 }
@@ -1445,6 +1470,9 @@ export function nodeRoutesFor(file: ScanFile, files: ScanFile[]): Route[] {
 
 /** 每个注册文件只报告一次批量入口缺口，不包含源码或原始配置。 */
 export function reportOpenapiBatchCoverage(ctx: ScanContext): void {
+  for (const file of serverIndex(ctx.files).registrationGaps) {
+    ctx.reportIncomplete('engine/route-registration', `${file.path}: Route registration context reached a documented scope or graph limit. Conditional or truncated inherited middleware was not accepted as protection.`)
+  }
   for (const [file, at] of serverIndex(ctx.files).factoryGaps) {
     const line = file.content.slice(0, at).split('\n').length
     ctx.reportIncomplete('engine/router-factories', `${file.path}:${line}: Project router-factory analysis reached a resolution, expression, candidate or module-configuration limit. See the documented bounds; simplify the wrapper or scan its direct route entry separately.`)

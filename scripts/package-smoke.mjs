@@ -326,6 +326,24 @@ void code; void id;
   // 安装后的构建必须保留反例告警，也不能将正常鉴权误报为开放接口。
   const admin = "import {createClient} from '@supabase/supabase-js';const admin=createClient(process.env.SUPABASE_URL,process.env.SUPABASE_SERVICE_ROLE_KEY);"
   const write = "await admin.from('items').delete().neq('id',0);"
+  // 构建后的调用图须保留条件和独立调用来源，不能借用另一处的鉴权。
+  for (const mode of ['conditional', 'unconditional', 'unreachable', 'mixed-calls']) {
+    const guard = "app.use('*',bearerAuth({token:process.env.AUTH_TOKEN}));"
+    const route = `app.post('/items',async c=>{${write}return c.json({});});`
+    const body = mode === 'conditional' ? `if(enabled){${guard}}${route}`
+      : mode === 'unconditional' ? guard + route
+      : mode === 'unreachable' ? `if(false){${route}}`
+      : `function wire(app){${route}}if(enabled){${guard}wire(app)}wire(app)`
+    const target = sample(`registration-context-${mode}`, {
+      'server.ts': `import {Hono} from 'hono';import {bearerAuth} from 'hono/bearer-auth';${admin}const app=new Hono();${body}`,
+    })
+    const checked = cli([target, '--json', '--all'])
+    const output = JSON.parse(checked.stdout)
+    const exposed = mode === 'conditional' || mode === 'mixed-calls'
+    assert.equal(output.partial, false, mode)
+    assert.equal(checked.status, exposed ? 1 : 0, mode)
+    assert.deepEqual(output.findings.map(f => f.ruleId), exposed ? ['api/admin-db-access-without-auth'] : [], mode)
+  }
   for (const guarded of [false, true]) {
     const target = sample(`middleware-${guarded}`, {
       'server.ts': `import express from 'express';${admin}const app=express();
