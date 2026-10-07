@@ -374,6 +374,48 @@ void code; void id;
     assert.deepEqual(output.errors.map(error => error.ruleId), ['engine/openapi-routes'])
     assert.equal(cli([target, '--json', '--all', '--best-effort']).status, known ? 1 : 0)
   }
+  // 安装包须识别跨文件工厂，且不能把其他实例的中间件当作保护。
+  for (const guarded of [false, true]) {
+    const target = sample(`router-factory-${guarded}`, {
+      'factory.ts': "import { Hono } from 'hono'; export const make = () => new Hono();",
+      'server.ts': `import {make} from './factory';import {bearerAuth} from 'hono/bearer-auth';${admin}
+        const other=make();const app=make();
+        ${guarded ? 'app' : 'other'}.use('*',bearerAuth({token:process.env.AUTH_TOKEN}));
+        app.post('/items',async c=>{${write}return c.json({});});`,
+    })
+    const checked = cli([target, '--json', '--all'])
+    const output = JSON.parse(checked.stdout)
+    assert.equal(output.partial, false)
+    assert.deepEqual(output.findings.map(f => f.ruleId), guarded ? [] : ['api/admin-db-access-without-auth'])
+    assert.equal(checked.status, guarded ? 0 : 1)
+  }
+  const factoryCycle = sample('router-factory-cycle', {
+    'a.ts': "export {make} from './b';", 'b.ts': "export {make} from './a';",
+    'server.ts': "import {make} from './a';const app=make();app.get('/status',c=>c.text('ok'));",
+  })
+  const cycle = cli([factoryCycle, '--json'])
+  assert.equal(cycle.status, 3)
+  assert.equal(JSON.parse(cycle.stdout).partial, true)
+  assert.deepEqual(JSON.parse(cycle.stdout).errors.map(error => error.code), ['ROUTE_UNRESOLVED'])
+  const mappedFactory = sample('router-factory-paths', {
+    'tsconfig.json': '{"compilerOptions":{"paths":{"@build/*":["./shared/*"]}}}',
+    'shared/factory.ts': "import {Hono} from 'hono';export const make=()=>new Hono();",
+    'server.ts': `import {make} from '@build/factory';${admin}const app=make();app.post('/items',async c=>{${write}return c.json({});});`,
+  })
+  const mapped = cli([mappedFactory, '--json', '--all'])
+  assert.equal(mapped.status, 1)
+  assert.deepEqual(JSON.parse(mapped.stdout).findings.map(f => f.ruleId), ['api/admin-db-access-without-auth'])
+  const workspaceFactory = sample('router-factory-workspace', {
+    'package.json': '{"name":"synthetic-root","workspaces":["apps/*","packages/*"]}',
+    'apps/web/package.json': '{"name":"web","dependencies":{"@synthetic/router":"workspace:*"}}',
+    'packages/router/package.json': '{"name":"@synthetic/router","exports":{".":{"import":"./factory.ts","default":"./factory.ts"}}}',
+    'packages/router/factory.ts': "import {Hono} from 'hono';export const make=()=>new Hono();",
+    'apps/web/server.ts': `import {make} from '@synthetic/router';${admin}const app=make();app.post('/items',async c=>{${write}return c.json({});});`,
+  })
+  const workspaceResult = cli([workspaceFactory, '--json', '--all'])
+  assert.equal(workspaceResult.status, 1)
+  assert.equal(JSON.parse(workspaceResult.stdout).partial, false)
+  assert.deepEqual(JSON.parse(workspaceResult.stdout).findings.map(f => f.ruleId), ['api/admin-db-access-without-auth'])
   console.log(JSON.stringify({ version, packageFiles: expected.length, runtimeDependencies: 0, smoke: 'passed' }))
 } finally {
   // 仅移除本次创建的隔离安装与样本目录。

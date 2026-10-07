@@ -13,7 +13,7 @@ export class ScanInputError extends TypeError {
 
 export function diagnosticCodeOf(error: Pick<ScanError, 'kind' | 'ruleId'>): DiagnosticCode {
   if (error.kind === 'crashed') return 'RULE_EXECUTION_FAILED'
-  if (error.ruleId === 'engine/openapi-routes') return 'ROUTE_UNRESOLVED'
+  if (error.ruleId === 'engine/openapi-routes' || error.ruleId === 'engine/router-factories') return 'ROUTE_UNRESOLVED'
   if (error.ruleId === 'engine/findings-limit') return 'FINDINGS_LIMIT'
   if (error.ruleId.startsWith('gitleak/')) return 'GIT_CHECK_INCOMPLETE'
   return 'ANALYSIS_INCOMPLETE'

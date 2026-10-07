@@ -2,12 +2,13 @@
  * Node 服务端框架的路由：Express、Hono、Fastify。
  * 在导入框架的文件中识别应用、Router 与插件实例上的路由注册；处理函数可以写在其他文件（控制器）中。
  * 路由参数中的中间件与钩子、实例上先注册的 use()/addHook()、挂载或注册时经过的中间件随路由记录，
- * 由鉴权规则判断是否构成保护。不导入这些框架的文件不按此识别，避免把普通的 x.get() 当成路由；
+ * 由鉴权规则判断是否构成保护。项目工厂须能追溯到真实框架导入，不凭名称推断普通的 x.get()；
  * Fastify 插件文件经 register() 或 @fastify/autoload 从注册处进入。
  */
 import type { ScanContext, ScanFile } from '../types.js'
 import { commentsMaskedOf, noiseMaskedOf } from '../mask.js'
 import { bindingsOf } from './bindings.js'
+import { factoryModuleResolver } from './factory-modules.js'
 import {
   bindingModule, declarationOf, delimiterPairs, functionBodies, routeOf, serverActionRoutes,
   type FunctionBody, type MiddlewareRef, type Route,
@@ -216,6 +217,168 @@ function instancesOf(a: Analysed, names: FrameworkNames): Instance[] {
 
 /** 路由注册：路径、处理函数之前的中间件与钩子、处理函数（实参或方法简写的函数体）。 */
 interface Registration { path: string | null; middleware: Arg[]; handler: Arg | null; handlerRange: CodeRange | null; at: number; batch?: boolean }
+
+interface FactoryShape { framework: NodeFramework; prefix: string; openapi: boolean }
+
+/** 仅接受顶层唯一绑定；遮蔽、解构和重赋值不能借用外层工厂或构造器。 */
+function factoryBindingClean(a: Analysed, name: string, initializer = -1): boolean {
+  const escaped = name.replace(/\$/g, '\\$')
+  if ([...a.code.matchAll(new RegExp(`\\b(?:const|let|var|function|class)\\s+${escaped}(?![\\w$])`, 'g'))].length > 1) return false
+  if (initializer < 0) {
+    const declaration = new RegExp(`\\bconst\\s+(${escaped})\\s*(?::[^=;]{0,200})?=`).exec(a.code)
+    if (declaration) initializer = declaration.index + /^const\s+/.exec(declaration[0])![0].length
+  }
+  if (new RegExp(`[(,]\\s*${escaped}\\s*(?=[:,)=])|(?<![\\w$.])${escaped}\\s*=>`).test(a.code)) return false
+  for (const match of a.code.matchAll(/\b(?:const|let|var)\s*([\[{])/g)) {
+    const open = match.index + match[0].length - 1, close = a.pairs.get(open)
+    if (close !== undefined && new RegExp(`(?<![\\w$])${escaped}(?![\\w$])`).test(a.code.slice(open, close + 1))) return false
+  }
+  const writes = new RegExp(`(?<![\\w$.])${escaped}\\s*(?:=(?![=>])|[+*/%&|^-]=|\\?\\?=|&&=|\\|\\|=|\\+\\+|--)`, 'g')
+  for (const match of a.code.matchAll(writes)) if (match.index !== initializer) return false
+  return !new RegExp(`(?<![\\w$.])${escaped}(?:\\s*\\.\\s*[\\w$]+|\\s*\\[[^\\]]{0,200}\\])+\\s*=(?!=)|\\bObject\\s*\\.\\s*(?:assign|defineProperty|defineProperties)\\s*\\(\\s*${escaped}(?![\\w$])`).test(a.code)
+}
+
+/** 工厂只返回新实例；解析不执行代码，不继承其他调用或模块的保护证据。 */
+function projectFactoryResolver(files: ScanFile[], gaps: Map<ScanFile, number>): (a: Analysed, known: ReadonlySet<string>) => Instance[] {
+  const cache = new Map<string, FactoryShape | null>()
+  const module = factoryModuleResolver(files)
+  let limited = false
+  const topLevel = (a: Analysed, at: number): boolean => ![...a.pairs].some(([open, close]) =>
+    a.code[open] === '{' && open < at && at < close)
+  const argAt = (a: Analysed, at: number, end: number): Arg => {
+    const lead = a.code.slice(at, end).length - a.code.slice(at, end).trimStart().length
+    at += lead
+    const text = a.code.slice(at, end).trimEnd()
+    return { at, text, source: a.source.slice(at, at + text.length) }
+  }
+  const basePath = (a: Analysed, close: number, shape: FactoryShape): { shape: FactoryShape; close: number } | null => {
+    for (let i = 0; i < 8; i++) {
+      const next = /^\s*\.\s*basePath\s*\(/.exec(a.code.slice(close + 1, close + 200))
+      if (!next) return { shape, close }
+      if (shape.framework !== 'hono') return null
+      const open = close + next[0].length, end = a.pairs.get(open)
+      const args = end === undefined ? [] : argsOf(a, open, end)
+      const path = args.length === 1 ? literalOf(args[0]!) : null
+      if (end === undefined || path === null) return null
+      shape = { ...shape, prefix: joinPath(shape.prefix, path) }; close = end
+    }
+    if (/^\s*\.\s*basePath\s*\(/.test(a.code.slice(close + 1, close + 200))) { limited = true; return null }
+    return { shape, close }
+  }
+  const expression = (a: Analysed, arg: Arg, depth: number): FactoryShape | null => {
+    if (depth >= 8 || arg.text.length > 4000) { limited = true; return null }
+    if (arg.text[0] === '(' && a.pairs.get(arg.at) === arg.at + arg.text.length - 1) return expression(a, argAt(a, arg.at + 1, arg.at + arg.text.length - 1), depth + 1)
+    const call = /^(new\s+)?([A-Za-z_$][\w$]*)(?:\s*\.\s*(Router))?\s*(?:<[^()]{0,300}>\s*)?\(/.exec(arg.text)
+    if (!call) return null
+    const [, isNew, name, member] = call
+    const open = arg.at + call[0].length - 1, close = a.pairs.get(open)
+    if (close === undefined || close >= arg.at + arg.text.length || !factoryBindingClean(a, name!)) return null
+    const imports = bindingsOf(a.file).imports.filter(item => item.local === name)
+    const imported = imports.length === 1 ? imports[0] : undefined
+    let shape: FactoryShape | null = null
+    const origin = imported?.spec ? module(imported.spec, a.file) : null
+    if (origin?.limited) limited = true
+    if (imported?.spec && !origin?.handled && !new RegExp(`\\b(?:const|let|var|function|class)\\s+${name!.replace(/\$/g, '\\$')}(?![\\w$])`).test(a.code)) {
+      if (isNew && !member && ['hono', 'hono/tiny', 'hono/quick'].includes(imported.spec ?? '') && imported.imported === 'Hono') shape = { framework: 'hono', prefix: '', openapi: false }
+      if (isNew && !member && imported.spec === '@hono/zod-openapi' && imported.imported === 'OpenAPIHono') shape = { framework: 'hono', prefix: '', openapi: true }
+      if (!isNew && imported.spec === 'express' && ((imported.imported === 'default' && (!member || member === 'Router')) || (imported.imported === 'Router' && !member))) shape = { framework: 'express', prefix: '', openapi: false }
+      if (!isNew && !member && imported.spec === 'fastify' && ['default', 'fastify'].includes(imported.imported)) shape = { framework: 'fastify', prefix: '', openapi: false }
+    }
+    if (!shape && !isNew && !member && !a.source.slice(open + 1, close).trim()) shape = resolve(a, name!, false, depth + 1)
+    if (!shape) return null
+    const chained = basePath(a, close, shape)
+    return chained && !arg.text.slice(chained.close - arg.at + 1).trim() ? chained.shape : null
+  }
+  const functionValue = (a: Analysed, value: Arg, depth: number): FactoryShape | null => {
+    if (depth >= 8) { limited = true; return null }
+    if (/^[A-Za-z_$][\w$]*$/.test(value.text)) return resolve(a, value.text, false, depth + 1)
+    const signature = /^(?:function(?:\s+[A-Za-z_$][\w$]*)?\s*\(\s*\)\s*(?::[^{};=]{1,200})?\s*|\(\s*\)\s*(?::[^{};=]{1,200})?\s*=>\s*)/.exec(value.text)
+    if (!signature) return null
+    let body = argAt(a, value.at + signature[0].length, value.at + value.text.length)
+    if (body.text.startsWith('{')) {
+      const end = a.pairs.get(body.at)
+      if (end !== body.at + body.text.length - 1) return null
+      const returned = /^\s*return\b[ \t]*/.exec(a.code.slice(body.at + 1, end))
+      if (!returned) return null
+      const from = body.at + 1 + returned[0].length
+      if (/[\r\n]/.test(a.code[from] ?? '')) return null
+      body = argAt(a, from, end)
+      if (body.text.endsWith(';')) body = argAt(a, body.at, body.at + body.text.length - 1)
+    }
+    return expression(a, body, depth)
+  }
+  const resolve = (a: Analysed, name: string, exported: boolean, depth: number): FactoryShape | null => {
+    if (depth >= 8) { limited = true; return null }
+    const key = `${a.file.path}\0${name}\0${exported}\0${depth}`
+    if (cache.has(key)) return cache.get(key)!
+    const follow = (spec: string, symbol: string) => {
+      const resolved = module(spec, a.file)
+      if (resolved.limited) limited = true
+      const target = resolved.file
+      return target ? resolve(analyse(target), symbol, true, depth + 1) : null
+    }
+    const bindings = bindingsOf(a.file), escaped = name.replace(/\$/g, '\\$')
+    let result: FactoryShape | null = null
+    if (exported) {
+      if (name === 'default') {
+        const match = /\bexport\s+default\s+/.exec(a.code)
+        if (match && topLevel(a, match.index)) {
+          const at = match.index + match[0].length
+          const named = /^function\s+([A-Za-z_$][\w$]*)/.exec(a.code.slice(at))
+          if (!named || factoryBindingClean(a, named[1]!)) result = functionValue(a, argAt(a, at, expressionEnd(a, at)), depth)
+        }
+      } else if (new RegExp(`\\bexport\\s+(?:const|function)\\s+${escaped}(?![\\w$])`).test(a.code)) result = resolve(a, name, false, depth)
+      else {
+        const matches = bindings.exports.filter(item => item.local === name)
+        if (matches.length === 1) {
+          const entry = matches[0]!
+          result = entry.spec ? follow(entry.spec, entry.imported) : resolve(a, entry.imported, false, depth + 1)
+        } else if (!matches.length && name !== 'default' && bindings.stars.length === 1) result = follow(bindings.stars[0]!, name)
+      }
+    } else {
+      const declarations = [...a.code.matchAll(new RegExp(`\\b(const|function)\\s+${escaped}(?![\\w$])`, 'g'))]
+      const declaration = declarations.length === 1 ? declarations[0] : undefined
+      if (declaration && topLevel(a, declaration.index)) {
+        const at = declaration.index
+        if (declaration[1] === 'function' && factoryBindingClean(a, name)) result = functionValue(a, argAt(a, at, expressionEnd(a, at)), depth)
+        if (declaration[1] === 'const') {
+          const prefix = new RegExp(`^const\\s+${escaped}\\s*(?::[^=;]{0,200})?=\\s*`).exec(a.code.slice(at))
+          const nameAt = at + /^const\s+/.exec(declaration[0])![0].length
+          if (prefix && factoryBindingClean(a, name, nameAt)) {
+            const valueAt = at + prefix[0].length
+            result = functionValue(a, argAt(a, valueAt, expressionEnd(a, valueAt)), depth)
+          }
+        }
+      } else if (!declarations.length && factoryBindingClean(a, name)) {
+        const imports = bindings.imports.filter(item => item.local === name && item.spec)
+        if (imports.length === 1) result = follow(imports[0]!.spec!, imports[0]!.imported)
+      }
+    }
+    if (result) cache.set(key, result)
+    return result
+  }
+  return (a, known) => {
+    const found: Instance[] = []
+    const receivers = new Set([...a.code.matchAll(new RegExp(`(?<![\\w$.])([A-Za-z_$][\\w$]*)\\s*\\.\\s*(?:${METHODS}|on|openapi|openapiRoutes|route|register)\\s*${GENERICS}\\(`, 'g'))].map(match => match[1]))
+    let inspected = 0
+    for (const m of a.code.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*\(\s*\)/g)) {
+      const [, name, factory] = m
+      if (!receivers.has(name) || known.has(name!)) continue
+      if (++inspected > 256) { gaps.set(a.file, m.index); break }
+      const open = a.code.indexOf('(', m.index), close = m.index + m[0].length - 1
+      if (!topLevel(a, m.index) || a.source.slice(open + 1, close).trim() ||
+        !factoryBindingClean(a, factory!) || !factoryBindingClean(a, name!)) continue
+      // 每个候选独立记录解析上限，避免缓存隐藏其他入口的覆盖缺口。
+      limited = false
+      const shape = resolve(a, factory!, false, 0)
+      const chained = shape ? basePath(a, m.index + m[0].length - 1, shape) : null
+      if (limited) gaps.set(a.file, m.index)
+      const end = expressionEnd(a, open)
+      if (chained && !a.code.slice(chained.close + 1, end).trim()) found.push({ name: name!, ...chained.shape, weak: false, chainFrom: chained.close })
+    }
+    return found
+  }
+}
 
 /** 字符串字面量路径；无插值的模板也接受，其他形式视为动态路径。 */
 function literalOf(arg: Arg): string | null {
@@ -1144,7 +1307,7 @@ function registeredSites(site: Site, files: ScanFile[]): Site[] {
   return found
 }
 
-interface ServerIndex { byHandlerFile: Map<ScanFile, Route[]>; batchGaps: Map<ScanFile, number> }
+interface ServerIndex { byHandlerFile: Map<ScanFile, Route[]>; batchGaps: Map<ScanFile, number>; factoryGaps: Map<ScanFile, number> }
 const indexCache = new WeakMap<ScanFile[], ServerIndex>()
 
 /** 全部文件的 Node 框架路由，按处理函数所在文件分组；每次扫描只建立一次。 */
@@ -1153,6 +1316,8 @@ function serverIndex(files: ScanFile[]): ServerIndex {
   if (cached) return cached
   // 实例：导入框架的文件中直接创建的，以及经参数传入其他函数、经 register() 注册的（最多四层）。
   const sites: Site[] = []
+  const factoryGaps = new Map<ScanFile, number>()
+  const factories = projectFactoryResolver(files, factoryGaps)
   const seen = new Set<string>()
   const add = (site: Site): boolean => {
     const key = `${site.a.file.path}\0${site.name}\0${site.range?.start ?? -1}\0${site.prefix}\0${Boolean(site.openapi)}`
@@ -1162,11 +1327,11 @@ function serverIndex(files: ScanFile[]): ServerIndex {
     return true
   }
   for (const file of files) {
-    if (!/\.[mc]?[jt]sx?$/.test(file.path) || !/\b(?:express|hono|fastify)\b/.test(file.content)) continue
+    if (!/\.[mc]?[jt]sx?$/.test(file.path)) continue
     const a = analyse(file)
     const names = frameworkNamesOf(a)
-    if (!names) continue
-    for (const instance of instancesOf(a, names)) {
+    const direct = names ? instancesOf(a, names) : []
+    for (const instance of [...direct, ...factories(a, new Set(direct.map(item => item.name)))]) {
       add({ a, name: instance.name, framework: instance.framework, openapi: Boolean(instance.openapi), range: null, prefix: instance.prefix, inherited: [],
         weak: instance.weak, ...(instance.chainFrom === undefined ? {} : { chainFrom: instance.chainFrom }) })
     }
@@ -1268,7 +1433,7 @@ function serverIndex(files: ScanFile[]): ServerIndex {
       byHandlerFile.set(route.file, list)
     }
   }
-  const index = { byHandlerFile, batchGaps }
+  const index = { byHandlerFile, batchGaps, factoryGaps }
   indexCache.set(files, index)
   return index
 }
@@ -1280,6 +1445,10 @@ export function nodeRoutesFor(file: ScanFile, files: ScanFile[]): Route[] {
 
 /** 每个注册文件只报告一次批量入口缺口，不包含源码或原始配置。 */
 export function reportOpenapiBatchCoverage(ctx: ScanContext): void {
+  for (const [file, at] of serverIndex(ctx.files).factoryGaps) {
+    const line = file.content.slice(0, at).split('\n').length
+    ctx.reportIncomplete('engine/router-factories', `${file.path}:${line}: Project router-factory analysis reached a resolution, expression, candidate or module-configuration limit. See the documented bounds; simplify the wrapper or scan its direct route entry separately.`)
+  }
   for (const [file, at] of serverIndex(ctx.files).batchGaps) {
     const line = file.content.slice(0, at).split('\n').length
     ctx.reportIncomplete('engine/openapi-routes', `${file.path}:${line}: OpenAPI batch routes were not fully resolved. Use static entries and resolvable handlers; limits are 8 spread levels and 256 entries per call.`)

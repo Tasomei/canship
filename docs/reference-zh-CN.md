@@ -19,6 +19,10 @@
 
 已识别的 Next.js/Astro 中间件可抑制匹配路由的鉴权结果；Server Function 需在函数内检查。Express/Hono/Fastify 仅接受已解析的拒绝逻辑或已知鉴权库。Fastify 装饰器和插件的保护证据限定于当前实例。
 
+项目路由工厂支持顶层 `const app = make()`：无参同步函数须返回新的 Express、Hono/OpenAPIHono 或 Fastify 实例。可跟进静态 ESM 导入、命名及默认重导出、单源 `export *`。保留 Hono 的字面量 `basePath()` 前缀，中间件按实例隔离。不推断条件或异步返回、参数、共享实例、修改及任意包装链。达到解析上限标记覆盖不完整，不支持的语法仍可能不进入路由发现。
+
+工厂导入读取最近的 `tsconfig.json` / `jsconfig.json`，支持单目标 `paths`、`baseUrl`、注释及尾逗号；配置继承和项目引用仍视为未解析。工作区解析要求 `dependencies` 显式使用 `workspace:*`、`workspace:^` 或 `workspace:~`，目标包须匹配 `package.json` 的工作区列表，模式支持单段通配符。仅跟进公开导出子路径，运行时条件分支须指向同一源码；类型分支、不同目标、重复包名及注册表版本范围不能证明来源。映射只确定源码候选，不证明部署行为：[TypeScript paths](https://www.typescriptlang.org/tsconfig/paths.html) 不改写运行时导入，[包导出](https://nodejs.org/api/packages.html#conditional-exports)可受环境条件影响。
+
 会话校验及 webhook 验签（Stripe、Polar、Clerk、Svix、QStash）须在失败时拒绝请求，异步调用须等待或返回。项目辅助函数与包装器、SvelteKit hooks、Nuxt 中间件的间接证据可降低置信度；未解析的鉴权来源不能消除结果。
 
 输入追踪支持赋值、解构、字符串构造及可解析的跨文件透传函数，不以辅助函数名称证明输入已净化。
@@ -155,6 +159,8 @@ JSON 使用 [schemaVersion 1](../schemas/scan-report-v1.schema.json)。须独立
 | 文件读取 | 单文件 2 MiB；单次 128 MiB、10,000 个文件，含文件类型探测 |
 | 目录遍历 | 50,000 个条目；16 层 |
 | OpenAPI 批量入口 | 每次调用 256 项，含展开项；数组 8 层 |
+| 项目路由工厂 | 解析 8 步；表达式 4,000 字符；每文件 256 个候选；字面前缀 8 次 |
+| 工厂模块元数据 | 每配置 65,536 个 UTF-16 码元；128 个路径映射；64 个工作区模式；条件导出 8 层、每层 32 项 |
 | 结果 | 每文件 100 条，优先保留高严重度、高置信度结果 |
 | Git 历史 | 每文件 100 个相关版本；单条命令 30 秒 |
 | 鉴权辅助函数解析 | 8 跳；每个辅助函数 64 个符号，每个路由文件共 1,024 个 |
