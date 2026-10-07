@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a vulnerability privately
+    url: https://github.com/Tasomei/canship/security/policy
+    about: Read the security policy before sharing vulnerability details or sensitive data.
