@@ -229,6 +229,8 @@ JSON 使用 [schemaVersion 1](./schemas/scan-report-v1.schema.json)。须独立�
 
 ## 开发
 
+[VS Code 插件](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme)为独立开发预览，不包含在 npm 扫描器中；真实宿主验收及 Marketplace 发布尚未完成。
+
 ```powershell
 npm ci
 ```

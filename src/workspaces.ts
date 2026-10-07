@@ -71,8 +71,8 @@ function regularConfig(root: string): void {
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
 }
 
-export async function scanWorkspaces(root: string, paths: readonly string[], options: WorkspaceOptions, scanner: Scanner = scan) {
-  const selected = resolveWorkspaces(root, paths)
+async function scanProjects(selected: { path: string; root: string }[], options: WorkspaceOptions, scanner: Scanner,
+  validate: (project: { path: string; root: string }) => void) {
   const projects: ProjectResult[] = []
   // 固定全局选项，外部进度回调不能改变后续项目的扫描范围。
   const settings = { ...options, only: [...options.only], skip: [...options.skip], exclude: [...options.exclude] }
@@ -81,8 +81,7 @@ export async function scanWorkspaces(root: string, paths: readonly string[], opt
     let stage = 'WORKSPACE_UNAVAILABLE'
     try {
       // 前一项目运行期间可能修改目录；读取配置前重新验证边界。
-      const checked = resolveWorkspaces(root, [project.path])[0]!
-      if (checked.root !== project.root) throw new WorkspaceError('Workspace directory changed.')
+      validate(project)
       stage = 'CONFIG_INVALID'
       if (!settings.noConfig) regularConfig(project.root)
       const loaded = settings.noConfig ? { config: {}, path: null } : loadConfig(project.root)
@@ -136,6 +135,21 @@ export async function scanWorkspaces(root: string, paths: readonly string[], opt
     scope: 'Only explicitly selected workspace directories were scanned; parent and sibling project configuration and sources were not inherited.',
     counts: { projects: projects.length, failed, findings: projects.reduce((sum, p) => sum + (p.summary?.findings ?? 0), 0),
       blocking: projects.reduce((sum, p) => sum + (p.summary?.blocking ?? 0), 0), hiddenLikely: projects.reduce((sum, p) => sum + (p.report?.hiddenLikely ?? 0), 0) }, projects }
+}
+
+export function scanWorkspaces(root: string, paths: readonly string[], options: WorkspaceOptions, scanner: Scanner = scan) {
+  return scanProjects(resolveWorkspaces(root, paths), options, scanner, project => {
+    const checked = resolveWorkspaces(root, [project.path])[0]!
+    if (checked.root !== project.root) throw new WorkspaceError('Workspace directory changed.')
+  })
+}
+
+/** 编辑器复用相同配置与基线流程；低层公共 scan() 的无配置语义不变。 */
+export async function scanConfiguredProject(root: string, options: WorkspaceOptions, scanner: Scanner = scan): Promise<ProjectResult> {
+  const result = await scanProjects([{ root: resolve(root), path: '.' }], options, scanner, project => {
+    if (!lstatSync(realpathSync(project.root)).isDirectory()) throw new WorkspaceError('Project root is unavailable.')
+  })
+  return result.projects[0]!
 }
 
 export function renderWorkspaces(report: Awaited<ReturnType<typeof scanWorkspaces>>, root: string, paths: string[], readFlags: string[], verbose: boolean): string {

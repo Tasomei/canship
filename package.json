@@ -55,6 +55,7 @@
   },
   "scripts": {
     "build": "tsup",
+    "build:extension": "npm run build && node scripts/build-extension.mjs",
     "benchmark": "npm run build && node --max-old-space-size=256 scripts/benchmark.mjs",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
@@ -69,6 +70,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/vscode": "1.95.0",
     "ajv": "^8.20.0",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",

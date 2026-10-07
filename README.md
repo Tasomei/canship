@@ -229,6 +229,8 @@ Evidence traces are capped at 24 steps and disclose truncation.
 
 ## Development
 
+The [VS Code extension](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme) is a development preview, separate from the npm package. Real-host acceptance and Marketplace publication are pending.
+
 ```powershell
 npm ci
 ```

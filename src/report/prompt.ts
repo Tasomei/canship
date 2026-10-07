@@ -27,6 +27,7 @@ function renderInstruction(f: Finding, index: number): string {
   const location = defuseMarkers(locationOf(f))
 
   lines.push(`${index}. ${location} — ${defuseMarkers(f.title)}`)
+  lines.push(`   Rule: ${defuseMarkers(f.ruleId)}`)
   if (f.excerpt) lines.push(`   Found: ${defuseMarkers(f.excerpt)}`)
   for (const step of f.evidence ?? []) {
     lines.push(`   Static evidence: ${defuseMarkers(locationOf(step))} — ${defuseMarkers(step.description)}`)
@@ -41,6 +42,8 @@ function renderInstruction(f: Finding, index: number): string {
 
 /** 生成提示所需的扫描上下文。 */
 export interface PromptContext {
+  /** 仅复制选中的结果，不代表整次扫描的全部发现。 */
+  selectedFindings?: boolean
   excludedPaths?: string[]
   changeView?: ChangeView
   /** 扫描是否未完成。 */
@@ -81,6 +84,7 @@ export function renderFixPrompt(findings: Finding[], ctx?: PromptContext): strin
   const baselineSuppressed = ctx?.baselineSuppressed ?? 0
   const silenced = ctx?.silenced ?? []
   const suppressedNotes = [
+    ctx?.selectedFindings ? 'Note: only selected findings are included; consult the original report for other findings and coverage.' : null,
     ctx?.excludedPaths?.length ? `Note: explicit path exclusions were active: ${defuseMarkers(ctx.excludedPaths.join(', '))}. This prompt does not cover them.` : null,
     (ctx?.baselineExpired ?? 0) > 0 ? `Note: ${ctx!.baselineExpired} baseline acceptances expired; expired records no longer suppress findings.` : null,
     ctx?.changeView ? changeViewNotice(ctx.changeView) : null,
@@ -138,7 +142,7 @@ export function renderFixPrompt(findings: Finding[], ctx?: PromptContext): strin
     out.push('--- Paste everything below into your coding assistant ---')
     out.push('')
     out.push(
-      `I ran a security scan on this project and it found ${codeFixable.length} ` +
+      (ctx?.selectedFindings ? `I selected ${codeFixable.length} ` : `I ran a security scan on this project and it found ${codeFixable.length} `) +
         `${codeFixable.length === 1 ? 'issue' : 'issues'}. Please fix them.`,
     )
     out.push('')

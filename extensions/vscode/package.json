@@ -1,0 +1,39 @@
+{
+  "name": "canship",
+  "displayName": "Canship",
+  "description": "Local static checks for credentials, access rules and unsafe request input.",
+  "version": "0.0.1",
+  "publisher": "Tasomei",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "vscode": "^1.95.0" },
+  "categories": ["Linters"],
+  "extensionKind": ["workspace"],
+  "main": "./dist/extension.cjs",
+  "activationEvents": ["onStartupFinished"],
+  "repository": { "type": "git", "url": "https://github.com/Tasomei/canship.git" },
+  "capabilities": {
+    "untrustedWorkspaces": { "supported": false, "description": "Scanning local files and Git history requires a trusted workspace. No project dependencies are executed." },
+    "virtualWorkspaces": { "supported": false, "description": "The scanner requires local filesystem and optional Git access." }
+  },
+  "contributes": {
+    "commands": [
+      { "command": "canship.scanWorkspace", "title": "Canship: Scan Workspace", "enablement": "isWorkspaceTrusted" },
+      { "command": "canship.cancelScan", "title": "Canship: Cancel Scan" },
+      { "command": "canship.clearResults", "title": "Canship: Clear Results" },
+      { "command": "canship.showSummary", "title": "Canship: Show Scan Summary" },
+      { "command": "canship.copyFixPrompt", "title": "Canship: Copy Finding Fix Prompt", "enablement": "isWorkspaceTrusted" },
+      { "command": "canship.previewIgnore", "title": "Canship: Review Line Suppression", "enablement": "isWorkspaceTrusted" }
+    ],
+    "configuration": {
+      "title": "Canship",
+      "properties": {
+        "canship.scanOnSave": { "type": "boolean", "default": false, "scope": "application", "description": "Scan after saves. Disabled by default; reads saved files, not unsaved buffers." },
+        "canship.includeLikely": { "type": "boolean", "default": false, "scope": "application", "description": "Include likely findings. Hidden findings still count in the summary." },
+        "canship.useProjectConfig": { "type": "boolean", "default": true, "scope": "application", "description": "Read the selected folder's Canship config and configured baseline." },
+        "canship.honorIgnoreMarkers": { "type": "boolean", "default": true, "scope": "application", "description": "Honor source suppression comments. Disable when scanning untrusted source within a trusted workspace." },
+        "canship.saveDelay": { "type": "number", "minimum": 250, "maximum": 10000, "default": 750, "scope": "application", "description": "Delay in milliseconds before a save-triggered scan." }
+      }
+    }
+  }
+}

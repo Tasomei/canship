@@ -1,0 +1,7 @@
+src/**
+test/**
+node_modules/**
+**/*.map
+**/*.ts
+_备份/**
+.scratch/**
