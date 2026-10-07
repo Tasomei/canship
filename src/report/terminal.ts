@@ -290,8 +290,9 @@ function renderClean(result: ScanResult, opts: RenderOptions, width: number): st
     // 全部文件被主动忽略时说明具体原因。
     if (result.ignored.length > 0) {
       out.push(dim('  · every file here was excluded by canship-ignore-file'))
-      out.push('', ...renderIgnored(result))
     }
+    const exclusions = renderIgnored(result)
+    if (exclusions.length) out.push('', ...exclusions)
     out.push('')
     if (result.partial) out.push(...renderIncomplete(result, width), '')
     return out
@@ -342,6 +343,10 @@ function renderClean(result: ScanResult, opts: RenderOptions, width: number): st
 /** 列出主动排除的文件，这些排除不影响完整性。 */
 function renderIgnored(result: ScanResult): string[] {
   const out: string[] = []
+  if (result.exclusions?.requested.length) {
+    out.push(dim(`Path exclusions in force: ${result.exclusions.requested.join(', ')}`))
+    out.push(dim(`${result.exclusions.matched.length} exclusion paths matched; matching subtrees and environment history were not checked.`))
+  }
   if (result.ignored.length > 0) {
     const shown = result.ignored.slice(0, 3).join(', ')
     const more = result.ignored.length > 3 ? `, and ${result.ignored.length - 3} more` : ''

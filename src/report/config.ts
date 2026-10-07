@@ -13,6 +13,7 @@ interface ConfigExplanationInput {
   only: string[]
   skip: string[]
   ruleSource: Source
+  pathExclusions?: { paths: string[]; source: Source }
   settings: {
     all: Setting<boolean>
     baseline: Setting<string | null>
@@ -29,6 +30,7 @@ export function explainConfig(input: ConfigExplanationInput) {
   const ids = new Set(enabled.map(rule => rule.id))
   const excluded = RULE_CATALOG.filter(rule => !ids.has(rule.id)).map(rule => rule.id)
   const warnings: string[] = []
+  if (input.pathExclusions?.paths.length) warnings.push('Configured paths are excluded before file-content and environment-history checks; excluded issues cannot affect scan status.')
   if (excluded.length) warnings.push(`${excluded.length} rule IDs are excluded; their findings will not affect scan status.`)
   if (!enabled.some(rule => rule.reportsFindings)) warnings.push('No finding-producing rules are enabled.')
   if (!input.settings.all.value) warnings.push('Likely findings are hidden, but still affect scan status. Use --all to show them.')
@@ -40,6 +42,7 @@ export function explainConfig(input: ConfigExplanationInput) {
     kind: 'effective-config' as const,
     version: VERSION,
     scanPerformed: false,
+    exclusions: { source: input.pathExclusions?.source ?? 'default', paths: (input.pathExclusions?.paths ?? []).map(cleanForOutput) },
     root: cleanForOutput(input.root),
     config: {
       status: input.configDisabled ? 'disabled' : input.configPath === null ? 'absent' : 'loaded',
@@ -71,6 +74,7 @@ export function renderConfigExplanation(report: ReturnType<typeof explainConfig>
     '',
     `Root: ${report.root}`,
     `Config: ${report.config.status}${report.config.path === null ? '' : ` (${report.config.path})`}`,
+    `Path exclusions [${report.exclusions.source}]: ${report.exclusions.paths.join(', ') || 'none'}`,
     '',
     'Settings (source: cli / config / default):',
     ...Object.entries(report.settings).map(([key, setting]) => `  ${key}: ${setting.value ?? 'none'} [${setting.source}]`),

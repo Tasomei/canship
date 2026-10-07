@@ -4,12 +4,15 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { isKnownSelector } from './rules/index.js'
 import { configOffset, configPosition } from './config-location.js'
+import { isExclusionPath, MAX_EXCLUSIONS } from './exclusions.js'
 
 /** 扫描目录中的配置文件名。 */
 export const CONFIG_FILENAME = 'canship.config.json'
 
 /** 所有设置均可省略，显式命令行参数优先。 */
 export interface Config {
+  /** 按字面值排除项目相对文件或目录。 */
+  exclude?: string[]
   /** 基线路径。 */
   baseline?: string
   /** 仅执行匹配规则；与 skip 互斥。 */
@@ -36,7 +39,7 @@ export class ConfigError extends Error {
 }
 
 /** 支持的配置键。 */
-const KNOWN_KEYS = new Set(['$schema', 'baseline', 'only', 'skip', 'all'])
+const KNOWN_KEYS = new Set(['$schema', 'baseline', 'only', 'skip', 'all', 'exclude'])
 
 type InvalidConfig = (message: string, field: string, index?: number) => never
 
@@ -100,6 +103,13 @@ export function parseConfig(text: string, path: string): Config {
   }
 
   const config: Config = {}
+  if (raw['exclude'] !== undefined) {
+    if (!Array.isArray(raw['exclude']) || raw['exclude'].length > MAX_EXCLUSIONS) invalid('"exclude" must contain at most 64 relative paths', 'exclude')
+    config.exclude = raw['exclude'].map((value, index) => {
+      if (!isExclusionPath(value)) invalid('"exclude" requires literal relative paths without traversal, wildcards or control characters', 'exclude', index)
+      return value
+    })
+  }
   // Schema 地址仅供编辑器使用，扫描器不读取或请求该地址。
   if (raw['$schema'] !== undefined && (typeof raw['$schema'] !== 'string' || raw['$schema'] === '')) {
     invalid('"$schema" must be a non-empty string', '$schema')

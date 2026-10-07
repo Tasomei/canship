@@ -22,6 +22,7 @@ import { createHash } from 'node:crypto'
 import { reportOpenapiBatchCoverage } from './rules/routers.js'
 import { diagnosticCodeOf } from './diagnostics.js'
 import { createScanControl } from './scan-control.js'
+import { createExclusions } from './exclusions.js'
 
 const SEVERITY_ORDER: Record<Finding['severity'], number> = { P0: 0, P1: 1, P2: 2 }
 const CONFIDENCE_ORDER: Record<Finding['confidence'], number> = { certain: 0, likely: 1 }
@@ -181,6 +182,7 @@ function sortFindings(findings: Finding[]): Finding[] {
 /** 返回选定规则的全部置信度结果，展示过滤由调用方负责。 */
 export async function scan(root: string, options: ScanOptions = {}): Promise<ScanResult> {
   const started = Date.now()
+  const exclusions = createExclusions(options.exclude)
   const control = createScanControl(options)
   control.check()
   const progress: ScanProgress = { phase: 'discovery', filesCompleted: 0, filesTotal: null,
@@ -191,7 +193,7 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
   const git = detectGitRepo(root, gitExecutable)
   const honorIgnoreMarkers = options.honorIgnoreMarkers !== false
   const { files, skipped, ignored, vendored } =
-    collectFiles(root, git === 'repo', gitExecutable, {}, honorIgnoreMarkers)
+    collectFiles(root, git === 'repo', gitExecutable, {}, honorIgnoreMarkers, exclusions.matches)
 
   const findings: Finding[] = []
   const errors: ScanError[] = []
@@ -210,6 +212,7 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
     files,
     git,
     gitExecutable,
+    excludePath: exclusions.matches,
     // 统一记录不完整状态，避免重复提示。
     reportIncomplete: (ruleId, message) => {
       if (incompleteSeen.has(`${ruleId} ${message}`)) return
@@ -277,6 +280,7 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
   })
 
   const result: ScanResult = {
+    ...(exclusions.requested.length ? { exclusions: { requested: exclusions.requested.map(clean), matched: exclusions.matched().map(clean) } } : {}),
     findings: sanitize(bounded, files),
     filesScanned: files.length,
     durationMs: Date.now() - started,

@@ -91,6 +91,7 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 | `--no-excerpts` | Remove excerpts from all reports |
 | `--changed-since=ref` | Show changed-file findings; preserve full-scan status |
 | `--only=ids` / `--skip=ids` | Select/exclude rules or namespaces; comma-separated, repeatable |
+| `--exclude=path` | Exclude a literal project-relative file or directory; repeatable |
 | `--list-rules` | List rules without scanning; supports `--only` / `--skip` and `--json` |
 | `--explain-config` | Show effective settings, sources, and selected rules without scanning; supports `--json` |
 | `--doctor` | Run read-only environment checks; supports `--json`, `--no-config`, `--baseline`, and output-path checks |
@@ -118,7 +119,7 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 
 ## Configuration
 
-`canship.config.json` accepts `baseline`, `only`, `skip`, and `all`. CLI options take precedence; `only` and `skip` are mutually exclusive.
+`canship.config.json` accepts `baseline`, `only`, `skip`, `exclude`, and `all`. CLI options take precedence; `only` and `skip` are mutually exclusive.
 
 For editor completion, set `$schema` to the bundled [configuration schema](./schemas/config-v1.schema.json), e.g. `./node_modules/canship/schemas/config-v1.schema.json` after local installation. Canship does not fetch this reference. Invalid fields include a field path and line/column; JSON syntax errors include a location when available. Schema validation does not verify baseline files or path containment.
 
@@ -129,6 +130,8 @@ For editor completion, set `$schema` to the bundled [configuration schema](./sch
 `--explain-config` resolves the same settings as a scan. It does not read source or baseline contents, check Git history, or write files. Exit `0` confirms configuration resolution, not scan coverage or baseline validity. JSON uses `kind: "effective-config"`, not the scan-report schema. Paths remain visible; review output before sharing. Report output, baseline writes/migration, and `--changed-since` cannot be combined with this mode.
 
 A standalone `canship-ignore-file` comment excludes a file. `canship-ignore-next-line [rule]` suppresses the next line, optionally for one rule. Exclusions are disclosed and may reduce status to `0` without marking coverage incomplete. For untrusted projects, use `--no-config --no-ignore-markers`.
+
+`exclude` uses case-sensitive literal paths, such as `generated/` or `test/fixtures/`; no globs or traversal. Up to 64 paths of 512 characters are accepted. CLI paths replace the configuration list; `--no-config` disables project-provided exclusions. Matching file contents and environment-history objects are not read; configuration, baseline, and Git metadata reads are separate. Reports disclose requested and matched exclusion paths, not excluded file counts. Baseline maintenance refuses this restricted scope.
 
 Baselines accept existing findings without fixing them. New baselines use v4 with optional reasons and expiry; v2/v3 remain readable. The v3 fingerprint algorithm is unchanged: title, language, and line moves do not change identity; source evidence does. SARIF retains v2 and v3 fingerprints. Older scanners reject v4 instead of ignoring expiry.
 
@@ -183,7 +186,7 @@ const result = await scan('./my-app', { noExcerpts: true })
 console.log(summarize(result))
 ```
 
-`scan()` returns all confidence levels. Options: `only`, `skip`, `honorIgnoreMarkers` (default `true`), `noExcerpts` (default `false`), `signal`, and `onProgress`. It does not load configuration, apply baselines, write reports, or set process exit status. Invalid arguments throw. `listRules()` returns the rule catalogue; `getBuildInfo()` and `getCapabilities()` identify the build and permission boundaries.
+`scan()` returns all confidence levels. Options: `only`, `skip`, `exclude`, `honorIgnoreMarkers` (default `true`), `noExcerpts` (default `false`), `signal`, and `onProgress`. It does not load configuration, apply baselines, write reports, or set process exit status. Invalid arguments throw. `listRules()` returns the rule catalogue; `getBuildInfo()` and `getCapabilities()` identify the build and permission boundaries.
 
 `signal` accepts an AbortSignal. Cancellation rejects with `ScanCancelledError` (`name: "AbortError"`, `code: "SCAN_CANCELLED"`), not a clean or partial result. `onProgress` receives immutable stage/count snapshots; async callbacks are awaited and failures reject with `ScanProgressError`. Completion stages do not prove coverage; inspect the returned result. Cancellation is checked between file batches and rules, not inside active synchronous file/Git calls. CLI Ctrl+C uses the same boundary; progress contains no filenames.
 

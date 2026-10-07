@@ -91,6 +91,7 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 | `--no-excerpts` | 移除所有报告中的摘录 |
 | `--changed-since=ref` | 展示变更文件结果，保留全量扫描退出码 |
 | `--only=ids` / `--skip=ids` | 选择或排除规则及命名空间，逗号分隔，可重复 |
+| `--exclude=path` | 排除项目相对文件或目录，按字面值匹配，可重复 |
 | `--list-rules` | 列出规则而不扫描，支持 `--only` / `--skip` 筛选及 `--json` |
 | `--explain-config` | 展示生效设置、来源及规则选择，不执行扫描，支持 `--json` |
 | `--doctor` | 只读环境诊断，支持 `--json`、`--no-config`、`--baseline` 及输出路径预检 |
@@ -118,7 +119,7 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 
 ## 配置
 
-`canship.config.json` 支持 `baseline`、`only`、`skip`、`all`。命令行参数优先，`only` 与 `skip` 互斥。
+`canship.config.json` 支持 `baseline`、`only`、`skip`、`exclude`、`all`。命令行参数优先，`only` 与 `skip` 互斥。
 
 将 `$schema` 指向随包提供的[配置 Schema](./schemas/config-v1.schema.json)可启用编辑器补全；本地安装后可用 `./node_modules/canship/schemas/config-v1.schema.json`。Canship 不请求该地址。字段错误显示字段路径及行列；JSON 语法错误在可定位时显示位置。Schema 不验证基线文件及路径边界。
 
@@ -129,6 +130,8 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 `--explain-config` 与扫描使用相同的配置解析逻辑，不读取源码或基线内容、不检查 Git 历史、不写文件。退出 `0` 仅表示配置解析成功，不代表扫描完整或基线有效。JSON 使用 `kind: "effective-config"`，不属于扫描报告格式。输出保留路径，分享前须审阅；不能与报告输出、基线写入或迁移、`--changed-since` 组合。
 
 独占行注释 `canship-ignore-file` 排除整个文件；`canship-ignore-next-line [rule]` 抑制下一行，可限定单条规则。报告披露排除项；主动抑制不标记扫描不完整，可能使退出码降为 `0`。扫描不可信项目时使用 `--no-config --no-ignore-markers`。
+
+`exclude` 按区分大小写的字面路径匹配，如 `generated/`、`test/fixtures/`，不支持通配符或目录越界；最多 64 项，每项 512 字符。命令行列表覆盖配置列表，`--no-config` 禁用项目提供的排除项。匹配文件的正文及环境文件历史对象不读取，配置、基线和 Git 元数据读取不受此设置控制。报告披露请求及匹配的排除路径，不将其当作文件数量；限制范围时拒绝基线维护。
 
 基线表示接受已有结果，不代表问题已修复。新基线使用 v4，支持可选理由和有效期，仍可读取 v2/v3。v3 指纹算法不变：标题、语言及行号移动不改变身份，来源证据变化仍会重新报告。SARIF 保留 v2/v3 指纹；旧扫描器会拒绝 v4，而非忽略有效期。
 
@@ -183,7 +186,7 @@ const result = await scan('./my-app', { noExcerpts: true })
 console.log(summarize(result))
 ```
 
-`scan()` 返回全部置信度结果，支持 `only`、`skip`、`honorIgnoreMarkers`（默认 `true`）、`noExcerpts`（默认 `false`）、`signal` 和 `onProgress`。不加载配置、不应用基线、不写报告、不设置进程退出码；无效参数抛出异常。`listRules()` 返回规则目录，`getBuildInfo()` 和 `getCapabilities()` 提供构建身份与权限边界。
+`scan()` 返回全部置信度结果，支持 `only`、`skip`、`exclude`、`honorIgnoreMarkers`（默认 `true`）、`noExcerpts`（默认 `false`）、`signal` 和 `onProgress`。不加载配置、不应用基线、不写报告、不设置进程退出码；无效参数抛出异常。`listRules()` 返回规则目录，`getBuildInfo()` 和 `getCapabilities()` 提供构建身份与权限边界。
 
 `signal` 接受 AbortSignal。取消时抛出 `ScanCancelledError`（`name: "AbortError"`、`code: "SCAN_CANCELLED"`），不返回成功或部分结果。`onProgress` 提供不可变的阶段与计数快照，等待异步回调，回调失败抛出 `ScanProgressError`。阶段结束不代表覆盖完整，应检查返回结果。取消在文件批次及规则边界检查，不会立即中断执行中的同步文件或 Git 调用。CLI Ctrl+C 使用相同边界，进度不包含文件名。
 

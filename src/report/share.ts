@@ -34,11 +34,13 @@ export function createShareSummary(result: ScanResult, options: ShareOptions) {
       P2: result.findings.filter(finding => finding.severity === 'P2').length,
       filesScanned: count(result.filesScanned), errors: result.errors.length, skipped: result.skipped.length,
       ignoredFiles: result.ignored.length, ignoredFindings: result.ignoredFindings.length,
+      excludedPaths: result.exclusions?.matched.length ?? 0,
       baselineSuppressed: count(options.baselineSuppressed), baselineStale: count(options.baselineStale),
       baselineExpired: count(options.baselineExpired),
     },
     scope: {
       rulesRestricted: result.ruleSelection !== null,
+      pathsRestricted: Boolean(result.exclusions?.requested.length),
       baselineApplied: options.baselineApplied === true,
       configEnabled: options.configEnabled === true,
       honorIgnoreMarkers: options.honorIgnoreMarkers === true,
@@ -55,8 +57,9 @@ export function renderShareSummary(summary: ReturnType<typeof createShareSummary
     `P0 ${c.P0} · P1 ${c.P1} · P2 ${c.P2}`,
     `${c.filesScanned} files scanned · ${c.errors} errors · ${c.skipped} skipped paths`,
     `${c.ignoredFiles} ignored files · ${c.ignoredFindings} ignored findings`,
+    `${c.excludedPaths} explicit exclusion paths matched`,
     `${c.baselineSuppressed} baseline-suppressed · ${c.baselineStale} unmatched · ${c.baselineExpired} expired`,
     `Coverage: ${summary.partial ? 'incomplete' : 'complete within selected scope'}`,
-    `Scope: rules restricted=${summary.scope.rulesRestricted}; baseline=${summary.scope.baselineApplied}; config=${summary.scope.configEnabled}; ignore markers=${summary.scope.honorIgnoreMarkers}; best-effort=${summary.scope.bestEffort}`,
+    `Scope: rules restricted=${summary.scope.rulesRestricted}; paths restricted=${summary.scope.pathsRestricted}; baseline=${summary.scope.baselineApplied}; config=${summary.scope.configEnabled}; ignore markers=${summary.scope.honorIgnoreMarkers}; best-effort=${summary.scope.bestEffort}`,
     `exit ${summary.exitCode}`, summary.notice, ''].join('\n')
 }

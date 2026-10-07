@@ -85,6 +85,8 @@ export interface ScanContext {
   /** Git 仓库识别结果。 */
   git: GitStatus
   gitExecutable: string | null
+  /** 显式排除路径；Git 历史规则在读取对象前复用此检查。 */
+  excludePath?: (path: string) => boolean
   /** 记录扫描缺口，同时保留已产生的结果。 */
   reportIncomplete(ruleId: string, message: string): void
 }
@@ -106,6 +108,8 @@ export type SkipReason =
 
 /** 按对外规则 ID 或命名空间选择规则。 */
 export interface ScanOptions {
+  /** 项目相对文件或目录路径，按字面值匹配。 */
+  exclude?: string[]
   /** 在同步分析批次和规则边界检查取消，不中断正在执行的同步系统调用。 */
   signal?: AbortSignal
   /** 只提供阶段和计数；回调失败会中止扫描。 */
@@ -176,6 +180,8 @@ export interface ChangeView {
 
 /** 扫描汇总；结果为空时仍需保留完整性信息。 */
 export interface ScanResult {
+  /** 显式文件范围限制；matched 是匹配到的请求路径，不是文件数量。 */
+  exclusions?: { requested: string[]; matched: string[] }
   /** 仅筛选展示；统计和退出码仍基于完整扫描。 */
   changeView?: ChangeView
   findings: Finding[]

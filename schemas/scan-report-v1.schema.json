@@ -39,6 +39,13 @@
       }
     },
     "ignored": { "$ref": "#/definitions/strings" },
+    "exclusions": {
+      "type": "object", "required": ["requested", "matched"],
+      "properties": {
+        "requested": { "$ref": "#/definitions/strings" },
+        "matched": { "$ref": "#/definitions/strings" }
+      }
+    },
     "errors": {
       "type": "array",
       "items": {

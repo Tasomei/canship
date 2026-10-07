@@ -6,6 +6,17 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "exclude": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512,
+        "pattern": "^(?![!])(?!.*[:*?\\[\\]{}\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029])(?!(?:.*[/\\\\])?\\.{1,2}(?:[/\\\\]|$))[^\\s/\\\\](?:[^/\\\\]*[^\\s/\\\\])?(?:[/\\\\][^\\s/\\\\](?:[^/\\\\]*[^\\s/\\\\])?)*[/\\\\]?$"
+      },
+      "description": "Literal project-relative files or directories, case-sensitive; no globs. Exclusions affect source and environment-history checks, not configuration or metadata loading."
+    },
     "$schema": {
       "type": "string",
       "minLength": 1,

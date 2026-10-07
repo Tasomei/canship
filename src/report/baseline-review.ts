@@ -6,7 +6,7 @@ import type { ScanResult } from '../types.js'
 
 export function canPruneBaseline(result: ScanResult): boolean {
   return !result.partial && result.filesScanned > 0 && result.errors.length === 0 && result.skipped.length === 0 &&
-    result.ruleSelection === null && result.ignored.length === 0 && result.ignoredFindings.length === 0
+    result.ruleSelection === null && !result.exclusions?.requested.length && result.ignored.length === 0 && result.ignoredFindings.length === 0
 }
 
 function cleanEntry(entry: BaselineEntry): BaselineEntry {
@@ -28,6 +28,7 @@ export function createBaselineReview(result: ScanResult, baseline: BaselineFile,
     schemaVersion: 1, kind: 'baseline-review' as const, baselineVersion: baseline.version, candidateVersion: BASELINE_VERSION, baselinePresent,
     canPrune: canPruneBaseline(result), partial: result.partial, filesScanned: result.filesScanned,
     ruleSelection: result.ruleSelection,
+    exclusions: result.exclusions ?? null,
     ignoredFiles: result.ignored.length, ignoredFindings: result.ignoredFindings.length,
     errors: result.errors.length, skipped: result.skipped.length,
     counts: review.counts,

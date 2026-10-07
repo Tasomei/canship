@@ -41,6 +41,7 @@ function renderInstruction(f: Finding, index: number): string {
 
 /** 生成提示所需的扫描上下文。 */
 export interface PromptContext {
+  excludedPaths?: string[]
   changeView?: ChangeView
   /** 扫描是否未完成。 */
   partial: boolean
@@ -80,6 +81,7 @@ export function renderFixPrompt(findings: Finding[], ctx?: PromptContext): strin
   const baselineSuppressed = ctx?.baselineSuppressed ?? 0
   const silenced = ctx?.silenced ?? []
   const suppressedNotes = [
+    ctx?.excludedPaths?.length ? `Note: explicit path exclusions were active: ${defuseMarkers(ctx.excludedPaths.join(', '))}. This prompt does not cover them.` : null,
     (ctx?.baselineExpired ?? 0) > 0 ? `Note: ${ctx!.baselineExpired} baseline acceptances expired; expired records no longer suppress findings.` : null,
     ctx?.changeView ? changeViewNotice(ctx.changeView) : null,
     !ctx?.ignoredFiles?.length

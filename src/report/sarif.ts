@@ -25,6 +25,7 @@ export interface SarifOptions {
 /** 通过通知披露基线、忽略标记和规则筛选造成的结果隐藏。 */
 function suppressionNotes(result: ScanResult, opts: SarifOptions): unknown[] {
   const notes: unknown[] = []
+  if (result.exclusions?.requested.length) notes.push({ level: 'warning', message: { text: `Path exclusions in force: ${result.exclusions.requested.join(', ')}. Excluded contents and environment history were not checked.` } })
   if ((opts.baselineExpired ?? 0) > 0) notes.push({ level: 'note', message: { text: `${opts.baselineExpired} baseline acceptances expired; expired records no longer suppress findings.` } })
   if (result.changeView) notes.push({ level: 'warning', message: { text: changeViewNotice(result.changeView) } })
   const baseline = opts.baselineSuppressed ?? 0

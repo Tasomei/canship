@@ -40,9 +40,11 @@ import { renderInit } from './init.js'
 import { createShareSummary, renderShareSummary } from './report/share.js'
 import { ScanCancelledError, ScanProgressError } from './scan-control.js'
 import { progressText } from './report/progress.js'
+import { createExclusions, isExclusionPath, MAX_EXCLUSIONS } from './exclusions.js'
 import { canPruneBaseline, createBaselineReview, renderBaselineReview, serializeBaselineCandidate } from './report/baseline-review.js'
 
 interface Args {
+  exclude: string[]
   noProgress: boolean
   shareSummary: boolean
   init: 'config' | 'ci' | null
@@ -159,6 +161,7 @@ function selectionPhrase(selection: RuleSelection | null): string | null {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
+    exclude: [],
     noProgress: false,
     shareSummary: false,
     init: null,
@@ -196,6 +199,12 @@ function parseArgs(argv: string[]): Args {
   const positional: string[] = []
 
   for (const arg of argv) {
+    if (arg.startsWith('--exclude=')) {
+      const value = arg.slice('--exclude='.length)
+      if (!isExclusionPath(value) || args.exclude.length >= MAX_EXCLUSIONS) argumentError('--exclude requires at most 64 literal project-relative paths; no traversal or wildcards')
+      args.exclude.push(value)
+      continue
+    }
     if (arg === '--init' || arg.startsWith('--init=')) {
       const kind = arg === '--init' ? 'config' : arg.slice('--init='.length)
       if (args.init !== null || (kind !== 'config' && kind !== 'ci')) argumentError('--init accepts config or ci, once only')
@@ -394,6 +403,7 @@ const HELP = `
         --baseline-expires=UTC  With --baseline-accept, expire at a UTC timestamp
         --only=IDS    Run matching rules (comma-separated, repeatable)
         --skip=IDS    Exclude matching rules
+        --exclude=PATH  Exclude a literal project-relative file or directory; repeatable
         --sarif[=F]   Write a SARIF 2.1.0 log for CI code scanning
                       (default canship.sarif)
         --no-config   Ignore canship.config.json in the scanned directory
@@ -469,7 +479,7 @@ async function main(): Promise<void> {
   if (args.doctor) {
     if (args.buildInfo || args.listRules || args.explainConfig || args.fixPrompt || args.baselineMigrate !== null ||
         args.baselineWrite !== null || args.baselineWriteDefault || args.changedSince !== null || args.open ||
-        args.verbose || args.showAll || args.bestEffort || args.only.length || args.skip.length || args.noExcerpts || args.noIgnoreMarkers) {
+        args.verbose || args.showAll || args.bestEffort || args.only.length || args.skip.length || args.exclude.length || args.noExcerpts || args.noIgnoreMarkers) {
       argumentError('--doctor supports only a path, --json, --no-config, --baseline, --report, and --sarif')
     }
     const report = diagnose({ root: args.root, noConfig: args.noConfig,
@@ -566,6 +576,7 @@ async function main(): Promise<void> {
   const cliSelection = args.only.length > 0 || args.skip.length > 0
   const only = cliSelection ? args.only : (config.only ?? [])
   const skip = cliSelection ? args.skip : (config.skip ?? [])
+  const exclude = createExclusions(args.exclude.length > 0 ? args.exclude : (config.exclude ?? [])).requested
   if (only.length > 0 && skip.length > 0) {
     argumentError('rule selection cannot use both only and skip')
   }
@@ -586,6 +597,7 @@ async function main(): Promise<void> {
     // 使用扫描分支已解析的值，避免配置预览与实际执行采用不同优先级。
     const explanation = explainConfig({
       root: args.root, configPath, configDisabled: args.noConfig, only, skip,
+      pathExclusions: { paths: exclude, source: args.exclude.length ? 'cli' : config.exclude !== undefined ? 'config' : 'default' },
       ruleSource: cliSelection ? 'cli' : config.only !== undefined || config.skip !== undefined ? 'config' : 'default',
       settings: {
         all: { value: showAll, source: args.showAll ? 'cli' : config.all !== undefined ? 'config' : 'default' },
@@ -599,7 +611,7 @@ async function main(): Promise<void> {
     return finish(0)
   }
 
-  const scanned = await runScan(args, { only, skip, honorIgnoreMarkers: !args.noIgnoreMarkers })
+  const scanned = await runScan(args, { only, skip, exclude, honorIgnoreMarkers: !args.noIgnoreMarkers })
 
   if (args.baselineReview || args.baselinePrune || args.baselineAccept.length) {
     const source = baselinePath ?? resolve(args.root, DEFAULT_BASELINE_PATH)
@@ -625,7 +637,7 @@ async function main(): Promise<void> {
   }
 
   if (args.baselineMigrate !== null) {
-    if (scanned.partial || scanned.ruleSelection !== null) throw new BaselineError('Migration requires a complete scan without rule selection. No baseline was changed.')
+    if (!canPruneBaseline(scanned)) throw new BaselineError('Migration requires a complete, unfiltered scan without source suppressions. No baseline was changed.')
     const source = args.baselineMigrate === '' ? resolve(args.root, DEFAULT_BASELINE_PATH) : resolve(args.baselineMigrate)
     const migrated = migrateBaseline(scanned.findings, readBaseline(source))
     process.stdout.write(serializeBaselineCandidate(migrated))
@@ -671,6 +683,7 @@ async function main(): Promise<void> {
         `${yellow('canship:')} rule selection was in force, so this baseline covers only the rules that ran.\n`,
       )
     }
+    if (scanned.exclusions?.requested.length) process.stderr.write('canship: path exclusions were active; this baseline covers only the selected paths.\n')
     return finish(0)
   }
 
@@ -726,6 +739,7 @@ async function main(): Promise<void> {
       hiddenLikely,
       baselineSuppressed,
       baselineExpired,
+      excludedPaths: result.exclusions?.requested ?? [],
       silenced: result.ignoredFindings.map((f) => `${f.file}:${f.line} (${f.ruleId})`),
       ignoredFiles: result.ignored,
       ruleSelection: selectionPhrase(result.ruleSelection),

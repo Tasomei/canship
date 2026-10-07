@@ -341,12 +341,17 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
   const prompts: Record<string, string> = {}
   const references: Record<string, string> = {}
   const occurrences = new Map<string, number>()
-  const allPrompt = renderFixPrompt(findings)
+  const promptContext = { partial: result.partial, filesScanned: result.filesScanned, hiddenLikely,
+    baselineSuppressed, baselineExpired: opts.baselineExpired ?? 0,
+    excludedPaths: result.exclusions?.requested ?? [], ignoredFiles: result.ignored,
+    silenced: result.ignoredFindings.map(f => `${f.file}:${f.line} (${f.ruleId})`),
+    ruleSelection: result.ruleSelection === null ? null : 'a rule filter was applied; review the original report for its scope' }
+  const allPrompt = findings.length ? renderFixPrompt(findings, promptContext) : null
   if (allPrompt) prompts['all'] = allPrompt
   const list = groups.map(group => {
     const items = group.findings.map(f => {
       index++
-      const prompt = renderFixPrompt([f])
+      const prompt = renderFixPrompt([f], promptContext)
       if (prompt) prompts[String(index)] = prompt
       const identity = fingerprintOf(f)
       const occurrence = (occurrences.get(identity) ?? 0) + 1
@@ -397,6 +402,7 @@ ${result.skipped.map(s => `<li><code>${esc(s.path)}</code> — ${esc(skipPhrase(
 
   const selection = result.ruleSelection
   const notes = [
+    result.exclusions?.requested.length ? `Path exclusions in force: ${result.exclusions.requested.map(path => `<code>${esc(path)}</code>`).join(', ')}. ${result.exclusions.matched.length} exclusion paths matched; matching subtrees and environment history were not checked.` : '',
     hiddenLikely > 0 && findings.length > 0
       ? `${hiddenLikely} lower-confidence ${plural(hiddenLikely, 'finding')} hidden. Re-run with <code>--all --report</code> to include ${hiddenLikely === 1 ? 'it' : 'them'}.` : '',
     baselineSuppressed > 0

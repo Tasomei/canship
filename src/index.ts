@@ -10,6 +10,7 @@ export type { ScanSummary } from './summary.js'
 import type { ScanOptions as EngineOptions, ScanResult } from './types.js'
 import { ScanInputError } from './diagnostics.js'
 import { checkScanCancelled } from './scan-control.js'
+import { isExclusionPath, MAX_EXCLUSIONS } from './exclusions.js'
 export { ScanCancelledError, ScanProgressError } from './scan-control.js'
 export type { ScanProgress } from './types.js'
 
@@ -35,12 +36,14 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
   if (options === null || typeof options !== 'object' || Array.isArray(options)) {
     throw new ScanInputError('Scan options must be an object.')
   }
-  const allowed = new Set(['only', 'skip', 'honorIgnoreMarkers', 'noExcerpts', 'signal', 'onProgress'])
+  const allowed = new Set(['only', 'skip', 'honorIgnoreMarkers', 'noExcerpts', 'signal', 'onProgress', 'exclude'])
   if (Object.keys(options).some(key => !allowed.has(key))) throw new ScanInputError('Unknown scan option.')
   if (options.signal !== undefined && (options.signal === null || typeof options.signal !== 'object' ||
       typeof options.signal.aborted !== 'boolean' || typeof options.signal.addEventListener !== 'function' ||
       typeof options.signal.removeEventListener !== 'function')) throw new ScanInputError('Expected an AbortSignal.')
   if (options.onProgress !== undefined && typeof options.onProgress !== 'function') throw new ScanInputError('Expected a progress callback.')
+  if (options.exclude !== undefined && (!Array.isArray(options.exclude) || options.exclude.length > MAX_EXCLUSIONS ||
+      !options.exclude.every(isExclusionPath))) throw new ScanInputError('Expected at most 64 literal relative exclusion paths.')
   for (const name of ['honorIgnoreMarkers', 'noExcerpts'] as const) {
     if (options[name] !== undefined && typeof options[name] !== 'boolean') throw new ScanInputError('Expected a boolean scan option.')
   }
@@ -64,6 +67,7 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
   const result = await scanEngine(directory, {
     only: [...(options.only ?? [])], skip: [...(options.skip ?? [])],
     honorIgnoreMarkers: options.honorIgnoreMarkers ?? true,
+    exclude: [...(options.exclude ?? [])],
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     ...(options.onProgress === undefined ? {} : { onProgress: options.onProgress }),
   })

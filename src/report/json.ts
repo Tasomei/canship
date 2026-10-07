@@ -43,6 +43,7 @@ export function createJsonReport(result: ScanResult, options: JsonOptions): Json
     ignoredFindings: result.ignoredFindings,
     ruleSelection: result.ruleSelection,
     vendored: result.vendored,
+    ...(result.exclusions ? { exclusions: result.exclusions } : {}),
     hiddenLikely: options.hiddenLikely,
     baselineSuppressed: options.baselineSuppressed,
     baselineStale: options.baselineStale,

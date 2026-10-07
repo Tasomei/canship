@@ -36,7 +36,7 @@ test('the whitelist omits paths, titles, evidence, diagnostics, selectors and fu
   assert.equal(summary.partial, true)
   assert.equal(summary.exitCode, 2)
   assert.deepEqual(summary.counts, { findings: 1, blocking: 0, likely: 1, P0: 0, P1: 1, P2: 0,
-    filesScanned: 1, errors: 1, skipped: 1, ignoredFiles: 1, ignoredFindings: 1,
+    filesScanned: 1, errors: 1, skipped: 1, ignoredFiles: 1, ignoredFindings: 1, excludedPaths: 0,
     baselineSuppressed: 2, baselineStale: 1, baselineExpired: 1 })
   assert.equal(summary.scope.rulesRestricted, true)
   assert.equal(summary.scope.baselineApplied, true)

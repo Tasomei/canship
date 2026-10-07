@@ -163,6 +163,10 @@ void code; void id;
   }
   const open = sample('open', { 'firestore.rules': 'match /items/{id} { allow write: if true; }' })
   assert.equal(cli([open, '--json']).status, 1)
+  const excluded = cli([open, '--json', '--exclude=firestore.rules'])
+  assert.equal(excluded.status, 3)
+  assert.equal(JSON.parse(excluded.stdout).filesScanned, 0)
+  assert.deepEqual(JSON.parse(excluded.stdout).exclusions.matched, ['firestore.rules'])
   const readOnly = sample('public-read', { 'firestore.rules': 'match /items/{id} { allow read: if true; }' })
   const hidden = cli([readOnly, '--json'])
   assert.equal(hidden.status, 2)

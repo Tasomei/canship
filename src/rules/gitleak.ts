@@ -142,7 +142,7 @@ function gitOrThrow(root: string, gitExecutable: string | null, args: string[]):
 
 /** 获取扫描目录在仓库中的路径前缀。 */
 function repoPrefix(root: string, gitExecutable: string | null): string {
-  return (git(root, gitExecutable, ['rev-parse', '--show-prefix']) ?? '').trim()
+  return gitOrThrow(root, gitExecutable, ['rev-parse', '--show-prefix']).trim()
 }
 
 /** 列出当前跟踪的环境文件。 */
@@ -324,6 +324,7 @@ export const gitleakRule: ProjectRule = {
 
     // 检查当前跟踪的文件。
     for (const path of tracked) {
+      if (ctx.excludePath?.(path)) continue
       // 根据实际内容确定证据强度。
       const scanned = ctx.files.find((f) => f.path === path)
       const evidence = scanned ? evidenceIn(scanned.lines) : 'hint'
@@ -369,6 +370,7 @@ export const gitleakRule: ProjectRule = {
       // 以扫描相对路径去重。
       if (reportedTracked.has(entry.localPath)) continue // 当前状态已报告。
       const path = entry.localPath
+      if (ctx.excludePath?.(path)) continue
       // 文件是否仍被跟踪仅影响说明文字。
       const stillTracked = tracked.has(entry.localPath)
       // 当前内容正常时仍需检查历史。

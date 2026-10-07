@@ -272,7 +272,7 @@ interface WalkResult {
 }
 
 /** 单次遍历同时收集文件清单和额外候选文件。 */
-function walkTree(root: string, skipped: SkippedFile[], wantAll: boolean, maxEntries: number): WalkResult {
+function walkTree(root: string, skipped: SkippedFile[], wantAll: boolean, maxEntries: number, excludePath?: (path: string) => boolean): WalkResult {
   const all: string[] = []
   const found: string[] = []
   let visited = 0
@@ -316,6 +316,7 @@ function walkTree(root: string, skipped: SkippedFile[], wantAll: boolean, maxEnt
         visited++
         const full = join(dir, entry.name)
         const rel = relative(root, full).split(sep).join('/')
+        if (excludePath?.(rel)) continue
         // 遍历前核对实际类型，避免目录条目漏报链接。
         let metadata
         try {
@@ -458,19 +459,21 @@ export function collectFiles(
   gitExecutable: string | null = resolveGitExecutable(root),
   limits: { maxBytes?: number; maxFiles?: number; maxEntries?: number } = {},
   honorIgnoreMarkers = true,
+  excludePath?: (path: string) => boolean,
 ): CollectResult {
   root = realpathSync(root)
   const skipped: SkippedFile[] = []
   const ignored: string[] = []
   // 合并 Git 清单和单次目录遍历。
   const fromGit = isGitRepo ? listViaGit(root, gitExecutable) : null
-  const walked = walkTree(root, skipped, fromGit === null, limits.maxEntries ?? MAX_WALK_ENTRIES)
+  const walked = walkTree(root, skipped, fromGit === null, limits.maxEntries ?? MAX_WALK_ENTRIES, excludePath)
   const listed = fromGit?.files ?? walked.all
 
   // 合并候选路径并统一排除第三方目录。
   const candidates = new Set<string>()
   let vendored = 0
   for (const path of fromGit?.nestedRepositories ?? []) {
+    if (excludePath?.(path)) continue
     if (isVendored(path)) {
       vendored++
       continue
@@ -482,12 +485,14 @@ export function collectFiles(
     })
   }
   for (const path of listed) {
+    if (excludePath?.(path)) continue
     if (isVendored(path)) vendored++
     else candidates.add(path)
   }
   // 额外候选路径在预算内探测，不受常规扩展名筛选限制。
   const forced = new Set<string>()
   for (const hidden of walked.forced) {
+    if (excludePath?.(hidden)) continue
     candidates.add(hidden)
     forced.add(hidden)
   }
