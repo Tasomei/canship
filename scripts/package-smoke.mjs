@@ -63,6 +63,7 @@ try {
   const catalog = cli(['--list-rules', '--only=injection/sql', '--json'])
   assert.equal(catalog.status, 0)
   assert.deepEqual(JSON.parse(catalog.stdout).rules.map(rule => rule.id), ['injection/sql'])
+  assert.match(JSON.parse(catalog.stdout).rules[0].example.after, /\$1/)
   assert.equal(cli(['--list-rules', '--only=,,,']).status, 3)
   function sample(name, files) {
     const dir = join(root, name)

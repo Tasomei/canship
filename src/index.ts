@@ -27,7 +27,7 @@ export interface ScanOptions extends EngineOptions {
 
 /** 返回独立副本，避免调用方修改内部规则目录。 */
 export function listRules(): RuleDescription[] {
-  return RULE_CATALOG.map(rule => ({ ...rule }))
+  return RULE_CATALOG.map(rule => ({ ...rule, ...(rule.example ? { example: { ...rule.example } } : {}) }))
 }
 
 /** 扫描指定目录，返回全部置信度结果；不自动应用基线或项目配置。 */

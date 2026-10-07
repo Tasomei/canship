@@ -1,6 +1,8 @@
 /** 规则目录说明检测范围与证据边界，不执行扫描。 */
 import type { Severity } from '../types.js'
 import { SECRET_PATTERNS } from './patterns.js'
+import { fixExampleFor } from './examples.js'
+import type { FixExample } from './examples.js'
 
 export interface RuleDescription {
   id: string
@@ -10,10 +12,14 @@ export interface RuleDescription {
   scope: string
   limitation: string
   reportsFindings: boolean
+  example?: FixExample
 }
 
 const rule = (id: string, name: string, severity: Severity, confidence: RuleDescription['confidence'],
-  scope: string, limitation: string): RuleDescription => ({ id, name, severity, confidence, scope, limitation, reportsFindings: true })
+  scope: string, limitation: string): RuleDescription => {
+    const example = fixExampleFor(id)
+    return { id, name, severity, confidence, scope, limitation, reportsFindings: true, ...(example ? { example } : {}) }
+  }
 
 export const RULE_CATALOG: readonly RuleDescription[] = [
   rule('api/admin-db-access-without-auth', 'Admin database access without a recognized auth guard', 'P0', 'certain',
@@ -74,6 +80,7 @@ export const RULE_CATALOG: readonly RuleDescription[] = [
 
 export function renderRuleCatalog(rules: readonly RuleDescription[] = RULE_CATALOG): string {
   return 'canship rules\n\n' + rules.map(item =>
-    `${item.id}\n  ${item.name}\n  ${item.reportsFindings ? `${item.severity}; ${item.confidence}` : 'Public identifier; not reported'}\n  Scope: ${item.scope}\n  Limit: ${item.limitation}`,
+    `${item.id}\n  ${item.name}\n  ${item.reportsFindings ? `${item.severity}; ${item.confidence}` : 'Public identifier; not reported'}\n  Scope: ${item.scope}\n  Limit: ${item.limitation}` +
+      (item.example ? `\n  Illustrative example: ${item.example.context}\n  Before:\n    ${item.example.before.replace(/\n/g, '\n    ')}\n  After:\n    ${item.example.after.replace(/\n/g, '\n    ')}\n  Adaptation required: ${item.example.limitation}` : ''),
   ).join('\n\n') + '\n\nExample and fixture contexts may lower confidence. No credential validity or deployed configuration is verified.\n'
 }

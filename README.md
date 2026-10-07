@@ -57,7 +57,7 @@ OpenAPI configuration supports inline objects, constants, and static ESM imports
 
 ## Results
 
-Reports are in English. The terminal groups findings by file; `--verbose` adds excerpts, explanations, evidence, and fixes. Follow-up commands retain scan targets and privacy options. Offline HTML supports severity/confidence filters, grouping, stable finding links, copyable references and fix prompts. Printing includes all findings present in the report, then restores the view. Filters cannot reveal results omitted during generation; use `--all` to include likely findings.
+Reports are in English. The terminal groups findings by file; `--verbose` adds excerpts, explanations, evidence, and fixes. Common rules include illustrative before/after examples with applicability limits, also available through `--list-rules`. Follow-up commands retain scan targets and privacy options. Offline HTML supports severity/confidence filters, grouping, stable finding links, copyable references and fix prompts. Printing includes all findings present in the report, then restores the view. Filters cannot reveal results omitted during generation; use `--all` to include likely findings.
 
 ![HTML report](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
 

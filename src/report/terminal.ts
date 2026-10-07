@@ -3,6 +3,7 @@
 import type { Finding, ScanResult, SkipReason } from '../types.js'
 import { bold, dim, red, green, yellow, gray } from '../colors.js'
 import { followupCommand } from './commands.js'
+import { fixExampleFor } from '../rules/examples.js'
 import {
   categoryCounts, categoryOf, changeViewNotice, groupByFile, locationOf, manualSteps, plural, SEVERITIES, SKIP_LABEL, verdictOf,
 } from './shared.js'
@@ -211,6 +212,14 @@ function renderFinding(f: Finding, width: number, verbose: boolean): string[] {
     f.fix.forEach((step, i) => {
       wrapText(step, width - DETAIL.length - 3).forEach((line, j) => out.push(`${DETAIL}${j === 0 ? `${i + 1}. ` : '   '}${line}`))
     })
+  }
+  const example = fixExampleFor(f.ruleId)
+  if (example) {
+    out.push('', ...text(`Illustrative example: ${example.context}`))
+    for (const [label, value] of [['Before', example.before], ['After', example.after]]) {
+      out.push(`${DETAIL}${dim(label + ':')}`, ...value!.split('\n').flatMap(line => text(line)))
+    }
+    out.push(...text(`Adaptation required: ${example.limitation}`))
   }
   if (f.humanOnly?.length) {
     out.push('', `${DETAIL}${yellow('by hand')}`)

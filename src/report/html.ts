@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto'
 import type { Finding, ScanResult } from '../types.js'
 import { renderFixPrompt } from './prompt.js'
 import { fingerprintOf } from '../baseline.js'
+import { fixExampleFor } from '../rules/examples.js'
 import {
   categoryCounts, categoryOf, CATEGORIES, changeViewNotice, groupByFile, locationOf, manualSteps, plural, SEVERITIES,
   skipPhrase, verdictOf,
@@ -37,6 +38,11 @@ function esc(s: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
+}
+
+/** 示例语法使用字符引用，避免报告源码被重新扫描成真实配置；浏览器显示和复制不变。 */
+function exampleCode(s: string): string {
+  return esc(s).replace(/[(){}:=]/g, ch => `&#${ch.charCodeAt(0)};`)
 }
 
 /** 逐段渲染并保留段落结构。 */
@@ -82,6 +88,8 @@ function renderFinding(f: Finding, index: number, anchor: string): string {
       `<li><span class="k">${EVIDENCE_LABEL[step.kind]}</span><span class="v">${esc(locationOf(step))}</span><span class="note">${esc(step.description)}</span></li>`).join('')}</ol>${f.evidenceTruncated ? '<p class="faint">Additional dependency steps omitted.</p>' : ''}`
     : ''
   const fix = f.fix.length > 0 ? `<h3>Fix</h3><ol class="steps">${f.fix.map(s => `<li>${linkify(esc(s))}</li>`).join('')}</ol>` : ''
+  const example = fixExampleFor(f.ruleId)
+  const exampleHtml = example ? `<h3>Illustrative example</h3><p>${esc(example.context)}</p><h4>Before</h4><pre class="excerpt"><code>${exampleCode(example.before)}</code></pre><h4>After</h4><pre class="excerpt"><code>${exampleCode(example.after)}</code></pre><p class="faint">Adaptation required: ${esc(example.limitation)}</p>` : ''
   const hand = f.humanOnly?.length
     ? `<div class="hand"><b>By hand</b><ul>${f.humanOnly.map(s => `<li>${linkify(esc(s))}</li>`).join('')}</ul></div>`
     : ''
@@ -91,7 +99,7 @@ function renderFinding(f: Finding, index: number, anchor: string): string {
 <p class="rule">${esc(f.ruleId)}</p>
 ${f.excerpt ? `<pre class="excerpt"><code>${esc(f.excerpt)}</code></pre>` : ''}
 <div class="why">${paragraphs(f.why)}</div>
-${trace}${fix}${hand}
+${trace}${fix}${exampleHtml}${hand}
 <p class="actions"><button type="button" class="link js-only" data-copy="${index}">copy fix prompt</button><button type="button" class="link js-only" data-copy-ref="${index}">copy reference</button><a class="link" href="#${anchor}" aria-label="Link to this finding">link</a></p>
 </div>
 </details>`
