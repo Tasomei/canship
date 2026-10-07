@@ -15,6 +15,7 @@ _备份/
 
 # 报告包含问题位置及详情，不应提交；基线需经审阅后单独纳入版本控制。
 canship-report.html
+canship-comparison.html
 canship.sarif
 
 # 夹具中的环境文件使用模拟值，应保留在版本控制中。

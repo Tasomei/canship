@@ -19,6 +19,8 @@ export interface HtmlOptions {
   generatedAt: string
   /** 页眉显示的扫描器版本。 */
   version?: string
+  /** 纯合成演示必须显式标识，不能被误认为真实项目扫描。 */
+  demonstration?: boolean
   /** 默认视图隐藏的疑似结果数。 */
   hiddenLikely?: number
   /** 基线抑制数量；独立报告必须披露这一信息。 */
@@ -185,11 +187,13 @@ button,input{font:inherit;color:inherit;background:none;border:0;padding:0}
 a{color:inherit}
 button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 .page{max-width:1040px;margin:0 auto;padding:28px 32px 80px}
+.demonstration{border:2px solid var(--ink);padding:12px 16px;margin-bottom:24px;font-size:15px}
 .P0{color:var(--p0)}.P1{color:var(--p1)}.P2{color:var(--p2)}
 .faint{color:var(--ink-3)}
-.mast{display:flex;justify-content:space-between;align-items:baseline;gap:16px;border-bottom:1px solid var(--ink);padding-bottom:8px;font-size:13.5px}
-.mast .root{overflow-wrap:anywhere}
-.mast .right{white-space:nowrap}
+.mast{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:8px 16px;border-bottom:1px solid var(--ink);padding-bottom:8px;font-size:13.5px}
+.mast .root{flex:1 1 20rem;min-width:0;overflow-wrap:anywhere}
+.mast .right{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 16px}
+.mast .right .link{margin-left:0}
 .link{cursor:pointer;text-decoration:underline;text-decoration-color:var(--rule-2);text-underline-offset:3px;margin-left:16px;color:var(--ink-2)}
 .js-only{display:none}.js .js-only{display:inline}
 .verdict-block{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:40px;padding:36px 0 30px;border-bottom:1px solid var(--rule)}
@@ -208,6 +212,7 @@ h2{font-weight:400;font-size:22px;margin:0 0 12px}
 table.matrix{border-collapse:collapse;width:100%}
 .matrix th,.matrix td{padding:7px 0;border-bottom:1px solid var(--rule);font-weight:400;text-align:right}
 .matrix th{font-size:13.5px;color:var(--ink-3)}
+.matrix tbody th{font-size:16px;color:var(--ink)}
 .matrix th:first-child,.matrix td:first-child{text-align:left}
 .matrix td button{min-width:28px;text-align:right;cursor:pointer;border-bottom:1px solid transparent}
 .matrix td button:hover{border-bottom-color:currentColor}
@@ -225,10 +230,12 @@ ol.manual .src{font-size:13.5px;color:var(--ink-3);overflow-wrap:anywhere}
 .controls{display:none;flex-wrap:wrap;align-items:baseline;gap:6px 22px;margin:4px 0 10px;font-size:14px;color:var(--ink-2)}
 .js .controls{display:flex}
 .controls .lbl{color:var(--ink-3);margin-right:6px}
+.controls>span{display:flex;flex-wrap:wrap;gap:6px 0}
 .controls button{cursor:pointer;margin-right:10px;color:var(--ink-2)}
 .controls button.on{color:var(--ink);text-decoration:underline;text-underline-offset:4px;text-decoration-thickness:1.5px}
 .controls input{border-bottom:1px solid var(--rule-2);width:200px;padding:2px 0;outline:0}
 .controls input:focus{border-bottom-color:var(--ink)}
+.controls input:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 .controls .clear{margin-left:auto}
 #count{color:var(--ink-3);font-size:13.5px;margin:0 0 4px}
 .head{display:grid;grid-template-columns:44px minmax(0,1fr) 130px;font-size:13.5px;color:var(--ink-3);padding:6px 0;border-bottom:1px solid var(--ink)}
@@ -248,7 +255,7 @@ summary.row:focus-visible{outline:2px solid var(--ink-2);outline-offset:2px}
 .loc-line{display:none}
 .by-file .loc-line{display:inline}.by-file .loc-full{display:none}
 .cat{font-size:13.5px;color:var(--ink-3)}
-.body{margin:0 0 22px 44px;max-width:740px}
+.body{margin:0 0 22px 44px;max-width:740px;overflow-wrap:anywhere}
 .body p{margin:0 0 12px;color:var(--ink-2)}
 .body .rule{font-size:13.5px;color:var(--ink-3)}
 .body h3{font-weight:400;font-style:italic;font-size:14px;color:var(--ink-3);margin:18px 0 6px}
@@ -275,7 +282,12 @@ ol.steps li{margin-bottom:6px}
 .colophon{margin-top:36px;font-size:13.5px;color:var(--ink-3);max-width:78ch}
 @media (max-width:820px){.verdict-block,.two{grid-template-columns:1fr;gap:24px}h1.verdict{font-size:34px}
   summary.row,.head{grid-template-columns:40px minmax(0,1fr)}.cat,.head .c{display:none}.body{margin-left:40px}}
-@media print{.controls,.link,#count{display:none!important}body{background:#fff;color:#000}.page{max-width:none;padding:0}}
+@media (max-width:480px){.page{padding:20px 16px 48px}.body{margin-left:0}.controls input{max-width:100%}
+  .actions{display:flex;flex-wrap:wrap;gap:8px 16px}.actions .link+.link{margin-left:0}ol.trace .note{margin-left:0}}
+@media print{:root{color-scheme:light;--paper:#ffffff;--ink:#000000;--ink-2:#333333;--ink-3:#555555;
+  --rule:#aaaaaa;--rule-2:#888888;--hover:#f3f3f3;--p0:#b3261e;--p1:#946200;--p2:#333333;--ok:#2f6b2f}
+  .controls,.link,#count{display:none!important}body{background:#fff;color:#000}.page{max-width:none;padding:0}
+  pre.excerpt{white-space:pre-wrap;overflow:visible;overflow-wrap:anywhere}h2,h3,h4,summary,.group,.head{break-after:avoid}details.f{break-inside:avoid-page}}
 `
 
 export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
@@ -335,10 +347,10 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
   // 汇总表：数字按钮用于筛选，无脚本时仍是普通计数表。
   const rows = categoryCounts(findings)
   const totals = SEVERITIES.map(s => findings.filter(f => f.severity === s).length)
-  const matrix = `<table class="matrix"><thead><tr><th></th>${SEVERITIES.map(s => `<th>${s}</th>`).join('')}<th>total</th></tr></thead><tbody>${rows.map(row =>
-    `<tr><td>${row.category}</td>${SEVERITIES.map(s => `<td>${row.counts[s]
-      ? `<button type="button" class="${s}" data-mx-cat="${row.category}" data-mx-sev="${s}">${row.counts[s]}</button>`
-      : '<span class="zero">–</span>'}</td>`).join('')}<td>${row.total}</td></tr>`).join('')}</tbody><tfoot><tr><td>all</td>${totals.map(n => `<td>${n}</td>`).join('')}<td>${findings.length}</td></tr></tfoot></table>`
+  const matrix = `<table class="matrix"><thead><tr><th scope="col">category</th>${SEVERITIES.map(s => `<th scope="col">${s}</th>`).join('')}<th scope="col">total</th></tr></thead><tbody>${rows.map(row =>
+    `<tr><th scope="row">${row.category}</th>${SEVERITIES.map(s => `<td>${row.counts[s]
+      ? `<button type="button" class="${s}" aria-label="Filter ${row.category} ${s} findings" data-mx-cat="${row.category}" data-mx-sev="${s}">${row.counts[s]}</button>`
+      : '<span class="zero">–</span>'}</td>`).join('')}<td>${row.total}</td></tr>`).join('')}</tbody><tfoot><tr><th scope="row">all</th>${totals.map(n => `<td>${n}</td>`).join('')}<td>${findings.length}</td></tr></tfoot></table>`
 
   const manual = steps.length > 0
     ? `<ol class="manual">${steps.map((step, i) => `<li><span class="num">${i + 1}</span><input type="checkbox" data-step="${i}" aria-label="Mark step ${i + 1} complete: ${esc(step.text)}"><div><div class="t">${linkify(esc(step.text))}</div><div class="src">${esc(step.locations.join(', '))}</div></div></li>`).join('')}</ol>`
@@ -355,12 +367,14 @@ export function renderHtml(result: ScanResult, opts: HtmlOptions): string {
     silenced: result.ignoredFindings.map(f => `${f.file}:${f.line} (${f.ruleId})`),
     ruleSelection: result.ruleSelection === null ? null : 'a rule filter was applied; review the original report for its scope' }
   const allPrompt = findings.length ? renderFixPrompt(findings, promptContext) : null
-  if (allPrompt) prompts['all'] = allPrompt
+  const annotatePrompt = (prompt: string): string => opts.demonstration
+    ? 'SYNTHETIC DEMONSTRATION ONLY. No project was scanned. Do not apply these sample paths or changes to a real repository.\n\n' + prompt : prompt
+  if (allPrompt) prompts['all'] = annotatePrompt(allPrompt)
   const list = groups.map(group => {
     const items = group.findings.map(f => {
       index++
       const prompt = renderFixPrompt([f], promptContext)
-      if (prompt) prompts[String(index)] = prompt
+      if (prompt) prompts[String(index)] = annotatePrompt(prompt)
       const identity = fingerprintOf(f)
       const occurrence = (occurrences.get(identity) ?? 0) + 1
       occurrences.set(identity, occurrence)
@@ -443,7 +457,8 @@ ${result.skipped.map(s => `<li><code>${esc(s.path)}</code> — ${esc(skipPhrase(
 <style>${STYLE}</style>
 </head>
 <body>
-<div class="page">
+<main class="page">
+${opts.demonstration ? '<aside class="demonstration" role="note" aria-label="Synthetic demonstration"><strong>Synthetic demonstration — no project was scanned.</strong><br>All findings, paths and counts below are examples. This page contains no live credentials and makes no network requests.</aside>' : ''}
 <header class="mast"><span class="root"><b>canship</b>${opts.version ? ` ${esc(opts.version)}` : ''} · ${esc(opts.root)}</span><span class="right">${esc(displayTime(opts.generatedAt))}${allPrompt ? '<button type="button" class="link js-only" data-copy="all">copy fix prompt</button>' : ''}<button type="button" class="link js-only" id="print">print</button></span></header>
 <section class="verdict-block">
 <div>${verdict}${explanation ? `<p>${esc(explanation)}</p>` : ''}${result.changeView ? `<p>${esc(changeViewNotice(result.changeView))}</p>` : ''}
@@ -453,8 +468,8 @@ ${result.skipped.map(s => `<li><code>${esc(s.path)}</code> — ${esc(skipPhrase(
 ${findingsSection}
 ${incomplete}
 ${notes.length > 0 ? `<section class="section last notes">${notes.map(n => `<p>${n}</p>`).join('')}</section>` : ''}
-<p class="colophon">Generated by canship. Everything ran locally; nothing was uploaded. Findings describe static evidence in this repository; they do not verify deployed configuration, credential validity or business authorisation.</p>
-</div>
+<p class="colophon">${opts.demonstration ? 'Generated from fixed synthetic data. No project was scanned and nothing was uploaded. These examples are not evidence about any real application.' : 'Generated by canship. Everything ran locally; nothing was uploaded. Findings describe static evidence in this repository; they do not verify deployed configuration, credential validity or business authorisation.'}</p>
+</main>
 <script type="application/json" id="canship-data">${jsonForScript(data)}</script>
 <script>${SCRIPT}</script>
 </body>

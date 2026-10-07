@@ -62,6 +62,8 @@ npx canship --all --report
 
 ![HTML report](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
 
+[Synthetic HTML sample](https://github.com/Tasomei/canship/blob/main/docs/demo.html): download the file and open it locally; no scanner installation is required.
+
 HTML provides severity/confidence filters, stable finding links, and copyable repair prompts. Use `--no-excerpts` to omit excerpts; paths and other project text remain. For counts without project text, use `--share-summary` and review before sharing.
 
 | Exit | Static scan result |
@@ -74,7 +76,7 @@ HTML provides severity/confidence filters, stable finding links, and copyable re
 
 Status is calculated after rule selection, source suppressions and baselines. Findings take precedence over incomplete coverage; `--best-effort` never changes `1` or `2`. Check JSON `partial`, `errors`, `skipped` and `filesScanned` separately.
 
-Baselines accept findings; they do not fix them. Review existing decisions, accept selected results, and set optional reasons or expiry through [baseline management](./docs/reference.md#configuration). [Saved-report comparison](./docs/reference.md#cli) distinguishes added, persisting and no-longer-observed records without claiming remediation.
+Baselines accept findings; they do not fix them. Review existing decisions, accept selected results, and set optional reasons or expiry through [baseline management](./docs/reference.md#configuration). [Saved-report comparison](./docs/reference.md#cli) provides terminal, JSON and offline HTML views of added, persisting and no-longer-observed records without claiming remediation.
 
 ## Connect to CI
 

@@ -8,12 +8,13 @@ import { writeOutput } from '../src/output.js'
 
 const root=mkdtempSync(join(tmpdir(),'canship-output-boundary-'))
 after(()=>rmSync(root,{recursive:true,force:true}))
-const html='<title>canship report</title><script id="canship-data"></script>'
+const html='<!doctype html><html><head><title>canship report</title></head><body><script id="canship-data"></script></body></html>'
 test('new output is created and tool-owned output can be replaced atomically',()=>{
   const path=join(root,'report.html')
   writeOutput(path,html,'html')
-  writeOutput(path,html+'updated','html')
-  assert.equal(readFileSync(path,'utf8'),html+'updated')
+  const updated=html.replace('</body>','updated</body>')
+  writeOutput(path,updated,'html')
+  assert.equal(readFileSync(path,'utf8'),updated)
   assert.equal(readdirSync(root).some(name=>name.endsWith('.tmp')),false)
 })
 test('unrelated source, JSON and cross-format outputs are preserved',()=>{
@@ -33,4 +34,17 @@ test('legacy baseline ownership is recognized without accepting arbitrary JSON',
   const path=join(root,'legacy.json');writeFileSync(path,'{"version":2,"entries":[]}')
   writeOutput(path,'{"version":3,"entries":[]}','baseline')
   assert.equal(JSON.parse(readFileSync(path,'utf8')).version,3)
+})
+
+test('source and documentation containing HTML report markers are never owned reports',()=>{
+  for(const [name,content] of [
+    ['renderer.ts', 'export const template = `'+html+'`;'],
+    ['example.md', '# Example\n\n```html\n'+html+'\n```'],
+    ['fragment.html', '<title>canship report</title><script id="canship-data"></script>'],
+    ['incomplete.html', html.replace('</html>','')],
+  ]) {
+    const path=join(root,name!);writeFileSync(path,content!)
+    assert.throws(()=>writeOutput(path,html,'html'),/Refusing to replace/)
+    assert.equal(readFileSync(path,'utf8'),content)
+  }
 })

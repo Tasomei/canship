@@ -86,7 +86,7 @@ test('observing progress does not change scan findings or coverage', async () =>
 })
 
 test('CLI signal cancellation preserves existing report files and produces no success output', () => {
-  const target = join(root, 'existing.html'); const original = '<title>canship report</title><script id="canship-data"></script>'
+  const target = join(root, 'existing.html'); const original = '<!doctype html><html><head><title>canship report</title></head><body><script id="canship-data"></script></body></html>'
   writeFileSync(target, original)
   for (const signal of ['SIGINT', 'SIGTERM']) {
     const code = `

@@ -52,7 +52,7 @@ Terminal report layout adapts down to 24 columns, accounting for common CJK char
 | `--probe-expect-auth` | Review HEAD/canary responses other than the requested 401/403 rejection |
 | `--probe-canary-sha256=hash` | Add a bounded GET of a dedicated synthetic canary |
 | `--workspace=path` | Scan explicit subprojects independently; repeatable, up to 32; terminal or JSON output |
-| `--compare=before.json` + `--with=after.json` | Compare saved scan reports without scanning; supports `--json` |
+| `--compare=before.json` + `--with=after.json` | Compare saved scan reports; supports `--json` and `--report` |
 | `--share-summary` | Print counts and scope flags without project text; supports `--json`, never uploads |
 | `--sarif[=file]` | Write SARIF 2.1.0; default `canship.sarif` |
 | `--fix-prompt` | Print repair instructions and separate manual actions |
@@ -79,7 +79,9 @@ Terminal report layout adapts down to 24 columns, accounting for common CJK char
 
 Repeat `--workspace=apps/web --workspace=apps/admin` to scan selected directories separately. Paths must be literal, non-overlapping, and free of symlink components. Each project uses its own config and baseline; parent config and unselected sources are not inherited. CLI rule, exclusion, visibility, and privacy options override each project's settings; bare `--baseline` selects each project's default file. Results include configuration sources, per-project coverage, and full-confidence counts. A failed project makes the batch exit `3`; otherwise normal finding precedence applies. Only terminal and JSON (`kind: "workspace-report"`) are supported; use individual scans for HTML/SARIF or baseline maintenance.
 
-`--compare` reads two local v1 JSON reports (up to 10 MiB and 50,000 findings each). It lists added, persisting, and no-longer-observed records using stable identities and counts; missing source digests remain unpaired. Coverage gaps, filters, baselines, different roots, and changed or unverifiable scanner builds limit comparison. Exit `0` means no known comparison limitation, `2` means limited comparison, and `3` means invalid input—not the scan's release policy. Absence is not proof of remediation. No scanning or writes occur; titles, excerpts, and scan roots are omitted, but finding paths remain. This standalone mode accepts only `--json`; JSON uses `kind: "report-comparison"`.
+`--compare` reads two local v1 JSON reports (up to 10 MiB and 50,000 findings each). It lists added, persisting, and no-longer-observed records using stable identities and counts; missing source digests remain unpaired. Coverage gaps, filters, baselines, different roots, and changed or unverifiable scanner builds limit comparison. Exit `0` means no known comparison limitation, `2` means limited comparison, and `3` means invalid input or output failure—not the scan's release policy. Absence is not proof of remediation. Titles, excerpts and scan roots are omitted; finding paths remain. No source scan or project-code execution occurs. JSON uses `kind: "report-comparison"`.
+
+Comparison output is read-only by default. `--report` explicitly writes an offline HTML view to `canship-comparison.html` in the working directory; `--report=file.html` selects another path and can accompany `--json`. Inputs and unrelated files are not overwritten. HTML shows up to 2,000 detail rows and 512 UTF-16 code units per path/rule reference, disclosing truncation; all aggregate counts and the comparison exit status are retained. Use JSON for full references. Other scan and output modes, including `--open`, remain unavailable in comparison mode.
 
 `--share-summary` counts all confidence levels after rule selection, source suppressions, and baselines, with the normal scan exit status. It omits paths, titles, identifiers, excerpts, and diagnostic details; handled failures show only a code and local troubleshooting advice. Detailed reports and changed-file views cannot be combined with it. JSON uses `kind: "share-summary"`, not the scan-report schema. Counts may still be sensitive; review before sharing.
 
@@ -148,6 +150,16 @@ JSON uses [schemaVersion 1](../schemas/scan-report-v1.schema.json). Check `parti
 
 Build identity distinguishes development, prerelease, and release artifacts. Only a clean checkout matching the version tag is marked as a release; this label is not publisher authentication. JSON includes optional `build` metadata; consumers must tolerate absent metadata and unknown diagnostic codes. `--version` retains its package-version format.
 
+## Compatibility
+
+The development branch is not a published release contract. Pin exact scanner versions in CI and consult the documentation for that release. Before 1.0, inspect release notes and regenerate reports when upgrading.
+
+For the 1.0 contract, breaking changes to public CLI options, exit semantics or exported API types require a major release. Incompatible report or baseline formats require a format-version change and migration guidance. Package versions and data-format versions are separate: scan JSON is v1, new baselines are v4 (v2/v3 readable), stable fingerprints are v3, and SARIF is 2.1.0. Dispatch JSON by operation `kind` and `schemaVersion`; ordinary scan reports have no `kind`. Accept documented optional additions and unknown diagnostic codes, but reject unsupported format versions rather than interpreting them as clean results.
+
+Rule additions and detection corrections can change findings without breaking an interface. Review result and baseline changes after upgrades. Rule IDs and source fingerprints identify findings; wording and line moves do not. HTML structure, embedded view data, terminal spacing and internal modules are not machine APIs. Use exported APIs and documented JSON instead. The editor preview has its own version; the Action commit and npm scanner version are selected independently.
+
+For support, start with `--doctor --json` and review the output locally. It omits source, environment-variable values, baseline entries and remote addresses; it is not a project archive and is never uploaded automatically.
+
 ## Privacy and limits
 
 - Static checks may miss issues or flag intentional configurations. Business authorisation, rate limiting, dependency vulnerabilities, and deployed settings are not verified.
@@ -174,6 +186,8 @@ Build identity distinguishes development, prerelease, and release artifacts. Onl
 Evidence traces are capped at 24 steps and disclose truncation.
 
 ## Development
+
+The repository includes a [synthetic HTML demonstration](https://github.com/Tasomei/canship/blob/main/docs/demo.html). Download and open it locally; it is not included in the npm package and never scans a project. The page and copied prompts identify the data as examples. `npm run demo` previews HTML on stdout, `npm run demo -- --check` verifies the committed artifact, and explicit `npm run demo -- --write` regenerates it. Automated tests reject a stale demo.
 
 The [VS Code extension](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme) is a development preview, separate from the npm package. Real-host acceptance and Marketplace publication are pending.
 

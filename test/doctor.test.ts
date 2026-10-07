@@ -154,7 +154,7 @@ test('invalid and redirected Git metadata fail without echoing raw Git errors', 
 test('output preflight accepts new and owned destinations but never writes them', () => {
   const root = project()
   const html = join(root, 'owned.html')
-  const original = '<title>canship report</title><script id="canship-data"></script>'
+  const original = '<!doctype html><html><head><title>canship report</title></head><body><script id="canship-data"></script></body></html>'
   writeFileSync(html, original)
   const sarif = join(root, 'new.sarif')
   const body = report(root, [`--report=${html}`, `--sarif=${sarif}`])

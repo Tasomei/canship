@@ -42,6 +42,7 @@ import { ScanCancelledError, ScanProgressError } from './scan-control.js'
 import { progressText } from './report/progress.js'
 import { createExclusions, isExclusionPath, MAX_EXCLUSIONS } from './exclusions.js'
 import { ComparisonError, compareReports, readComparisonInput, renderComparison } from './report/compare.js'
+import { writeComparisonHtml } from './report/compare-html.js'
 import { MAX_WORKSPACES, WorkspaceError, scanWorkspaces, renderWorkspaces } from './workspaces.js'
 import { createProbePlan, ProbeError } from './probe-target.js'
 import { executeProbe, renderProbe } from './probe.js'
@@ -432,8 +433,9 @@ const HELP = `
         --probe-expect-auth   Review HEAD/canary responses other than 401/403
         --workspace=PATH  Scan explicit, non-overlapping subprojects independently;
                            repeatable, at most 32; terminal or --json output
-        --compare=F --with=G  Compare earlier/later saved JSON reports; supports --json
-                              no scan or writes; exit 0 complete, 2 limited, 3 invalid
+        --compare=F --with=G  Compare saved JSON reports; supports --json and --report
+                              no scan; writes HTML only with --report
+                              exit 0 complete, 2 limited, 3 error
         --share-summary  Print counts and scope flags only; supports --json; no upload
         --no-progress Disable interactive progress; structured output is always quiet
         --best-effort Allow exit 0 for an incomplete scan with no findings;
@@ -535,11 +537,20 @@ async function main(): Promise<void> {
     return finish(result.exitCode)
   }
   if (args.compare !== null || args.compareWith !== null) {
+    const reportFlags = process.argv.slice(2).filter(arg => arg === '--report' || arg.startsWith('--report='))
     if (args.compare === null || args.compareWith === null || process.argv.slice(2).some(arg =>
-      arg !== '--json' && !arg.startsWith('--compare=') && !arg.startsWith('--with='))) {
-      argumentError('--compare=earlier.json --with=later.json supports only --json; no scan paths or other modes')
+      arg !== '--json' && arg !== '--report' && !arg.startsWith('--report=') && !arg.startsWith('--compare=') && !arg.startsWith('--with=')) || reportFlags.length > 1) {
+      argumentError('--compare=earlier.json --with=later.json supports --json and one --report; no scan paths or other modes')
     }
     const comparison = compareReports(readComparisonInput(args.compare), readComparisonInput(args.compareWith))
+    if (args.report !== null) {
+      try {
+        writeComparisonHtml(reportFlags[0] === '--report' ? 'canship-comparison.html' : args.report, [args.compare, args.compareWith], comparison)
+      } catch {
+        writeError('OUTPUT_WRITE_FAILED', 'Could not write comparison HTML. Choose a local writable output separate from the input reports and unrelated files.')
+        return finish(3)
+      }
+    }
     process.stdout.write(args.json ? `${JSON.stringify(comparison, null, 2)}\n` : renderComparison(comparison))
     return finish(comparison.exitCode)
   }

@@ -62,6 +62,8 @@ npx canship --all --report
 
 ![HTML 报告](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
 
+[合成 HTML 示例](https://github.com/Tasomei/canship/blob/main/docs/demo.html)：下载文件后在本地打开，无需安装扫描器。
+
 HTML 支持严重度及置信度筛选、稳定定位和修复提示复制。`--no-excerpts` 移除摘录，但保留路径等项目文本。`--share-summary` 仅输出计数及范围标记，分享前仍须审阅。
 
 | 退出码 | 静态扫描结果 |
@@ -74,7 +76,7 @@ HTML 支持严重度及置信度筛选、稳定定位和修复提示复制。`--
 
 退出码基于规则选择、源码抑制及基线处理后的结果。有结果时优先于覆盖不完整；`--best-effort` 不改变 `1` 或 `2`。须另行检查 JSON 的 `partial`、`errors`、`skipped` 和 `filesScanned`。
 
-基线表示接受结果，不代表问题已修复。[基线管理](./docs/reference-zh-CN.md#配置)支持审阅已有记录、选择性接受、理由及到期时间。[报告比较](./docs/reference-zh-CN.md#命令行)区分新增、持续存在及本次未再出现，不将结果消失视为修复证明。
+基线表示接受结果，不代表问题已修复。[基线管理](./docs/reference-zh-CN.md#配置)支持审阅已有记录、选择性接受、理由及到期时间。[报告比较](./docs/reference-zh-CN.md#命令行)提供终端、JSON 和离线 HTML 视图，区分新增、持续存在及本次未再出现，不将结果消失视为修复证明。
 
 ## 接入 CI
 

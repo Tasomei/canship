@@ -12,7 +12,9 @@ function stat(path: string) {
 }
 
 function owned(text: string, kind: OutputKind): boolean {
-  if (kind === 'html') return /<title>canship\b/.test(text) && /id="canship-data"/.test(text)
+  // 源码中的模板字符串不是报告；必须具有完整文档边界。
+  if (kind === 'html') return /^\uFEFF?\s*<!doctype html>\s*<html(?:\s[^>]*)?>/i.test(text) &&
+    /<\/html>\s*$/i.test(text) && /<title>canship\b/.test(text) && /id="canship-data"/.test(text)
   try {
     const data = JSON.parse(text)
     if (kind === 'baseline') return [2,3,4].includes(data.version) && Array.isArray(data.entries) && data.entries.every((entry: unknown) =>

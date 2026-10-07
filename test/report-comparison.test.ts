@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto'
 import type { Finding } from '../src/types.js'
 import { fingerprintOf } from '../src/baseline.js'
 import { ComparisonError, compareReports, MAX_COMPARE_BYTES, parseComparisonInput, readComparisonInput, renderComparison } from '../src/report/compare.js'
+import { MAX_COMPARISON_ROWS, renderComparisonHtml } from '../src/report/compare-html.js'
 
 const repository = dirname(dirname(fileURLToPath(import.meta.url)))
 const root = mkdtempSync(join(tmpdir(), 'canship-comparison-'))
@@ -204,7 +205,7 @@ test('CLI reads only the explicit reports and preserves all input files', () => 
 test('CLI separates limited comparisons, invalid files and incompatible operation modes', () => {
   const flags = inputs(report(), report([], { partial: true }))
   assert.equal(cli(...flags, '--json').status, 2)
-  for (const option of ['--report', '--sarif', '--baseline-write', '--fix-prompt', '--share-summary', '--doctor', '--init', '--no-config', '--all', '.']) {
+  for (const option of ['--open', '--sarif', '--baseline-write', '--fix-prompt', '--share-summary', '--doctor', '--init', '--no-config', '--all', '.']) {
     const result = cli(...flags, option)
     assert.equal(result.status, 3, option)
     assert.equal(result.stdout, '', option)
@@ -234,4 +235,70 @@ test('real CLI reports compare after a finding disappears, without claiming reme
   assert.equal(result.limited, true)
   assert.ok(result.warnings.some(w => w.code === 'BUILD_UNVERIFIED'))
   assert.match(renderComparison(result), /not proof of remediation/)
+})
+
+test('HTML comparison is self-contained, escaped and excludes raw report content', () => {
+  const hostile = '</script><img src=x onerror=alert(1)>'
+  const result = compare(report([finding({ file: hostile, ruleId: hostile })]), report([], { partial: true }))
+  const html = renderComparisonHtml(result)
+  assert.match(html, /<title>canship report comparison<\/title>/)
+  assert.match(html, /default-src 'none'/)
+  assert.doesNotMatch(html, /PRIVATE_|<img\b|<script>|<iframe|<link\b|@import|url\(/i)
+  assert.ok(html.includes('&lt;img'))
+  assert.ok(html.includes('INCOMPLETE'))
+  assert.match(html, /not proof of remediation/)
+  assert.match(html, /1 not observed/)
+})
+
+test('HTML limits detail rows and reference lengths without changing aggregate counts', () => {
+  const comparison = compare(report(), report())
+  const entry = comparison.entries[0]!
+  comparison.entries = Array.from({ length: MAX_COMPARISON_ROWS + 1 }, () => ({ ...entry, file: 'x'.repeat(2000) }))
+  const html = renderComparisonHtml(comparison)
+  const view = JSON.parse(/id="canship-data">([^<]+)<\/script>/.exec(html)![1]!)
+  assert.equal(view.totalRows, MAX_COMPARISON_ROWS + 1)
+  assert.equal(view.shownRows, MAX_COMPARISON_ROWS)
+  assert.equal(view.truncatedReferences, true)
+  assert.match(html, /Use comparison JSON for complete references/)
+  assert.ok(!html.includes('x'.repeat(513)))
+  assert.ok(Buffer.byteLength(html) < 16 * 1024 * 1024)
+  assert.deepEqual(comparison.counts, { before: 1, after: 1, added: 0, persisting: 1, notObserved: 0, unpairedBefore: 0, unpairedAfter: 0 })
+})
+
+test('CLI writes comparison HTML explicitly while preserving inputs and JSON stdout', () => {
+  const flags = inputs(report(), report([], { partial: true }))
+  const before = readFileSync(join(root, 'earlier.json')), after = readFileSync(join(root, 'later.json'))
+  const output = cli(...flags, '--json', '--report')
+  assert.equal(output.status, 2, output.stderr)
+  assert.equal(JSON.parse(output.stdout).kind, 'report-comparison')
+  assert.equal(output.stderr, '')
+  const html = readFileSync(join(root, 'canship-comparison.html'), 'utf8')
+  assert.match(html, /Saved report comparison/)
+  assert.match(html, /Comparison exit 2/)
+  assert.doesNotMatch(html, /PRIVATE_/)
+  assert.deepEqual(readFileSync(join(root, 'earlier.json')), before)
+  assert.deepEqual(readFileSync(join(root, 'later.json')), after)
+  assert.equal(cli(...flags, '--report').status, 2, 'recognized comparison output can be updated')
+})
+
+test('comparison output refuses input replacement and unrelated files without disclosing their paths', () => {
+  const flags = inputs()
+  const input = join(root, 'earlier.json'), snapshot = readFileSync(input)
+  const collision = cli(...flags, `--report=${input}`, '--json')
+  assert.equal(collision.status, 3)
+  assert.equal(collision.stdout, '')
+  assert.match(collision.stderr, /\[OUTPUT_WRITE_FAILED\]/)
+  assert.ok(!collision.stderr.includes(root))
+  assert.deepEqual(readFileSync(input), snapshot)
+  const unrelated = join(root, 'unrelated.html'); writeFileSync(unrelated, 'PRIVATE_USER_DOCUMENT')
+  assert.equal(cli(...flags, `--report=${unrelated}`).status, 3)
+  assert.equal(readFileSync(unrelated, 'utf8'), 'PRIVATE_USER_DOCUMENT')
+  assert.equal(cli(...flags, '--report', '--report=duplicate.html').status, 3)
+})
+
+test('help distinguishes comparison preview from explicitly requested HTML writes', () => {
+  const help = cli('--help')
+  assert.equal(help.status, 0)
+  assert.match(help.stdout, /writes HTML only with --report/)
+  assert.doesNotMatch(help.stdout, /no scan or writes/)
 })

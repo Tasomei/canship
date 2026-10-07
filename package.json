@@ -59,6 +59,7 @@
     "build": "tsup",
     "build:extension": "npm run build && node scripts/build-extension.mjs",
     "benchmark": "npm run build && node --max-old-space-size=256 scripts/benchmark.mjs",
+    "demo": "tsx scripts/render-demo.ts",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/run-tests.mjs",

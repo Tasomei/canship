@@ -139,7 +139,7 @@ test('failed clipboard fallback does not claim success and restores focus', () =
   assert.equal(h.document.activeElement.focused, true)
 })
 
-test('secondary text contrast exceeds 4.5 to 1 in both default themes', () => {
+test('secondary text contrast exceeds 4.5 to 1 in both screen themes and the print palette', () => {
   const html = page()
   function luminance(hex: string) {
     const rgb = hex.slice(1).match(/../g)!.map(value => parseInt(value, 16) / 255)
@@ -147,9 +147,25 @@ test('secondary text contrast exceeds 4.5 to 1 in both default themes', () => {
     return rgb[0]! * 0.2126 + rgb[1]! * 0.7152 + rgb[2]! * 0.0722
   }
   const themes = [...html.matchAll(/--paper:(#[a-f0-9]{6});--ink:#[a-f0-9]{6};--ink-2:#[a-f0-9]{6};--ink-3:(#[a-f0-9]{6})/g)]
-  assert.equal(themes.length, 2)
+  assert.equal(themes.length, 3)
   for (const theme of themes) {
     const a = luminance(theme[1]!); const b = luminance(theme[2]!)
     assert.ok((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) >= 4.5)
   }
+})
+
+test('category filters have descriptive names and table headers identify both dimensions', () => {
+  const html = page()
+  assert.match(html, /aria-label="Filter Database rules P1 findings"/)
+  assert.match(html, /<th scope="col">P1<\/th>/)
+  assert.match(html, /<th scope="row">Database rules<\/th>/)
+  assert.match(html, /<main class="page">/)
+})
+
+test('mobile headers wrap and search focus is not hidden by the base input style', () => {
+  const html = page()
+  assert.match(html, /\.mast\{[^}]*flex-wrap:wrap/)
+  assert.match(html, /\.mast \.root\{[^}]*min-width:0/)
+  assert.match(html, /\.controls input:focus-visible\{outline:2px solid/)
+  assert.match(html, /@media print\{[\s\S]*?pre\.excerpt\{[^}]*white-space:pre-wrap/)
 })
