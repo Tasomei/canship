@@ -1,7 +1,9 @@
 /** 初始化仅输出模板，不读取或修改项目文件。 */
-export function renderInit(kind: 'config' | 'ci' | 'ci-workspaces', version: string): string {
+import { preCommitTemplate } from './precommit.js'
+export function renderInit(kind: 'config' | 'ci' | 'ci-workspaces' | 'pre-commit', version: string): string {
   if (kind === 'config') return JSON.stringify({ all: false }, null, 2) + '\n'
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) throw new TypeError('Invalid template scanner version.')
+  if (kind === 'pre-commit') return preCommitTemplate(version)
   const matrix = kind === 'ci-workspaces' ? `    strategy:
       fail-fast: false
       matrix:

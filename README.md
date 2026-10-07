@@ -97,7 +97,7 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 | `--list-rules` | List rules without scanning; supports `--only` / `--skip` and `--json` |
 | `--explain-config` | Show effective settings, sources, and selected rules without scanning; supports `--json` |
 | `--doctor` | Run read-only environment checks; supports `--json`, `--no-config`, `--baseline`, and output-path checks |
-| `--init[=config\|ci\|ci-workspaces]` | Preview a minimal config, pinned CI workflow, or multi-project CI matrix; no file changes |
+| `--init[=config\|ci\|ci-workspaces\|pre-commit]` | Preview config, CI or hook templates; no file changes |
 | `--baseline[=file]` / `--baseline-write[=file]` | Suppress/record findings; default `canship-baseline.json` |
 | `--baseline-migrate[=file]` | Print a migrated baseline as JSON; preserve the source file |
 | `--baseline-review` | Compare accepted and current findings; supports `--baseline[=file]` and `--json` |
@@ -120,6 +120,8 @@ Repeat `--workspace=apps/web --workspace=apps/admin` to scan selected directorie
 `--init` is a standalone preview: stdout contains the template; stderr names its intended destination. Review before saving. CI previews use the scanner's package version; confirm that version is published and review the Action pin before enabling the workflow.
 
 `--init=ci-workspaces` previews a matrix with independent jobs, `fail-fast: false`, and distinct SARIF categories. Replace sample paths and names before use. Project configuration and SARIF upload remain disabled; enabling upload also requires the appropriate permissions.
+
+`--init=pre-commit` previews a Node hook, without installing it or changing Git settings. Review before saving as `pre-commit` in the [Git hooks directory](https://git-scm.com/docs/githooks); make it executable where required. Set `CANSHIP_CLI` to a trusted, separately installed `dist/cli.js` outside the worktree; its version must match the template. The hook scans the full working tree, including unstaged changes, with all findings visible and project suppressions disabled. It does not validate the staged snapshot: review staged-only content separately. Every nonzero exit blocks the commit; the hook makes no downloads and times out after two minutes of scanning.
 
 `--changed-since` compares the local merge base with the working tree, including non-ignored untracked files. It does not fetch or narrow scan scope. Missing Git, refs, or shared history exits `3`; it cannot be combined with `--baseline-write`.
 

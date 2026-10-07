@@ -75,6 +75,14 @@ try {
     return dir
   }
   const clean = sample('clean', { 'index.ts': 'export const value = 1;' })
+  const hookPreview = cli(['--init=pre-commit'])
+  assert.equal(hookPreview.status, 0)
+  const hookFile = join(root, 'pre-commit')
+  writeFileSync(hookFile, hookPreview.stdout)
+  const hookResult = spawnSync(process.execPath, [hookFile], { cwd: clean, encoding: 'utf8', timeout: 30_000,
+    env: { ...process.env, CANSHIP_CLI: entry }, windowsHide: true })
+  assert.equal(hookResult.status, 0, hookResult.stderr)
+  assert.match(hookResult.stderr, /not the staged snapshot/)
   const multiple = sample('workspaces', { 'apps/web/firestore.rules': 'match /items/{id} { allow write: if true; }',
     'apps/admin/index.ts': 'export const ok=true;' })
   const workspaces = cli([multiple, '--workspace=apps/web', '--workspace=apps/admin', '--json', '--no-excerpts'])

@@ -97,7 +97,7 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 | `--list-rules` | 列出规则而不扫描，支持 `--only` / `--skip` 筛选及 `--json` |
 | `--explain-config` | 展示生效设置、来源及规则选择，不执行扫描，支持 `--json` |
 | `--doctor` | 只读环境诊断，支持 `--json`、`--no-config`、`--baseline` 及输出路径预检 |
-| `--init[=config\|ci\|ci-workspaces]` | 预览最小配置、固定版本 CI 或多项目 CI 矩阵，不修改文件 |
+| `--init[=config\|ci\|ci-workspaces\|pre-commit]` | 预览配置、CI 或钩子模板，不修改文件 |
 | `--baseline[=file]` / `--baseline-write[=file]` | 抑制或记录结果，默认 `canship-baseline.json` |
 | `--baseline-migrate[=file]` | 输出迁移后的基线 JSON，保留原文件 |
 | `--baseline-review` | 对照基线与当前结果，支持 `--baseline[=file]` 及 `--json` |
@@ -120,6 +120,8 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 `--init` 为独立预览模式：标准输出为模板，标准错误提示保存位置，审阅后自行保存。CI 模板使用扫描器的包版本，启用前须确认该版本已发布，并审阅固定的 Action 提交。
 
 `--init=ci-workspaces` 预览多项目矩阵，各任务独立运行，使用 `fail-fast: false` 和不同的 SARIF 类别。使用前替换示例目录与名称。项目配置和 SARIF 上传默认关闭，启用上传还需配置相应权限。
+
+`--init=pre-commit` 仅预览 Node 钩子，不安装、不修改 Git 设置。审阅后保存到 [Git 钩子目录](https://git-scm.com/docs/githooks)的 `pre-commit`，按平台要求赋予执行权限。将 `CANSHIP_CLI` 指向工作区之外、独立安装且可信的 `dist/cli.js`，版本须与模板一致。钩子扫描完整工作区（含未暂存修改），显示全部结果并禁用项目抑制设置；不验证暂存区快照，须另行审阅仅存在于暂存区的内容。任意非零退出码均阻止提交；不下载依赖，扫描超过两分钟即失败。
 
 `--changed-since` 比较本地共同祖先与工作区，包含未被忽略的新文件，不拉取远程、不缩小扫描范围。缺少 Git、引用或共同历史时退出 `3`；不能与 `--baseline-write` 组合。
 

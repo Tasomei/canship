@@ -52,7 +52,7 @@ interface Args {
   exclude: string[]
   noProgress: boolean
   shareSummary: boolean
-  init: 'config' | 'ci' | 'ci-workspaces' | null
+  init: 'config' | 'ci' | 'ci-workspaces' | 'pre-commit' | null
   baselinePolicy: BaselinePolicy
   baselineAccept: BaselineAcceptance[]
   baselineReview: boolean
@@ -228,7 +228,7 @@ function parseArgs(argv: string[]): Args {
     }
     if (arg === '--init' || arg.startsWith('--init=')) {
       const kind = arg === '--init' ? 'config' : arg.slice('--init='.length)
-      if (args.init !== null || (kind !== 'config' && kind !== 'ci' && kind !== 'ci-workspaces')) argumentError('--init accepts config, ci or ci-workspaces, once only')
+      if (args.init !== null || (kind !== 'config' && kind !== 'ci' && kind !== 'ci-workspaces' && kind !== 'pre-commit')) argumentError('--init accepts config, ci, ci-workspaces or pre-commit, once only')
       args.init = kind
       continue
     }
@@ -437,7 +437,7 @@ const HELP = `
         --doctor      Check runtime, directory, config, baseline and local Git;
                       supports --json, --no-config and --baseline;
                       --report/--sarif check paths only; no scanning or file writes
-        --init[=config|ci|ci-workspaces]  Print a configuration or CI template; never write files
+        --init[=config|ci|ci-workspaces|pre-commit]  Print a config, CI or hook template; no writes
         --no-ignore-markers
                       Disregard canship-ignore-file and canship-ignore-next-line
                       markers; use with --no-config for untrusted projects
@@ -508,10 +508,12 @@ async function main(): Promise<void> {
     argumentError('--share-summary cannot be combined with detailed reports, changed views, or other operations')
   }
   if (args.init !== null) {
-    if (process.argv.slice(2).some(arg => !['--init', '--init=config', '--init=ci', '--init=ci-workspaces'].includes(arg))) argumentError('--init is a standalone preview mode; it accepts no path or other options')
+    if (process.argv.slice(2).some(arg => !['--init', '--init=config', '--init=ci', '--init=ci-workspaces', '--init=pre-commit'].includes(arg))) argumentError('--init is a standalone preview mode; it accepts no path or other options')
     process.stdout.write(renderInit(args.init, VERSION))
     process.stderr.write(args.init === 'config'
       ? 'canship: preview only. Review before saving as canship.config.json; no file was changed.\n'
+      : args.init === 'pre-commit'
+      ? 'canship: hook preview only. Review before saving as pre-commit in your Git hooks directory; make it executable where required. Set CANSHIP_CLI to a trusted scanner outside the worktree. This scans working files, not the staged snapshot. No hook or setting was changed.\n'
       : 'canship: CI preview only. Review project paths and the pinned Action, and verify that the scanner version is published before saving as .github/workflows/canship.yml. Installation uses the network; scanning does not. No file was changed.\n')
     return finish(0)
   }
