@@ -48,6 +48,12 @@ try {
     return result
   }
   assert.equal(cli(['--version']).stdout.trim(), version)
+  const noColorEnv = { ...process.env, FORCE_COLOR: '0' }
+  delete noColorEnv.NO_COLOR
+  const noColorHelp = spawnSync(process.execPath, [entry, '--help'], { cwd: install, encoding: 'utf8',
+    env: noColorEnv, timeout: 30000, windowsHide: true })
+  assert.equal(noColorHelp.status, 0)
+  assert.ok(!noColorHelp.stdout.includes(String.fromCharCode(27)))
   const init = cli(['--init'])
   assert.equal(init.status, 0)
   assert.deepEqual(JSON.parse(init.stdout), { all: false })

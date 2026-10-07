@@ -9,7 +9,8 @@ export function followupArgs(argv: readonly string[]): string[] | null {
 
 /** Windows 按 PowerShell 引号规则处理；其他平台按 POSIX shell 处理。 */
 export function followupCommand(args: readonly string[], flags: readonly string[], platform: string = process.platform): string {
-  const quote = (value: string): string => /^[A-Za-z0-9_./:@=,+%-]+$/.test(value) ? value
-    : platform === 'win32' ? `'${value.replace(/'/g, "''")}'` : `'${value.replace(/'/g, "'\"'\"'")}'`
+  const safe = platform === 'win32' ? /^[A-Za-z0-9_./:=+%-]+$/ : /^[A-Za-z0-9_./:@=,+%-]+$/
+  const quote = (value: string): string => safe.test(value) ? value
+    : platform === 'win32' ? `'${value.replace(/['\u2018-\u201b]/g, character => character + character)}'` : `'${value.replace(/'/g, "'\"'\"'")}'`
   return ['npx', 'canship', ...args, ...flags.filter(flag => !args.includes(flag))].map(quote).join(' ')
 }

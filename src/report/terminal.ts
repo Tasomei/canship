@@ -3,6 +3,7 @@
 import type { Finding, ScanResult, SkipReason } from '../types.js'
 import { bold, dim, red, green, yellow, gray } from '../colors.js'
 import { followupCommand } from './commands.js'
+import { visibleWidth } from './columns.js'
 import { fixExampleFor } from '../rules/examples.js'
 import {
   categoryCounts, categoryOf, changeViewNotice, groupByFile, locationOf, manualSteps, plural, SEVERITIES, SKIP_LABEL, verdictOf,
@@ -42,7 +43,7 @@ const DETAIL = ' '.repeat(12)
 
 function widthOf(opts: RenderOptions): number {
   const columns = opts.width ?? (process.stdout.isTTY ? process.stdout.columns : undefined) ?? 96
-  return Math.max(60, Math.min(120, columns))
+  return Number.isFinite(columns) && columns > 0 ? Math.max(24, Math.min(120, Math.floor(columns))) : 96
 }
 
 /** 严重度只用红色与琥珀色区分，其余保持默认颜色。 */
@@ -50,17 +51,13 @@ function severityColor(severity: Finding['severity']): (s: string) => string {
   return severity === 'P0' ? red : severity === 'P1' ? yellow : (s: string) => s
 }
 
-/** 去除颜色控制序列后的可见长度。 */
-const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g')
-const visibleLength = (s: string): number => s.replace(ANSI, '').length
-
 /** 按项拼接，放不下时整项换行，不在项内截断。 */
 function joinFitting(items: string[], separator: string, width: number): string[] {
   const lines: string[] = []
   let line = ''
   for (const item of items) {
     const next = line === '' ? item : `${line}${separator}${item}`
-    if (line !== '' && visibleLength(next) > width) {
+    if (line !== '' && visibleWidth(next) > width) {
       lines.push(line)
       line = item
     } else {
@@ -71,15 +68,17 @@ function joinFitting(items: string[], separator: string, width: number): string[
   return lines
 }
 
-const pad = (s: string, n: number): string => (s.length >= n ? s : s + ' '.repeat(n - s.length))
-const rpad = (s: string, n: number): string => (s.length >= n ? s : ' '.repeat(n - s.length) + s)
+const pad = (s: string, n: number): string => s + ' '.repeat(Math.max(0, n - visibleWidth(s)))
+const rpad = (s: string, n: number): string => ' '.repeat(Math.max(0, n - visibleWidth(s))) + s
 
 export function renderReport(result: ScanResult, opts: RenderOptions): string {
   const width = widthOf(opts)
   const out: string[] = []
   const rule = (): void => { out.push(dim('─'.repeat(width))) }
 
-  out.push(`${bold('canship')}${opts.version ? ` ${opts.version}` : ''} ${dim('·')} ${opts.root}`)
+  const heading = `${bold('canship')}${opts.version ? ` ${opts.version}` : ''}`
+  const fullHeading = `${heading} ${dim('·')} ${opts.root}`
+  out.push(...(visibleWidth(fullHeading) <= width ? [fullHeading] : [heading, opts.root]))
   out.push('─'.repeat(width))
   out.push('')
 
@@ -94,13 +93,13 @@ export function renderReport(result: ScanResult, opts: RenderOptions): string {
   out.push('')
   rule()
   out.push('')
-  out.push(...renderSummary(findings))
+  out.push(...renderSummary(findings, width))
   const steps = renderManualSteps(findings, width)
   if (steps.length > 0) out.push('', ...steps)
   out.push('')
   rule()
   out.push('')
-  out.push(`${bold('Findings')}${dim('  grouped by file · most severe first')}`)
+  out.push(...wrapText(`${bold('Findings')}${dim('  grouped by file · most severe first')}`, width))
   out.push('')
   for (const group of groupByFile(findings)) {
     out.push(`${group.file ?? 'repository'}${dim(` — ${group.findings.length}`)}`)
@@ -113,7 +112,7 @@ export function renderReport(result: ScanResult, opts: RenderOptions): string {
   if (!opts.showingLikely && opts.hiddenLikely > 0) {
     notes.push(dim(`${opts.hiddenLikely} lower-confidence ${plural(opts.hiddenLikely, 'finding')} hidden. Run with --all to see ${opts.hiddenLikely === 1 ? 'it' : 'them'}.`))
   }
-  if (notes.length > 0) out.push(...notes, '')
+  if (notes.length > 0) out.push(...wrapNotices(notes, result, opts, width), '')
   out.push(...renderNext(result, opts, width))
   return out.join('\n')
 }
@@ -148,12 +147,18 @@ function renderVerdict(result: ScanResult, opts: RenderOptions, width: number): 
   ]
   out.push(...joinFitting(facts, dim('  ·  '), width))
   if (result.changeView) for (const line of wrapText(changeViewNotice(result.changeView), width)) out.push(yellow(line))
-  return out
+  return width < 60 ? out.flatMap(line => wrapText(line, width)) : out
 }
 
 /** 类别 × 严重度计数，数字按严重度着色，空格显示短横线。 */
-function renderSummary(findings: Finding[]): string[] {
+function renderSummary(findings: Finding[], width: number): string[] {
   const rows = categoryCounts(findings)
+  if (width < 60) {
+    const totals = SEVERITIES.map(severity => `${severity} ${findings.filter(finding => finding.severity === severity).length}`)
+    return [bold('By category'), ...rows.flatMap(row => [row.category,
+      ...joinFitting([...SEVERITIES.map(severity => `${severity} ${row.counts[severity]}`), `total ${row.total}`], ' · ', width - 2).map(line => '  ' + line)]),
+      bold('all'), ...joinFitting([...totals, `total ${findings.length}`], ' · ', width - 2).map(line => '  ' + line)]
+  }
   const out = [bold('By category'), dim(pad('', 22) + SEVERITIES.map(s => rpad(s, 5)).join('') + rpad('total', 8))]
   for (const row of rows) {
     out.push(pad(row.category, 22) + SEVERITIES.map(s => row.counts[s]
@@ -186,45 +191,52 @@ const EVIDENCE_LABEL: Record<NonNullable<Finding['evidence']>[number]['kind'], s
 
 function renderFinding(f: Finding, width: number, verbose: boolean): string[] {
   const out: string[] = []
-  const title = wrapText(f.title, width - DETAIL.length)
+  const lineLabel = f.line !== null ? String(f.line) : f.file ? 'file' : ''
+  const detail = width < 60 ? '  ' : ' '.repeat(Math.max(DETAIL.length, 8 + lineLabel.length))
   const likely = f.confidence === 'likely' ? dim('  likely') : ''
-  title.forEach((line, i) => out.push(i === 0
+  const title = wrapText(f.title, width - detail.length - (width >= 60 ? visibleWidth(likely) : 0))
+  if (width < 60) {
+    out.push(...wrapText(`  ${severityColor(f.severity)(f.severity)} · ${f.line ?? (f.file ? 'file' : 'repository')}${likely}`, width))
+    out.push(...title.map(line => detail + (verbose ? bold(line) : line)))
+  } else title.forEach((line, i) => out.push(i === 0
     // 整个文件的结果没有行号，行号列显示 file，避免看起来像缺失。
-    ? `  ${severityColor(f.severity)(pad(f.severity, 4))}${dim(rpad(f.line !== null ? String(f.line) : f.file ? 'file' : '', 4))}  ${verbose ? bold(line) : line}${i === title.length - 1 ? likely : ''}`
-    : `${DETAIL}${verbose ? bold(line) : line}${i === title.length - 1 ? likely : ''}`))
+    ? `  ${severityColor(f.severity)(pad(f.severity, 4))}${dim(rpad(lineLabel, 4))}  ${verbose ? bold(line) : line}${i === title.length - 1 ? likely : ''}`
+    : `${detail}${verbose ? bold(line) : line}${i === title.length - 1 ? likely : ''}`))
   if (!verbose) return out
 
-  const text = (s: string, indent = DETAIL): string[] => wrapText(s, width - indent.length).map(line => line === '' ? '' : `${indent}${line}`)
-  out.push(`${DETAIL}${dim(`${categoryOf(f.ruleId)} · ${f.ruleId}`)}`)
-  if (f.excerpt) out.push('', `${DETAIL}${gray(f.excerpt)}`)
+  const text = (s: string, indent = detail): string[] => wrapText(s, width - indent.length).map(line => line === '' ? '' : `${indent}${line}`)
+  out.push(`${detail}${dim(`${categoryOf(f.ruleId)} · ${f.ruleId}`)}`)
+  if (f.excerpt) out.push('', `${detail}${gray(f.excerpt)}`)
   out.push('', ...text(f.why.join('\n\n')))
   if (f.evidence?.length) {
     // 追踪只说明静态关系，不证明运行时数据流。
-    out.push('', `${DETAIL}${dim('trace (static relationships)')}`)
+    out.push('', ...text('trace (static relationships)'))
     f.evidence.forEach((step, i) => {
       const marker = i === 0 ? red('●') : i === f.evidence!.length - 1 ? dim('○') : dim('│')
-      out.push(`${DETAIL}${marker} ${dim(pad(EVIDENCE_LABEL[step.kind], 14))}${locationOf(step)}`)
+      if (width < 60) out.push(`${detail}${marker} ${dim(EVIDENCE_LABEL[step.kind])}`, `${detail}${locationOf(step)}`)
+      else out.push(`${detail}${marker} ${dim(pad(EVIDENCE_LABEL[step.kind], 14))}${locationOf(step)}`)
     })
-    if (f.evidenceTruncated) out.push(`${DETAIL}${dim('  additional dependency steps omitted')}`)
+    if (f.evidenceTruncated) out.push(...text('additional dependency steps omitted'))
   }
   if (f.fix.length > 0) {
-    out.push('', `${DETAIL}${dim('fix')}`)
+    out.push('', `${detail}${dim('fix')}`)
     f.fix.forEach((step, i) => {
-      wrapText(step, width - DETAIL.length - 3).forEach((line, j) => out.push(`${DETAIL}${j === 0 ? `${i + 1}. ` : '   '}${line}`))
+      wrapText(step, width - detail.length - 3).forEach((line, j) => out.push(`${detail}${j === 0 ? `${i + 1}. ` : '   '}${line}`))
     })
   }
   const example = fixExampleFor(f.ruleId)
   if (example) {
     out.push('', ...text(`Illustrative example: ${example.context}`))
     for (const [label, value] of [['Before', example.before], ['After', example.after]]) {
-      out.push(`${DETAIL}${dim(label + ':')}`, ...value!.split('\n').flatMap(line => text(line)))
+      // 示例代码保持原始缩进和逻辑行，避免窄窗口改变复制结果。
+      out.push(`${detail}${dim(label + ':')}`, ...value!.split('\n').map(line => detail + line))
     }
     out.push(...text(`Adaptation required: ${example.limitation}`))
   }
   if (f.humanOnly?.length) {
-    out.push('', `${DETAIL}${yellow('by hand')}`)
+    out.push('', `${detail}${yellow('by hand')}`)
     for (const step of f.humanOnly) {
-      wrapText(step, width - DETAIL.length - 2).forEach((line, j) => out.push(`${DETAIL}${j === 0 ? dim('· ') : '  '}${line}`))
+      wrapText(step, width - detail.length - 2).forEach((line, j) => out.push(`${detail}${j === 0 ? dim('· ') : '  '}${line}`))
     }
   }
   out.push('')
@@ -235,7 +247,7 @@ function renderFinding(f: Finding, width: number, verbose: boolean): string[] {
 function renderNext(result: ScanResult, opts: RenderOptions, width: number): string[] {
   const out: string[] = []
   const args = opts.rerunArgs ?? []
-  const command = (label: string, flags: string[]): string => `${dim(label)} ${followupCommand(args, flags)}`
+  const command = (label: string, flags: string[]): string => `${dim(label)}${width < 60 ? '\n' : ' '}${followupCommand(args, flags)}`
   if (opts.rerunArgs === null) {
     out.push(dim('Re-run with the same target and options; command omitted to protect sensitive or unsafe arguments.'))
   } else if (result.filesScanned === 0) {
@@ -247,8 +259,8 @@ function renderNext(result: ScanResult, opts: RenderOptions, width: number): str
     if (result.partial) commands.push(command('retry', []))
     commands.push(command('report', ['--report', '--open']))
     if (result.findings.length > 0) commands.push(command('fix prompt', ['--fix-prompt']))
-    if (result.findings.length === 0 && opts.hiddenLikely === 0) commands.push(`${dim('rules')} npx canship --list-rules`)
-    out.push(...joinFitting(commands, '   ', width))
+    if (result.findings.length === 0 && opts.hiddenLikely === 0) commands.push(`${dim('rules')}${width < 60 ? '\n' : ' '}npx canship --list-rules`)
+    out.push(...(width < 60 ? commands.flatMap(line => line.split('\n')) : joinFitting(commands, '   ', width)))
   }
   if (opts.exitCode !== undefined) {
     const reason = {
@@ -257,10 +269,10 @@ function renderNext(result: ScanResult, opts: RenderOptions, width: number): str
       2: 'findings present, none blocking',
       3: 'scan incomplete',
     }[opts.exitCode]
-    out.push(dim(`exit ${opts.exitCode} · ${opts.exitReason ?? reason}`))
+    out.push(...wrapText(`exit ${opts.exitCode} · ${opts.exitReason ?? reason}`, width).map(dim))
   }
   out.push('')
-  return out
+  return width < 60 ? out.flatMap(line => line.includes('npx canship') ? [line] : wrapText(line, width)) : out
 }
 
 /** 无论有无新结果，都显示基线抑制信息。 */
@@ -304,7 +316,7 @@ function renderClean(result: ScanResult, opts: RenderOptions, width: number): st
     if (exclusions.length) out.push('', ...exclusions)
     out.push('')
     if (result.partial) out.push(...renderIncomplete(result, width), '')
-    return out
+    return wrapNotices(out, result, opts, width)
   }
 
   // 扫描未完成、存在隐藏或基线抑制时不得显示正常通过。
@@ -346,7 +358,7 @@ function renderClean(result: ScanResult, opts: RenderOptions, width: number): st
   if (notes.length > 0) out.push('', ...notes)
   out.push('')
   out.push(dim('─'.repeat(width)))
-  return out
+  return wrapNotices(out, result, opts, width)
 }
 
 /** 列出主动排除的文件，这些排除不影响完整性。 */
@@ -396,7 +408,8 @@ function renderIncomplete(result: ScanResult, width: number): string[] {
     const where = err.file ? ` on ${err.file}` : ''
     // 区分规则异常与规则达到资源上限。
     const verb = err.kind === 'incomplete' ? 'did not finish' : 'failed'
-    item(`the ${err.ruleId} check ${verb}${where} — ${err.message}`)
+    item(`the ${err.ruleId} check ${verb}${width < 60 ? '' : where} — ${err.message}`)
+    if (width < 60 && err.file) out.push(`    ${err.file}`)
   }
   if (result.errors.length > 5) out.push(dim(`  · and ${result.errors.length - 5} more`))
 
@@ -410,10 +423,23 @@ function renderIncomplete(result: ScanResult, width: number): string[] {
     const { noun, because } = SKIP_LABEL[reason]
     const shown = paths.slice(0, 3).join(', ')
     const more = paths.length > 3 ? `, and ${paths.length - 3} more` : ''
-    item(`${paths.length} ${plural(paths.length, noun)} ${because}: ${shown}${more}`)
+    if (width < 60) {
+      item(`${paths.length} ${plural(paths.length, noun)} ${because}:`)
+      out.push(...paths.slice(0, 3).map(path => `    ${path}`))
+      if (paths.length > 3) item(`and ${paths.length - 3} more`)
+    } else item(`${paths.length} ${plural(paths.length, noun)} ${because}: ${shown}${more}`)
   }
   out.push(dim('Anything could be in what was skipped. Re-run once it is readable.'))
   return out
+}
+
+/** 提示可换行，路径和可复制命令保持完整逻辑行。 */
+function wrapNotices(lines: string[], result: ScanResult, opts: RenderOptions, width: number): string[] {
+  if (width >= 60) return lines
+  const literals = ['npx canship', opts.baselinePath, ...result.ignored, ...result.ignoredFindings.map(finding => finding.file),
+    ...result.skipped.map(skip => skip.path), ...result.errors.map(error => error.file), ...(result.exclusions?.requested ?? [])]
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+  return lines.flatMap(line => literals.some(value => line.includes(value)) ? [line] : wrapText(line, width))
 }
 
 /** 按宽度换行，保留显式段落分隔；超长单词单独成行。 */
@@ -428,7 +454,7 @@ function wrapText(text: string, width: number): string[] {
     for (const word of paragraph.split(/\s+/)) {
       if (line === '') {
         line = word
-      } else if (`${line} ${word}`.length <= width) {
+      } else if (visibleWidth(`${line} ${word}`) <= width) {
         line += ` ${word}`
       } else {
         out.push(line)

@@ -37,6 +37,8 @@ OpenAPI configuration supports inline objects, constants, and static ESM imports
 
 `npx canship [path] [options]`
 
+Terminal report layout adapts down to 24 columns, accounting for common CJK characters and emoji. Narrow views stack counts and separate command labels from copyable commands. Paths, excerpts, code examples and commands retain complete logical lines; the terminal may soft-wrap them. Glyph widths can vary by terminal and font. Redirected output is uncoloured by default; `FORCE_COLOR=0` disables colour, and nonempty `NO_COLOR` takes precedence. Windows follow-up commands use PowerShell quoting.
+
 | Option | Effect |
 |---|---|
 | `-a`, `--all` | Include `likely` findings |

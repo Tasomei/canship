@@ -6,6 +6,7 @@ const ESC = String.fromCharCode(27)
 /** 遵循 NO_COLOR，非终端输出默认关闭颜色。 */
 const enabled = (() => {
   if (process.env['NO_COLOR']) return false
+  if (process.env['FORCE_COLOR'] === '0') return false
   if (process.env['FORCE_COLOR']) return true
   return process.stdout.isTTY === true
 })()
