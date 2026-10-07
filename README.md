@@ -85,6 +85,7 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 | `--report[=file]` | Write HTML; default `canship-report.html` |
 | `--open` | Open `--report` output; disabled in CI and non-interactive shells |
 | `--json` | Print JSON |
+| `--compare=before.json` + `--with=after.json` | Compare saved scan reports without scanning; supports `--json` |
 | `--share-summary` | Print counts and scope flags without project text; supports `--json`, never uploads |
 | `--sarif[=file]` | Write SARIF 2.1.0; default `canship.sarif` |
 | `--fix-prompt` | Print repair instructions and separate manual actions |
@@ -108,6 +109,8 @@ Status is calculated after rule selection, ignore comments, and baselines. Findi
 | `--build-info` | Show channel, source revision, dirty state and capabilities; supports `--json` |
 
 `--json` and `--fix-prompt` are mutually exclusive; either supports HTML and SARIF output.
+
+`--compare` reads two local v1 JSON reports (up to 10 MiB and 50,000 findings each). It lists added, persisting, and no-longer-observed records using stable identities and counts; missing source digests remain unpaired. Coverage gaps, filters, baselines, different roots, and changed or unverifiable scanner builds limit comparison. Exit `0` means no known comparison limitation, `2` means limited comparison, and `3` means invalid input—not the scan's release policy. Absence is not proof of remediation. No scanning or writes occur; titles, excerpts, and scan roots are omitted, but finding paths remain. This standalone mode accepts only `--json`; JSON uses `kind: "report-comparison"`.
 
 `--share-summary` counts all confidence levels after rule selection, source suppressions, and baselines, with the normal scan exit status. It omits paths, titles, identifiers, excerpts, and diagnostic details; handled failures show only a code and local troubleshooting advice. Detailed reports and changed-file views cannot be combined with it. JSON uses `kind: "share-summary"`, not the scan-report schema. Counts may still be sensitive; review before sharing.
 

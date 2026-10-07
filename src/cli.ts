@@ -41,9 +41,12 @@ import { createShareSummary, renderShareSummary } from './report/share.js'
 import { ScanCancelledError, ScanProgressError } from './scan-control.js'
 import { progressText } from './report/progress.js'
 import { createExclusions, isExclusionPath, MAX_EXCLUSIONS } from './exclusions.js'
+import { ComparisonError, compareReports, readComparisonInput, renderComparison } from './report/compare.js'
 import { canPruneBaseline, createBaselineReview, renderBaselineReview, serializeBaselineCandidate } from './report/baseline-review.js'
 
 interface Args {
+  compare: string | null
+  compareWith: string | null
   exclude: string[]
   noProgress: boolean
   shareSummary: boolean
@@ -161,6 +164,8 @@ function selectionPhrase(selection: RuleSelection | null): string | null {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
+    compare: null,
+    compareWith: null,
     exclude: [],
     noProgress: false,
     shareSummary: false,
@@ -199,6 +204,13 @@ function parseArgs(argv: string[]): Args {
   const positional: string[] = []
 
   for (const arg of argv) {
+    if (arg.startsWith('--compare=') || arg.startsWith('--with=')) {
+      const key = arg.startsWith('--compare=') ? 'compare' : 'compareWith'
+      const value = arg.slice(arg.indexOf('=') + 1)
+      if (!value || args[key] !== null) argumentError('--compare and --with each require one non-empty JSON report path')
+      args[key] = value
+      continue
+    }
     if (arg.startsWith('--exclude=')) {
       const value = arg.slice('--exclude='.length)
       if (!isExclusionPath(value) || args.exclude.length >= MAX_EXCLUSIONS) argumentError('--exclude requires at most 64 literal project-relative paths; no traversal or wildcards')
@@ -385,6 +397,8 @@ const HELP = `
         --open        With --report, open the report in the default browser
                       (skipped in CI and non-interactive shells)
         --json        Output raw JSON (for CI or tooling)
+        --compare=F --with=G  Compare earlier/later saved JSON reports; supports --json
+                              no scan or writes; exit 0 complete, 2 limited, 3 invalid
         --share-summary  Print counts and scope flags only; supports --json; no upload
         --no-progress Disable interactive progress; structured output is always quiet
         --best-effort Allow exit 0 for an incomplete scan with no findings;
@@ -450,6 +464,15 @@ async function main(): Promise<void> {
   if (args.version) {
     process.stdout.write(`${VERSION}\n`)
     return finish(0)
+  }
+  if (args.compare !== null || args.compareWith !== null) {
+    if (args.compare === null || args.compareWith === null || process.argv.slice(2).some(arg =>
+      arg !== '--json' && !arg.startsWith('--compare=') && !arg.startsWith('--with='))) {
+      argumentError('--compare=earlier.json --with=later.json supports only --json; no scan paths or other modes')
+    }
+    const comparison = compareReports(readComparisonInput(args.compare), readComparisonInput(args.compareWith))
+    process.stdout.write(args.json ? `${JSON.stringify(comparison, null, 2)}\n` : renderComparison(comparison))
+    return finish(comparison.exitCode)
   }
   if (args.shareSummary && (args.init !== null || args.doctor || args.buildInfo || args.listRules || args.explainConfig ||
       args.baselineReview || args.baselinePrune || args.baselineAccept.length || args.baselineMigrate !== null ||
@@ -834,6 +857,7 @@ main().catch((err: unknown) => {
   if (err instanceof ArgumentError || err instanceof ProjectPathError) writeError('INVALID_ARGUMENT',err.message)
   else if (err instanceof ChangeViewError) writeError('GIT_REFERENCE_INVALID',err.message)
   else if (err instanceof BaselineError) writeError('BASELINE_INVALID',err.message)
+  else if (err instanceof ComparisonError) writeError('REPORT_COMPARISON_INVALID',err.message)
   else if (err instanceof ScanProgressError) writeError('PROGRESS_CALLBACK_FAILED',err.message)
   else writeError('INTERNAL_ERROR',String(err))
   finish(3)
