@@ -43,9 +43,15 @@ import { progressText } from './report/progress.js'
 import { createExclusions, isExclusionPath, MAX_EXCLUSIONS } from './exclusions.js'
 import { ComparisonError, compareReports, readComparisonInput, renderComparison } from './report/compare.js'
 import { MAX_WORKSPACES, WorkspaceError, scanWorkspaces, renderWorkspaces } from './workspaces.js'
+import { createProbePlan, ProbeError } from './probe-target.js'
+import { executeProbe, renderProbe } from './probe.js'
 import { canPruneBaseline, createBaselineReview, renderBaselineReview, serializeBaselineCandidate } from './report/baseline-review.js'
 
 interface Args {
+  probe: string | null
+  confirmProbe: string | null
+  probeCanary: string | null
+  probeExpectAuth: boolean
   workspaces: string[]
   compare: string | null
   compareWith: string | null
@@ -131,8 +137,10 @@ class ArgumentError extends Error {}
 
 /** 稳定代码供脚本识别；消息始终清理后写入标准错误。 */
 function writeError(code: DiagnosticCode, message: string): void {
+  const probing = process.argv.some(arg => /^--(?:probe|confirm-probe)(?:[=-]|$)/.test(arg))
   const detail = process.argv.includes('--share-summary')
     ? 'Summary generation failed. Re-run without --share-summary locally for details.'
+    : probing && !code.startsWith('PROBE_') ? 'Probe options or execution failed. Review --help and the offline probe plan locally.'
     : cleanForOutput(message)
   process.stderr.write(`${red('canship:')} [${code}] ${detail}\n`)
 }
@@ -166,6 +174,10 @@ function selectionPhrase(selection: RuleSelection | null): string | null {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
+    probe: null,
+    confirmProbe: null,
+    probeCanary: null,
+    probeExpectAuth: false,
     workspaces: [],
     compare: null,
     compareWith: null,
@@ -207,6 +219,14 @@ function parseArgs(argv: string[]): Args {
   const positional: string[] = []
 
   for (const arg of argv) {
+    if (arg.startsWith('--probe=') || arg.startsWith('--confirm-probe=') || arg.startsWith('--probe-canary-sha256=')) {
+      const key = arg.startsWith('--probe=') ? 'probe' : arg.startsWith('--confirm-probe=') ? 'confirmProbe' : 'probeCanary'
+      const value = arg.slice(arg.indexOf('=') + 1)
+      if (!value || args[key] !== null || (key !== 'probe' && !/^[a-f0-9]{64}$/i.test(value))) argumentError('Probe target, confirmation and canary digest must each be specified once, with valid values')
+      args[key] = key !== 'probe' ? value.toLowerCase() : value
+      continue
+    }
+    if (arg === '--probe-expect-auth') { args.probeExpectAuth = true; continue }
     if (arg.startsWith('--workspace=')) {
       const value = arg.slice('--workspace='.length)
       if (!isExclusionPath(value) || args.workspaces.length >= MAX_WORKSPACES) argumentError('--workspace requires 1–32 literal project-relative directories; no globs or traversal')
@@ -406,6 +426,10 @@ const HELP = `
         --open        With --report, open the report in the default browser
                       (skipped in CI and non-interactive shells)
         --json        Output raw JSON (for CI or tooling)
+        --probe=URL    Preview an HTTPS HEAD/OPTIONS plan; no DNS or requests yet
+        --confirm-probe=HASH  Execute only the matching reviewed probe plan
+        --probe-canary-sha256=HASH  Add a bounded GET of a dedicated synthetic canary
+        --probe-expect-auth   Review HEAD/canary responses other than 401/403
         --workspace=PATH  Scan explicit, non-overlapping subprojects independently;
                            repeatable, at most 32; terminal or --json output
         --compare=F --with=G  Compare earlier/later saved JSON reports; supports --json
@@ -462,7 +486,7 @@ const HELP = `
 
   ${dim(`Settings may also be committed to ${CONFIG_FILENAME}. A flag always wins over the file.`)}
 
-  ${dim('Scanned files stay local: no project-code execution, network requests, or uploads.')}
+  ${dim('Static scans stay local: no project-code execution, network requests, or uploads. Probes require separate confirmation.')}
 `
 
 async function main(): Promise<void> {
@@ -475,6 +499,24 @@ async function main(): Promise<void> {
   if (args.version) {
     process.stdout.write(`${VERSION}\n`)
     return finish(0)
+  }
+  if (args.probe !== null || args.confirmProbe !== null || args.probeExpectAuth || args.probeCanary !== null) {
+    if (args.probe === null || process.argv.slice(2).some(arg => arg !== '--json' && arg !== '--probe-expect-auth' &&
+      !arg.startsWith('--probe=') && !arg.startsWith('--confirm-probe=') && !arg.startsWith('--probe-canary-sha256='))) argumentError('Probe mode supports only target, confirmation, canary digest, expected auth rejection and --json')
+    const plan = createProbePlan(args.probe, args.probeExpectAuth, args.probeCanary ?? undefined)
+    if (args.confirmProbe === null) {
+      process.stdout.write(args.json ? `${JSON.stringify(plan, null, 2)}\n` : renderProbe(plan))
+      return finish(0)
+    }
+    const controller = new AbortController()
+    const interrupt = () => { interruptionExitCode = 130; controller.abort() }
+    const terminate = () => { interruptionExitCode = 143; controller.abort() }
+    process.once('SIGINT', interrupt); process.once('SIGTERM', terminate)
+    try {
+      const result = await executeProbe(args.probe, args.confirmProbe, args.probeExpectAuth, controller.signal, undefined, args.probeCanary ?? undefined)
+      process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : renderProbe(result))
+      return finish(result.exitCode)
+    } finally { process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', terminate) }
   }
   if (args.workspaces.length) {
     const allowed = new Set(['--json', '--all', '-a', '--verbose', '--no-config', '--no-ignore-markers', '--no-excerpts', '--best-effort', '--no-progress', '--baseline'])
@@ -879,6 +921,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
+  if (err instanceof ProbeError) {
+    writeError(err.code, err.message)
+    return finish(err.code === 'PROBE_CANCELLED' ? interruptionExitCode : 3)
+  }
   if (err instanceof ScanCancelledError) {
     writeError('SCAN_CANCELLED', 'Scan cancelled before report generation.')
     return finish(interruptionExitCode)

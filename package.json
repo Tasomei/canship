@@ -1,7 +1,7 @@
 {
   "name": "canship",
   "version": "0.7.1",
-  "description": "Static scanner for exposed credentials, open access rules, and unsafe request input in JS/TS web apps. Scans local files without executing project code or making network requests.",
+  "description": "Static scanner for credentials, access rules and unsafe request input in JS/TS apps. Offline file scans; deployment probes require separate confirmation.",
   "keywords": [
     "security",
     "audit",
@@ -48,6 +48,8 @@
     "schemas",
     "README.md",
     "README-zh-CN.md",
+    "docs/reference.md",
+    "docs/reference-zh-CN.md",
     "LICENSE"
   ],
   "engines": {

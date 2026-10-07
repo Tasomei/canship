@@ -26,5 +26,6 @@ export function buildLabel(): string {
 
 /** 能力声明与边界测试配套；未来联网模式不得继承静态扫描的默认授权。 */
 export function getCapabilities() {
-  return { staticScan: { network:false, projectCodeExecution:false, projectWrites:false }, fileOutputs:'explicit-only', onlineValidation:false }
+  return { staticScan: { network:false, projectCodeExecution:false, projectWrites:false }, fileOutputs:'explicit-only', onlineValidation:true,
+    onlineValidationPolicy: { cliOnly: true, defaultEnabled: false, confirmation: 'plan-digest', credentials: false, responseBodiesRetained: false } }
 }

@@ -20,7 +20,8 @@ function npm(args, cwd) {
 try {
   const packed = JSON.parse(npm(['pack', '--ignore-scripts', '--json', '--pack-destination', root], repository))[0]
   const expected = ['LICENSE', 'README-zh-CN.md', 'README.md', 'dist/cli.js', 'dist/index.js', 'dist/index.d.ts',
-    'package.json', 'schemas/scan-report-v1.schema.json', 'schemas/config-v1.schema.json'].sort()
+    'package.json', 'schemas/scan-report-v1.schema.json', 'schemas/config-v1.schema.json',
+    'docs/reference.md', 'docs/reference-zh-CN.md'].sort()
   assert.deepEqual(packed.files.map(file => file.path).sort(), expected)
   const install = join(root, 'installed')
   mkdirSync(install)
@@ -36,7 +37,7 @@ try {
     readFileSync(join(repository, 'schemas/config-v1.schema.json')))
   assert.equal(npm(['exec', '--offline', '--yes=false', '--', 'canship', '--version'], install).trim(), version)
   assert.match(readFileSync(join(packageRoot, 'README.md'), 'utf8'), /A local static scanner/)
-  for (const name of ['README.md', 'README-zh-CN.md']) {
+  for (const name of ['README.md', 'README-zh-CN.md', 'docs/reference.md', 'docs/reference-zh-CN.md']) {
     assert.deepEqual(readFileSync(join(packageRoot, name)), readFileSync(join(repository, name)))
   }
   const entry = join(packageRoot, 'dist/cli.js')
@@ -58,6 +59,18 @@ try {
   assert.equal(identity.version, version)
   assert.ok(['development','prerelease','release'].includes(identity.channel))
   assert.equal(identity.capabilities.staticScan.network, false)
+  assert.equal(identity.capabilities.onlineValidationPolicy.defaultEnabled, false)
+  const probePlan = cli(['--probe=https://api.example.com/status', '--json'])
+  assert.equal(probePlan.status, 0)
+  assert.equal(JSON.parse(probePlan.stdout).networkPerformed, false)
+  assert.equal(JSON.parse(probePlan.stdout).kind, 'probe-plan')
+  const canaryPlan = cli(['--probe=https://api.example.com/canship-canary.txt', '--probe-canary-sha256=' + '1'.repeat(64), '--json'])
+  assert.equal(canaryPlan.status, 0)
+  assert.deepEqual(JSON.parse(canaryPlan.stdout).requests.map(item => item.method), ['HEAD', 'OPTIONS', 'GET'])
+  assert.equal(JSON.parse(canaryPlan.stdout).networkPerformed, false)
+  const rejectedProbe = cli(['--probe=https://api.example.com/status', '--confirm-probe=' + '0'.repeat(64), '--json'])
+  assert.equal(rejectedProbe.status, 3)
+  assert.equal(rejectedProbe.stdout, '')
   assert.match(cli(['--help']).stdout, /--no-excerpts/)
   assert.equal(JSON.parse(cli(['--list-rules', '--json']).stdout).kind, 'rule-catalog')
   const catalog = cli(['--list-rules', '--only=injection/sql', '--json'])

@@ -1580,11 +1580,11 @@ describe('the CLI contract', () => {
     assert.match(version.stdout.trim(), /^\d+\.\d+\.\d+/)
   })
 
-  /** 同时核对帮助文本和两份 README 的选项与退出码。 */
+  /** 参数表移至双语参考，首页继续维护退出码契约。 */
   describe('the documented options match the ones the CLI has', () => {
     const readme = (name: string): string => readFileSync(join(here, '..', name), 'utf8')
 
-    /** 仅提取 README 选项表，避免混入其他工具参数。 */
+    /** 仅提取参考文档选项表，避免混入其他工具参数。 */
     const documented = (markdown: string): Set<string> => {
       const found = new Set<string>()
       for (const line of markdown.split(/\r?\n/)) {
@@ -1605,13 +1605,15 @@ describe('the CLI contract', () => {
 
     const sorted = (options: Set<string>): string[] => [...options].sort()
 
-    test('--help and both READMEs name the same options', () => {
+    test('--help and both linked references name exactly the same options', () => {
       const help = sorted(offered(run(['--help']).stdout))
 
       // 先断言提取结果非空，避免两个空集合造成假通过。
       assert.ok(help.length >= 7, `--help named only ${help.length} options`)
-      assert.deepEqual(sorted(documented(readme('README.md'))), help)
-      assert.deepEqual(sorted(documented(readme('README-zh-CN.md'))), help)
+      for (const [homepage, reference] of [['README.md', 'docs/reference.md'], ['README-zh-CN.md', 'docs/reference-zh-CN.md']]) {
+        assert.ok(readme(homepage!).includes(`](./${reference})`), `${homepage} must link its full reference`)
+        assert.deepEqual(sorted(documented(readme(reference!))), help)
+      }
     })
 
     test('--help and both READMEs describe the same exit codes', () => {

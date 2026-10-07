@@ -21,6 +21,9 @@ test('callers cannot alter shared build identity or capabilities',()=>{
   assert.equal(getBuildInfo().channel,'development')
   const capabilities=getCapabilities();capabilities.staticScan.network=true
   assert.equal(getCapabilities().staticScan.network,false)
+  assert.equal(getCapabilities().onlineValidation,true)
+  capabilities.onlineValidationPolicy.defaultEnabled=true
+  assert.equal(getCapabilities().onlineValidationPolicy.defaultEnabled,false)
 })
 test('build-info is independent of scan options and has a distinct JSON kind',()=>{
   const run=(args:string[])=>spawnSync(process.execPath,['--import','tsx','src/cli.ts',...args],{encoding:'utf8'})
