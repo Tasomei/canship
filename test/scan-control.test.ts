@@ -76,6 +76,41 @@ test('callback exceptions propagate with their cause instead of becoming rule wa
   }
 })
 
+for (const asynchronous of [false, true]) {
+  test(`cancellation in the ${asynchronous ? 'async' : 'sync'} complete callback rejects the finished scan`, { timeout: 3000 }, async () => {
+    const controller = new AbortController()
+    let reachedComplete = false
+    await assert.rejects(scan(root, { only: ['firebase'], signal: controller.signal, onProgress: event => {
+      if (event.phase !== 'complete') return
+      reachedComplete = true
+      assert.equal(event.filesCompleted, event.filesTotal)
+      if (asynchronous) return new Promise<void>(() => { setImmediate(() => controller.abort()) })
+      controller.abort()
+    } }), ScanCancelledError)
+    assert.equal(reachedComplete, true)
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
+  })
+
+  test(`failure in the ${asynchronous ? 'async' : 'sync'} complete callback rejects the finished scan`, async () => {
+    const cause = new Error('PRIVATE_FINAL_CALLBACK_DETAIL')
+    let reachedComplete = false
+    await assert.rejects(scan(root, { only: ['firebase'], onProgress: event => {
+      if (event.phase !== 'complete') return
+      reachedComplete = true
+      assert.equal(event.filesCompleted, event.filesTotal)
+      if (asynchronous) return Promise.reject(cause)
+      throw cause
+    } }), (error: unknown) => {
+      assert.ok(error instanceof ScanProgressError)
+      assert.equal(error.cause, cause)
+      assert.equal(error.code, 'PROGRESS_CALLBACK_FAILED')
+      assert.ok(!error.message.includes('PRIVATE_FINAL_CALLBACK_DETAIL'))
+      return true
+    })
+    assert.equal(reachedComplete, true)
+  })
+}
+
 test('observing progress does not change scan findings or coverage', async () => {
   const plain = await scan(root, { only: ['firebase'] })
   const controlled = await scan(root, { only: ['firebase'], signal: new AbortController().signal, onProgress: async () => {} })

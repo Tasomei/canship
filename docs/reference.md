@@ -192,7 +192,7 @@ Evidence traces are capped at 24 steps and disclose truncation.
 
 The repository includes a [synthetic HTML demonstration](https://github.com/Tasomei/canship/blob/main/docs/demo.html). Download and open it locally; it is not included in the npm package and never scans a project. The page and copied prompts identify the data as examples. `npm run demo` previews HTML on stdout, `npm run demo -- --check` verifies the committed artifact, and explicit `npm run demo -- --write` regenerates it. Automated tests reject a stale demo.
 
-The [VS Code extension](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme) is a development preview, separate from the npm package. Real-host acceptance and Marketplace publication are pending.
+The [VS Code extension](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme) is a development preview, separate from the npm package. See its README for host acceptance coverage and remaining checks. Marketplace publication is pending.
 
 ```powershell
 npm ci

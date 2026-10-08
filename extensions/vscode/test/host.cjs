@@ -26,6 +26,7 @@ exports.run = async () => {
   const output = data => writeFileSync(join(directory, 'result.json'), JSON.stringify(data), { flag: 'wx' })
   let stage = 'trust'
   let actionState
+  let workflowState
   try {
     if (!vscode.workspace.isTrusted) {
       writeFileSync(join(directory, 'waiting.json'), JSON.stringify({ stage: 'trust' }), { flag: 'wx' })
@@ -35,6 +36,16 @@ exports.run = async () => {
           { modal: true, detail: 'No scan was run. The result is saved locally. Dismiss this message to close only this test window.' }, 'Close Test Window')
         return
       }
+    }
+    if (marker.suite === 'workflows') {
+      const { runWorkflows } = require('./workflows.cjs')
+      const checks = await runWorkflows(directory, process.env.CANSHIP_EDITOR_EXTENSION, (next, details) => {
+        stage = next
+        if (details) workflowState = details
+        writeFileSync(join(directory, 'progress.json'), JSON.stringify({ stage, workflowState }))
+      })
+      output({ status: 'passed', vscode: vscode.version, suite: 'workflows', checks })
+      return
     }
     stage = 'workspace'
     assert.equal(vscode.workspace.workspaceFolders.length, 1)
@@ -76,13 +87,25 @@ exports.run = async () => {
     assert.equal(vscode.languages.getDiagnostics(uri).filter(item => item.source === 'canship').length, 0)
     output({ status: 'passed', vscode: vscode.version, checks: ['activation', 'scan', 'diagnostics', 'document', 'hover', 'actions', 'summary', 'clear'] })
   } catch (error) {
+    if (error?.code === 'ACCEPTANCE_PROJECT_NOT_SELECTED') {
+      output({ status: 'blocked', stage, reason: 'project_selection_not_completed' })
+      await vscode.window.showWarningMessage('Canship acceptance blocked: the requested project was not selected.',
+        { modal: true, detail: 'No multi-root pass is claimed. Keep the picker open until the requested synthetic project is chosen. Dismiss this message to close only this test window.' }, 'Close Test Window')
+      return
+    }
+    if (error?.code === 'ACCEPTANCE_CANCEL_WINDOW_MISSED') {
+      output({ status: 'blocked', stage, reason: 'cancellation_window_not_observed' })
+      await vscode.window.showWarningMessage('Canship acceptance blocked: cancellation timing was not observed.',
+        { modal: true, detail: 'No cancellation pass is claimed. The result is saved locally. Dismiss this message to close only this test window.' }, 'Close Test Window')
+      return
+    }
     const message = String(error?.message ?? '')
     const failure = { assertion: error?.code === 'ERR_ASSERTION', typeError: error instanceof TypeError,
       rangeArgument: /rangeOrSelection|range|Range/.test(message),
       uriArgument: /uri|URI|Uri/.test(message), commandError: /command/i.test(message),
       disposed: /disposed|cancel/i.test(message), undefinedValue: /undefined/.test(message),
       unknown: /unknown|not found|not registered/i.test(message) }
-    output({ status: 'failed', stage, ...(stage === 'actions' ? { failure, actionState } : {}) })
+    output({ status: 'failed', stage, ...(stage === 'actions' ? { failure, actionState } : {}), ...(workflowState ? { workflowState } : {}) })
     // 先保存脱敏结果并展示失败步骤，用户确认后才让测试宿主退出。
     await vscode.window.showErrorMessage(`Canship acceptance failed at: ${stage}.`,
       { modal: true, detail: 'The failure result is saved locally. This is not a passed acceptance test. Dismiss this message to close only this test window.' }, 'Close Test Window')

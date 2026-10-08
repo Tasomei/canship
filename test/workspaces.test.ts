@@ -155,6 +155,26 @@ test('cancellation and progress errors abort the whole operation instead of beco
   }
 })
 
+for (const error of [new ScanCancelledError(), new ScanProgressError(new Error('PRIVATE_CALLBACK'))]) {
+  test(`${error.constructor.name} after a completed workspace rejects the whole operation`, async () => {
+    let calls = 0, completed = 0
+    await assert.rejects(scanWorkspaces(workspace(), selected, { ...defaults, only: ['firebase'] }, async (root, options) => {
+      calls++
+      if (calls === 2) throw error
+      const result = await scan(root, options)
+      assert.equal(result.partial, false)
+      assert.equal(result.filesScanned, 1)
+      completed++
+      return result
+    }), (failure: unknown) => {
+      assert.equal(failure, error)
+      return true
+    })
+    assert.equal(calls, 2)
+    assert.equal(completed, 1)
+  })
+}
+
 test('CLI supports isolated JSON and context-preserving single-project followups', () => {
   const root = workspace(); put(root, 'apps/second/firestore.rules', openRule)
   const output = cli(root, '--json', '--no-excerpts')

@@ -192,7 +192,7 @@ JSON 使用 [schemaVersion 1](../schemas/scan-report-v1.schema.json)。须独立
 
 仓库提供[合成 HTML 演示](https://github.com/Tasomei/canship/blob/main/docs/demo.html)，下载后在本地打开；不包含在 npm 包中，也不扫描项目。页面与复制提示均标明示例性质。`npm run demo` 在标准输出预览 HTML，`npm run demo -- --check` 核对已提交文件，显式 `npm run demo -- --write` 重新生成；测试会拒绝过期演示。
 
-[VS Code 插件](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme)为独立开发预览，不包含在 npm 扫描器中；真实宿主验收及 Marketplace 发布尚未完成。
+[VS Code 插件](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme)为独立开发预览，不包含在 npm 扫描器中。宿主验收范围及待验收项目见插件 README；尚未发布到 Marketplace。
 
 ```powershell
 npm ci

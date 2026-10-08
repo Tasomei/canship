@@ -25,7 +25,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const byRoot = new Map<string, Map<string, vscode.Diagnostic[]>>()
   const summaries = new Map<string, string>(), documents = new Map<string, string>()
   const queue = new Map<string, Request>(), timers = new Map<string, ReturnType<typeof setTimeout>>()
-  let active: { root: string; cancel: () => void } | null = null
+  let active: { root: string; cancelled: boolean; cancel: () => void } | null = null
   let disposed = false
   const settings = () => {
     const config = vscode.workspace.getConfiguration('canship')
@@ -110,19 +110,26 @@ export function activate(context: vscode.ExtensionContext): void {
     if (active || disposed || !queue.size) return
     const [root, request] = queue.entries().next().value!
     queue.delete(root)
-    active = { root, cancel: () => {} }
+    active = { root, cancelled: false, cancel: () => {} }
     try {
       if (!eligible(request.folder)) return
       const config = settings()
       status.text = '$(sync~spin) Canship: scanning'
       await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Canship: scanning saved files', cancellable: true }, async (progress, token) => {
+        // 进度回调可能延后启动；已取消的请求不能再创建扫描线程。
+        if (active?.cancelled || token.isCancellationRequested || !revisions.current(root, request.revision)) throw new EditorCancelled('Editor scan cancelled.')
         const job = startWorker(join(context.extensionPath, 'dist', 'worker.cjs'), { root, all: config.all,
           noConfig: config.noConfig, noIgnoreMarkers: config.noIgnoreMarkers }, VERSION,
         value => progress.report({ message: `${value.phase}: ${value.filesCompleted} files, ${value.projectRulesCompleted} project checks` }))
         active!.cancel = job.cancel
         const cancel = token.onCancellationRequested(job.cancel)
         if (token.isCancellationRequested || !revisions.current(root, request.revision)) job.cancel()
-        try { publish(request, await job.promise) } finally { cancel.dispose() }
+        try {
+          const response = await job.promise
+          // 线程清理期间仍可能取消；结果已生成不代表可以继续发布。
+          if (active?.cancelled || token.isCancellationRequested) throw new EditorCancelled('Editor scan cancelled.')
+          publish(request, response)
+        } finally { cancel.dispose() }
       })
     } catch (error) {
       if (revisions.current(root, request.revision)) {
@@ -160,7 +167,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('canship.scanWorkspace', scanCommand),
     vscode.commands.registerCommand('canship.showSummary', showSummary),
     vscode.commands.registerCommand('canship.cancelScan', () => {
-      active?.cancel()
+      if (active) { active.cancelled = true; active.cancel() }
       for (const [root, request] of queue) { revisions.next(root); summaries.set(root, 'Queued scan cancelled.'); request.done() }
       queue.clear(); for (const timer of timers.values()) clearTimeout(timer); timers.clear()
       status.text = '$(circle-slash) Canship: cancelled'

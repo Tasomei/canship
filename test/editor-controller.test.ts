@@ -51,7 +51,7 @@ class MarkdownString {
   appendCodeblock(text: string) { this.value += text; return this }
 }
 
-function setup(trusted = true) {
+function setup(trusted = true, delayedProgress = false, delayedTermination = false) {
   const root = mkdtempSync(join(temporary, 'project-')), uri = Uri.file(join(root, 'server.ts'))
   writeFileSync(uri.fsPath, source)
   const folder = { name: 'sample', uri: Uri.file(root), index: 0 }
@@ -63,13 +63,21 @@ function setup(trusted = true) {
   const workers: FakeWorker[] = []
   let clipboard = '', shown = '', answer: string | undefined, currentText = source
   const warnings: any[][] = []
+  let releaseProgress: (() => void) | undefined
+  let cancelProgress: (() => void) | undefined
   const document = { uri, version: 1, isDirty: false, getText: () => currentText }
   const textDocuments = [document]
   const status = { text: '', tooltip: '', command: '', show() {}, dispose() {} }
   class FakeWorker extends EventEmitter {
     stdout = new EventEmitter(); stderr = new EventEmitter(); terminated = false
+    releaseTermination: (() => void) | undefined
     constructor(readonly path: string, readonly options: any) { super(); workers.push(this) }
-    async terminate() { this.terminated = true; this.emit('exit', 1); return 1 }
+    async terminate() {
+      this.terminated = true
+      if (delayedTermination) await new Promise<void>(resolve => { this.releaseTermination = resolve })
+      this.emit('exit', 1)
+      return 1
+    }
     result(title = 'Sample CORS finding') {
       this.emit('message', { type: 'result', version: '0.0.0-dev', displayOmitted: 0, result: {
         exitCode: 1, error: null, summary: { findings: 1, blocking: 1, likely: 0, partial: false, exitCode: 1 },
@@ -98,7 +106,17 @@ function setup(trusted = true) {
       showInformationMessage: async (...args: any[]) => { warnings.push(args) },
       showQuickPick: async (items: any[]) => items[0],
       showTextDocument: async (value: any) => { shown = value.getText(); return value },
-      withProgress: async (_options: unknown, callback: any) => callback({ report() {} }, { isCancellationRequested: false, onCancellationRequested: () => disposable() }),
+      withProgress: async (_options: unknown, callback: any) => {
+        const listeners = new Set<() => void>()
+        const token = { isCancellationRequested: false, onCancellationRequested: (listener: () => void) => {
+          listeners.add(listener)
+          return { dispose: () => listeners.delete(listener) }
+        } }
+        cancelProgress = () => { token.isCancellationRequested = true; for (const listener of listeners) listener() }
+        const run = () => callback({ report() {} }, token)
+        if (!delayedProgress) return run()
+        return new Promise((resolve, reject) => { releaseProgress = () => { Promise.resolve().then(run).then(resolve, reject) } })
+      },
     },
     workspace: {
       isTrusted: trusted, workspaceFolders: [folder], textDocuments,
@@ -131,9 +149,181 @@ function setup(trusted = true) {
   module.exports.activate(context)
   return { root, uri, settings, commands, callbacks, collection, providers, workers, document, status, warnings,
     clipboard: () => clipboard, shown: () => shown, setAnswer: (value: string | undefined) => { answer = value },
+    releaseProgress: () => releaseProgress?.(),
+    cancelProgress: () => cancelProgress?.(),
     close: () => { module.exports.deactivate(); for (const item of context.subscriptions) item.dispose() } }
 }
 const settled = () => new Promise<void>(resolve => setImmediate(resolve))
+
+test('cancelling before the progress callback starts never launches a worker or publishes success', async () => {
+  const app = setup(true, true)
+  try {
+    const pending = app.commands.get('canship.scanWorkspace')!()
+    await settled(); assert.equal(app.workers.length, 0)
+    await app.commands.get('canship.cancelScan')!()
+    app.releaseProgress(); await settled()
+    for (const worker of app.workers) worker.result('LATE_RESULT')
+    await pending
+    assert.equal(app.workers.length, 0)
+    assert.equal(app.collection.size, 0)
+    await app.commands.get('canship.showSummary')!()
+    assert.match(app.shown(), /Scan cancelled; no clean result/)
+  } finally { app.close() }
+})
+
+test('cancelling a running scan rejects late results and allows a fresh scan to publish', async () => {
+  const app = setup()
+  try {
+    const first = app.commands.get('canship.scanWorkspace')!()
+    await settled(); app.workers[0]!.result('FIRST_RESULT'); await first
+    assert.match(app.collection.get(app.uri.toString())![0]!.message, /FIRST_RESULT/)
+    const oldActions = app.providers.actions.provideCodeActions(app.document, null, { diagnostics: app.collection.get(app.uri.toString())! })
+
+    const cancelled = app.commands.get('canship.scanWorkspace')!()
+    await settled(); assert.equal(app.workers.length, 2)
+    assert.equal(app.collection.size, 0)
+    await app.commands.get('canship.cancelScan')!()
+    app.workers[1]!.result('CANCELLED_RESULT'); await cancelled
+    assert.ok(app.workers[1]!.terminated)
+    assert.equal(app.collection.size, 0)
+    assert.match(app.status.text, /cancelled/)
+    await app.commands.get('canship.showSummary')!()
+    assert.match(app.shown(), /Scan cancelled; no clean result/)
+    assert.doesNotMatch(app.shown(), /1 findings; 1 blocking/)
+    const oldCopy = oldActions[0].command
+    await app.commands.get(oldCopy.command)!(...oldCopy.arguments)
+    assert.equal(app.clipboard(), '')
+
+    const next = app.commands.get('canship.scanWorkspace')!()
+    await settled(); assert.equal(app.workers.length, 3)
+    app.workers[2]!.result('FRESH_RESULT'); await next
+    app.workers[0]!.result('STALE_FIRST_RESULT')
+    app.workers[1]!.result('STALE_CANCELLED_RESULT')
+    await settled()
+    const values = app.collection.get(app.uri.toString())!
+    assert.equal(values.length, 1)
+    assert.match(values[0]!.message, /FRESH_RESULT/)
+    assert.doesNotMatch(values[0]!.message, /STALE|CANCELLED|FIRST/)
+    await app.commands.get('canship.showSummary')!()
+    assert.match(app.shown(), /1 findings; 1 blocking/)
+    assert.doesNotMatch(app.shown(), /cancelled/)
+  } finally { app.close() }
+})
+
+test('notification cancellation terminates the active worker without publishing a late result', async () => {
+  const app = setup()
+  try {
+    const pending = app.commands.get('canship.scanWorkspace')!()
+    await settled(); assert.equal(app.workers.length, 1)
+    app.cancelProgress()
+    app.workers[0]!.result('LATE_NOTIFICATION_RESULT'); await pending
+    assert.ok(app.workers[0]!.terminated)
+    assert.equal(app.collection.size, 0)
+    assert.match(app.status.text, /cancelled/)
+    await app.commands.get('canship.showSummary')!()
+    assert.match(app.shown(), /Scan cancelled; no clean result/)
+  } finally { app.close() }
+})
+
+test('cancelling after a result arrives but before worker termination completes does not publish success', async () => {
+  const app = setup(true, false, true)
+  try {
+    let completed = false
+    const pending = app.commands.get('canship.scanWorkspace')!().then(() => { completed = true })
+    await settled(); assert.equal(app.workers.length, 1)
+    app.workers[0]!.result('RESULT_BEFORE_CANCEL')
+    await settled()
+    assert.ok(app.workers[0]!.terminated)
+    assert.equal(typeof app.workers[0]!.releaseTermination, 'function')
+    assert.equal(completed, false)
+    await app.commands.get('canship.cancelScan')!()
+    app.workers[0]!.releaseTermination!(); await pending
+    assert.equal(app.collection.size, 0)
+    assert.match(app.status.text, /cancelled/)
+    await app.commands.get('canship.showSummary')!()
+    assert.match(app.shown(), /Scan cancelled; no clean result/)
+    assert.doesNotMatch(app.shown(), /1 findings; 1 blocking/)
+  } finally { for (const worker of app.workers) worker.releaseTermination?.(); app.close() }
+})
+
+test('notification cancellation during worker cleanup invalidates old actions and allows a fresh scan', async () => {
+  const app = setup(true, false, true)
+  try {
+    const first = app.commands.get('canship.scanWorkspace')!()
+    await settled(); app.workers[0]!.result('PREVIOUS_NOTIFICATION_RESULT')
+    app.workers[0]!.releaseTermination!(); await first
+    const oldDiagnostics = app.collection.get(app.uri.toString())!
+    assert.equal(oldDiagnostics.length, 1)
+    const oldActions = app.providers.actions.provideCodeActions(app.document, null, { diagnostics: oldDiagnostics })
+    assert.equal(oldActions.length, 2)
+
+    let completed = false
+    const pending = app.commands.get('canship.scanWorkspace')!().then(() => { completed = true })
+    await settled(); assert.equal(app.workers.length, 2)
+    assert.equal(app.collection.size, 0)
+    app.workers[1]!.result('RESULT_BEFORE_NOTIFICATION_CANCEL')
+    await settled()
+    assert.ok(app.workers[1]!.terminated)
+    assert.equal(typeof app.workers[1]!.releaseTermination, 'function')
+    assert.equal(completed, false)
+    app.cancelProgress()
+    app.workers[1]!.releaseTermination!(); await pending
+    assert.equal(app.collection.size, 0)
+    assert.match(app.status.text, /cancelled/)
+    await app.commands.get('canship.showSummary')!()
+    assert.match(app.shown(), /Scan cancelled; no clean result/)
+    assert.doesNotMatch(app.shown(), /1 findings; 1 blocking/)
+    assert.equal(app.providers.actions.provideCodeActions(app.document, null, { diagnostics: oldDiagnostics }).length, 0)
+    const oldCopy = oldActions[0].command, oldIgnore = oldActions[1].command
+    await app.commands.get(oldCopy.command)!(...oldCopy.arguments)
+    assert.equal(app.clipboard(), '')
+    app.setAnswer('Insert Comment')
+    await app.commands.get(oldIgnore.command)!(...oldIgnore.arguments)
+    assert.equal(app.document.isDirty, false)
+    assert.equal(app.document.getText(), source)
+
+    const next = app.commands.get('canship.scanWorkspace')!()
+    await settled(); assert.equal(app.workers.length, 3)
+    app.workers[2]!.result('FRESH_NOTIFICATION_RESULT')
+    app.workers[2]!.releaseTermination!(); await next
+    app.workers[0]!.result('STALE_PREVIOUS_RESULT')
+    app.workers[1]!.result('STALE_CANCELLED_RESULT')
+    await settled()
+    const values = app.collection.get(app.uri.toString())!
+    assert.equal(values.length, 1)
+    assert.match(values[0]!.message, /FRESH_NOTIFICATION_RESULT/)
+    assert.doesNotMatch(values[0]!.message, /STALE|CANCELLED|PREVIOUS/)
+    const actions = app.providers.actions.provideCodeActions(app.document, null, { diagnostics: values })
+    assert.equal(actions.length, 2)
+    assert.notEqual(actions[0].command.arguments[0], oldCopy.arguments[0])
+    await app.commands.get(actions[0].command.command)!(...actions[0].command.arguments)
+    assert.match(app.clipboard(), /FRESH_NOTIFICATION_RESULT/)
+    await app.commands.get('canship.showSummary')!()
+    assert.match(app.shown(), /1 findings; 1 blocking/)
+    assert.doesNotMatch(app.shown(), /cancelled/)
+  } finally { for (const worker of app.workers) worker.releaseTermination?.(); app.close() }
+})
+
+test('cancel clears pending save timers while a later save can schedule a fresh scan', async () => {
+  const app = setup()
+  try {
+    app.settings.scanOnSave = true; app.settings.saveDelay = 250
+    for (let i = 0; i < 3; i++) app.callbacks.save!(app.document)
+    await app.commands.get('canship.cancelScan')!()
+    await new Promise(resolve => setTimeout(resolve, 320))
+    assert.equal(app.workers.length, 0)
+    assert.equal(app.collection.size, 0)
+    assert.match(app.status.text, /cancelled/)
+
+    app.callbacks.save!(app.document)
+    await new Promise(resolve => setTimeout(resolve, 320))
+    assert.equal(app.workers.length, 1)
+    app.workers[0]!.result('AFTER_CANCEL_RESULT'); await settled()
+    assert.match(app.collection.get(app.uri.toString())![0]!.message, /AFTER_CANCEL_RESULT/)
+    await app.commands.get('canship.showSummary')!()
+    assert.match(app.shown(), /1 findings; 1 blocking/)
+  } finally { app.close() }
+})
 
 test('startup and untrusted commands never scan or enable save-triggered execution', async () => {
   const app = setup(false)
