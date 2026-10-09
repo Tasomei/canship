@@ -45,10 +45,8 @@ jobs:
           const preview = JSON.parse(readFileSync(join(root, 'validation-preview.json'), 'utf8'));
           const id = readFileSync('.github/sarif-validation-case.txt', 'utf8').trim();
           assert.ok(['initial', 'repeat', 'moved', 'wording-and-version', 'reduced'].includes(id));
-          const selected = preview.cases.find(item => item.id === id);
-          assert.equal(selected.fixture.path, 'synthetic/firestore.rules');
-          assert.equal(readFileSync(selected.fixture.path, 'utf8'), selected.fixture.content);
           const prepared = prepareUpload(preview, id);
+          if (readFileSync('synthetic/firestore.rules', 'utf8') !== prepared.fixture) throw new Error('Synthetic fixture mismatch.');
           writeFileSync(join(root, 'selected.sarif'), JSON.stringify(prepared.log));
           appendFileSync(process.env.GITHUB_ENV, `CANSHIP_SARIF_CASE=${id}\n`);
           SYNTHETIC_INPUT
