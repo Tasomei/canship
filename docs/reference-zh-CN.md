@@ -192,6 +192,10 @@ JSON 使用 [schemaVersion 1](../schemas/scan-report-v1.schema.json)。须独立
 
 ## 开发
 
+发布先暂存、再由人工批准：稳定版本使用 `latest`，预发布使用 `next`。工作流要求不含构建元数据的精确 SemVer 版本及匹配的 Git 标签；推送 `main` 不会发布。参见 [npm 暂存发布](https://docs.npmjs.com/cli/v11/commands/npm-stage/)。
+
+在仓库根目录安装开发依赖后，`node --import tsx scripts/prepare-sarif-validation.ts` 预览重复上传、行号移动及文案/版本变化的四组合成 SARIF，不扫描、不写文件、不上传。GitHub 告警连续性仍须另行授权上传，并在隔离测试分支提交对应的合成文件。
+
 仓库提供[合成 HTML 演示](https://github.com/Tasomei/canship/blob/main/docs/demo.html)，下载后在本地打开；不包含在 npm 包中，也不扫描项目。页面与复制提示均标明示例性质。`npm run demo` 在标准输出预览 HTML，`npm run demo -- --check` 核对已提交文件，显式 `npm run demo -- --write` 重新生成；测试会拒绝过期演示。
 
 [VS Code 插件](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme)为独立开发预览，不包含在 npm 扫描器中。宿主验收范围及待验收项目见插件 README；尚未发布到 Marketplace。

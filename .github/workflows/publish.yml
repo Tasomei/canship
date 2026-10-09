@@ -1,6 +1,6 @@
 name: Publish
 
-# 推送 vX.Y.Z 标签时暂存到 npm，维护者在 npmjs.com 以两步验证批准后才上线。
+# 版本标签触发暂存；稳定版使用 latest，预发布使用 next，均需人工批准。
 # 使用可信发布（OIDC），不保存 npm 令牌；即使工作流被攻破，也无法绕过人工批准直接发布。
 on:
   push:
@@ -103,6 +103,7 @@ jobs:
           name: package
           path: ${{ runner.temp }}/package
       - name: Verify the package
+        id: package
         shell: bash
         env:
           TARBALL: ${{ needs.build.outputs.tarball }}
@@ -122,6 +123,19 @@ jobs:
             echo "::error::The package is $name@$version, not canship@${GITHUB_REF_NAME#v}."
             exit 1
           fi
+          # 从已校验压缩包的版本选择标签，不执行包内代码或读取项目配置。
+          node --input-type=module - "$version" <<'RELEASE_CHANNEL'
+          import { appendFileSync } from 'node:fs';
+          const version = process.argv[2];
+          const match = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.exec(version ?? '');
+          if (!match || match[0] !== version || version.length > 256 ||
+              !match.slice(1, 4).every(part => Number.isSafeInteger(Number(part))) ||
+              match[4]?.split('.').some(part => /^[0-9]+$/.test(part) && part.length > 1 && part.startsWith('0'))) {
+            console.error('::error::Expected an exact release version without build metadata.');
+            process.exit(1);
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, `npm_tag=${match[4] ? 'next' : 'latest'}\n`);
+          RELEASE_CHANNEL
           # 暂存发布要求 npm 11.15.0 及以上。
           node -e '
             const [a, b] = process.argv[1].split(".").map(Number)
@@ -134,7 +148,9 @@ jobs:
         shell: bash
         env:
           TARBALL: ${{ needs.build.outputs.tarball }}
+          NPM_TAG: ${{ steps.package.outputs.npm_tag }}
         run: |
           set -euo pipefail
-          npm stage publish "$RUNNER_TEMP/package/$TARBALL" --provenance --ignore-scripts
-          echo "Staged \`$TARBALL\`. Approve it on npmjs.com (canship → Staged Packages) with two-factor authentication to make it public." >> "$GITHUB_STEP_SUMMARY"
+          case "$NPM_TAG" in latest|next) ;; *) echo "::error::Missing or invalid release channel."; exit 1 ;; esac
+          npm stage publish "$RUNNER_TEMP/package/$TARBALL" --tag "$NPM_TAG" --registry=https://registry.npmjs.org --provenance --ignore-scripts
+          echo "Staged \`$TARBALL\` with tag \`$NPM_TAG\`. Approve it on npmjs.com (canship → Staged Packages) with two-factor authentication to make it public." >> "$GITHUB_STEP_SUMMARY"

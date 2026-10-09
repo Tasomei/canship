@@ -192,6 +192,10 @@ Evidence traces are capped at 24 steps and disclose truncation.
 
 ## Development
 
+Publishing is staged for human approval: stable versions use `latest`; prereleases use `next`. The workflow requires an exact SemVer version without build metadata and a matching Git tag. Pushing `main` does not publish. See [npm staged publishing](https://docs.npmjs.com/cli/v11/commands/npm-stage/).
+
+From the repository root, after installing development dependencies, `node --import tsx scripts/prepare-sarif-validation.ts` previews four synthetic SARIF cases for repeated uploads, moved lines and changed wording/version. It does not scan, write files or upload. GitHub alert continuity still requires separately approved uploads with matching synthetic fixture commits on an isolated test branch.
+
 The repository includes a [synthetic HTML demonstration](https://github.com/Tasomei/canship/blob/main/docs/demo.html). Download and open it locally; it is not included in the npm package and never scans a project. The page and copied prompts identify the data as examples. `npm run demo` previews HTML on stdout, `npm run demo -- --check` verifies the committed artifact, and explicit `npm run demo -- --write` regenerates it. Automated tests reject a stale demo.
 
 The [VS Code extension](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme) is a development preview, separate from the npm package. See its README for host acceptance coverage and remaining checks. Marketplace publication is pending.
