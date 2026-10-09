@@ -21,7 +21,7 @@ try {
   const packed = JSON.parse(npm(['pack', '--ignore-scripts', '--json', '--pack-destination', root], repository))[0]
   const expected = ['LICENSE', 'README-zh-CN.md', 'README.md', 'dist/cli.js', 'dist/index.js', 'dist/index.d.ts',
     'package.json', 'schemas/scan-report-v1.schema.json', 'schemas/config-v1.schema.json',
-    'docs/reference.md', 'docs/reference-zh-CN.md'].sort()
+    'docs/reference.md', 'docs/reference-zh-CN.md', 'docs/framework-support.md', 'docs/framework-support-zh-CN.md'].sort()
   assert.deepEqual(packed.files.map(file => file.path).sort(), expected)
   const install = join(root, 'installed')
   mkdirSync(install)
@@ -37,7 +37,8 @@ try {
     readFileSync(join(repository, 'schemas/config-v1.schema.json')))
   assert.equal(npm(['exec', '--offline', '--yes=false', '--', 'canship', '--version'], install).trim(), version)
   assert.match(readFileSync(join(packageRoot, 'README.md'), 'utf8'), /A local static scanner/)
-  for (const name of ['README.md', 'README-zh-CN.md', 'docs/reference.md', 'docs/reference-zh-CN.md']) {
+  for (const name of ['README.md', 'README-zh-CN.md', 'docs/reference.md', 'docs/reference-zh-CN.md',
+    'docs/framework-support.md', 'docs/framework-support-zh-CN.md']) {
     assert.deepEqual(readFileSync(join(packageRoot, name)), readFileSync(join(repository, name)))
   }
   const entry = join(packageRoot, 'dist/cli.js')

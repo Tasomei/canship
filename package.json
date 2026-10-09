@@ -50,6 +50,8 @@
     "README-zh-CN.md",
     "docs/reference.md",
     "docs/reference-zh-CN.md",
+    "docs/framework-support.md",
+    "docs/framework-support-zh-CN.md",
     "LICENSE"
   ],
   "engines": {

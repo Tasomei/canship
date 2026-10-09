@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const read = (file: string) => readFileSync(resolve(root, file), 'utf8')
-const pages = ['README.md', 'README-zh-CN.md', 'docs/reference.md', 'docs/reference-zh-CN.md']
+const pages = ['README.md', 'README-zh-CN.md', 'docs/reference.md', 'docs/reference-zh-CN.md',
+  'docs/framework-support.md', 'docs/framework-support-zh-CN.md']
 const anchors = (text: string) => [...text.matchAll(/^#{1,6} (.+)$/gm)].map(match => match[1]!.trim().toLowerCase()
   .replace(/[^\p{L}\p{N}\p{M}\s_-]/gu, '').replace(/\s/g, '-'))
 
@@ -44,6 +45,7 @@ test('English and Chinese entry points preserve identical commands and visible s
 test('only the selected text references are added to the npm package', () => {
   const files: string[] = JSON.parse(read('package.json')).files
   assert.ok(files.includes('docs/reference.md') && files.includes('docs/reference-zh-CN.md'))
+  assert.ok(files.includes('docs/framework-support.md') && files.includes('docs/framework-support-zh-CN.md'))
   assert.ok(!files.includes('docs') && !files.includes('docs/'), 'Do not accidentally package screenshots or development assets')
   const en = read('docs/reference.md'), zh = read('docs/reference-zh-CN.md')
   for (const text of [en, zh]) {

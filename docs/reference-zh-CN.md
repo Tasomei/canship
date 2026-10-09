@@ -6,6 +6,8 @@
 
 ## 服务端入口
 
+[框架检测范围与回归用例](./framework-support-zh-CN.md)列出入口识别、鉴权、请求输入及分析边界。
+
 | 框架 | 入口 |
 |---|---|
 | Next.js | App Router 处理函数、Pages Router `/api`、`'use server'` 函数 |

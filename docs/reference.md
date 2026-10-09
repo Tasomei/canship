@@ -6,6 +6,8 @@ This reference describes the development branch; see the README for the publishe
 
 ## Server entry points
 
+[Framework coverage and regression cases](./framework-support.md) detail entry recognition, authentication, request inputs and analysis boundaries.
+
 | Framework | Entry points |
 |---|---|
 | Next.js | App Router handlers, Pages Router `/api`, `'use server'` functions |
