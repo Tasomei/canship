@@ -69,10 +69,15 @@ function harness(clipboardWorks = true) {
     createElement: () => new Element(), createTextNode: (text: string) => text, execCommand: () => false }
   const window = { location: { hash: '' }, addEventListener: (name: string, callback: () => void) => events.set(name, callback), print() {} }
   const navigator = clipboardWorks ? { clipboard: { writeText: async (text: string) => { copied.push(text) } } } : {}
-  runInNewContext(/<script>([\s\S]*?)<\/script>/.exec(html)![1]!, { document, window, navigator, setTimeout: () => {} }, { timeout: 1000 })
+  let nextTimer = 0
+  const timers = new Map<number, () => void>()
+  const flushTimers = () => { const pending = [...timers.values()]; timers.clear(); pending.forEach(run => run()) }
+  runInNewContext(/<script>([\s\S]*?)<\/script>/.exec(html)![1]!, { document, window, navigator,
+    setTimeout: (run: () => void) => { timers.set(++nextTimer, run); return nextTimer },
+    clearTimeout: (id: number) => timers.delete(id) }, { timeout: 1000 })
   const click = (element: Element) => element.onclick({ preventDefault() {} })
   const visible = () => nodes['list']!.children.flatMap(child => typeof child === 'string' ? [] : child.children).filter(child => rows.includes(child as Element)) as Element[]
-  return { nodes, rows, severity, confidence, groups, refs, events, copied, window, click, visible, data, document }
+  return { nodes, rows, severity, confidence, groups, refs, events, copied, window, click, visible, data, document, timers, flushTimers }
 }
 
 test('confidence and severity filters combine and disclose visible versus report totals', () => {
@@ -133,10 +138,36 @@ test('copy reference contains a rule, relative location and fragment, not the re
   assert.equal(h.refs[0]!.textContent, 'copied')
 })
 
+test('printing restores the original keyboard focus after rebuilding the finding list', () => {
+  const h = harness()
+  const summary = h.rows[1]!
+  h.document.activeElement = summary
+  h.events.get('beforeprint')!()
+  // 重入不能把打印期间的临时焦点当成原焦点。
+  h.document.activeElement = new Element()
+  h.events.get('beforeprint')!()
+  h.events.get('afterprint')!()
+  assert.equal(summary.focused, true)
+  assert.equal(h.document.activeElement.focused, false)
+})
+
 test('failed clipboard fallback does not claim success and restores focus', () => {
   const h = harness(false); h.click(h.refs[0]!)
   assert.equal(h.refs[0]!.textContent, 'copy unavailable')
   assert.equal(h.document.activeElement.focused, true)
+})
+
+test('repeated copy feedback restores the original label independently for each button', async () => {
+  for (const success of [true, false]) {
+    const h = harness(success)
+    h.click(h.refs[0]!); await Promise.resolve()
+    h.click(h.refs[0]!); await Promise.resolve()
+    h.click(h.refs[1]!); await Promise.resolve()
+    assert.equal(h.refs[0]!.textContent, success ? 'copied' : 'copy unavailable')
+    h.flushTimers()
+    assert.equal(h.refs[0]!.textContent, 'copy reference')
+    assert.equal(h.refs[1]!.textContent, 'copy reference')
+  }
 })
 
 test('secondary text contrast exceeds 4.5 to 1 in both screen themes and the print palette', () => {
@@ -168,4 +199,5 @@ test('mobile headers wrap and search focus is not hidden by the base input style
   assert.match(html, /\.mast \.root\{[^}]*min-width:0/)
   assert.match(html, /\.controls input:focus-visible\{outline:2px solid/)
   assert.match(html, /@media print\{[\s\S]*?pre\.excerpt\{[^}]*white-space:pre-wrap/)
+  assert.match(html, /details\.f,\.group,\.head\{break-inside:avoid-page\}/)
 })

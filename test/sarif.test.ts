@@ -130,6 +130,20 @@ describe('fingerprints', () => {
       sarif().runs[0].results[0].partialFingerprints.canshipFindingV2,
     )
   })
+
+  test('v3 identity survives tool upgrades, wording and classification changes while retaining the v2 bridge', () => {
+    const source = finding({ sourceFingerprint: 'synthetic-stable-source' })
+    const previous = JSON.parse(renderSarif(result({ findings: [source] }), { version: '0.7.1' })).runs[0]
+    const next = JSON.parse(renderSarif(result({ findings: [{ ...source, title: 'Updated synthetic title',
+      line: 90, severity: 'P2', confidence: 'likely', excerpt: null }] }), { version: '1.0.0-rc.0' })).runs[0]
+    assert.equal(previous.results[0].ruleId, next.results[0].ruleId)
+    assert.equal(previous.results[0].partialFingerprints.canshipFindingV3, next.results[0].partialFingerprints.canshipFindingV3)
+    assert.equal(previous.results[0].partialFingerprints.canshipFindingV2, legacyFingerprintOf(source))
+    assert.notEqual(previous.results[0].partialFingerprints.canshipFindingV2, next.results[0].partialFingerprints.canshipFindingV2)
+    assert.equal(next.results[0].locations[0].physicalLocation.region.startLine, 90)
+    assert.equal(next.results[0].level, 'warning')
+    assert.equal(next.tool.driver.version, '1.0.0-rc.0')
+  })
 })
 
 describe('an incomplete scan is not a successful one', () => {

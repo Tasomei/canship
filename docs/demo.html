@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-054zLMAG3Ey5PVfUHY06NC2Wl0Cf1gOiZP04Gtl5Y/c='; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-tORPtScMvM/DppGmiZoUY4S0xDCbVQAThIhF7zLnCJM='; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>canship report</title>
 <style>
@@ -121,7 +121,7 @@ ol.steps li{margin-bottom:6px}
 @media print{:root{color-scheme:light;--paper:#ffffff;--ink:#000000;--ink-2:#333333;--ink-3:#555555;
   --rule:#aaaaaa;--rule-2:#888888;--hover:#f3f3f3;--p0:#b3261e;--p1:#946200;--p2:#333333;--ok:#2f6b2f}
   .controls,.link,#count{display:none!important}body{background:#fff;color:#000}.page{max-width:none;padding:0}
-  pre.excerpt{white-space:pre-wrap;overflow:visible;overflow-wrap:anywhere}h2,h3,h4,summary,.group,.head{break-after:avoid}details.f{break-inside:avoid-page}}
+  pre.excerpt{white-space:pre-wrap;overflow:visible;overflow-wrap:anywhere}h2,h3,h4,summary,.group,.head{break-after:avoid}details.f,.group,.head{break-inside:avoid-page}}
 </style>
 </head>
 <body>
@@ -237,8 +237,9 @@ function render(){
 var q=d.getElementById('q');if(q)q.oninput=function(){st.q=q.value.toLowerCase();render()};
 function clearFilters(){st.sev=null;st.cat=null;st.conf=null;st.q='';if(q)q.value=''}
 var clear=d.getElementById('clear');if(clear)clear.onclick=function(){clearFilters();render()};
+var copyFeedback=new WeakMap();
 function copy(text,btn){
-  function feedback(message){var t=btn.textContent;btn.textContent=message;setTimeout(function(){btn.textContent=t},1200)}
+  function feedback(message){var state=copyFeedback.get(btn);if(!state){state={label:btn.textContent,timer:null};copyFeedback.set(btn,state)}if(state.timer!==null)clearTimeout(state.timer);btn.textContent=message;state.timer=setTimeout(function(){btn.textContent=state.label;state.timer=null},1200)}
   function done(){feedback('copied')}
   function fallback(){var previous=d.activeElement,a=d.createElement('textarea');a.value=text;d.body.appendChild(a);a.select();try{if(d.execCommand('copy'))done();else feedback('copy unavailable')}catch(e){feedback('copy unavailable')}finally{d.body.removeChild(a);if(previous&&previous.focus)previous.focus()}}
   try{if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done,fallback)}else fallback()}catch(e){fallback()}
@@ -254,8 +255,8 @@ var prefix='canship:'+(data.key||'')+':';
 });
 var print=d.getElementById('print');if(print)print.onclick=function(){window.print()};
 var printState=null;
-window.addEventListener('beforeprint',function(){if(printState)return;printState={filters:Object.assign({},st),open:rows.map(function(r){return r.open})};clearFilters();render();rows.forEach(function(r){r.open=true})});
-window.addEventListener('afterprint',function(){if(!printState)return;st=printState.filters;if(q)q.value=st.q;rows.forEach(function(r,i){r.open=printState.open[i]});printState=null;render()});
+window.addEventListener('beforeprint',function(){if(printState)return;printState={filters:Object.assign({},st),open:rows.map(function(r){return r.open}),focus:d.activeElement};clearFilters();render();rows.forEach(function(r){r.open=true})});
+window.addEventListener('afterprint',function(){if(!printState)return;var focus=printState.focus;st=printState.filters;if(q)q.value=st.q;rows.forEach(function(r,i){r.open=printState.open[i]});printState=null;render();if(focus&&focus.focus)focus.focus({preventScroll:true})});
 function revealHash(){var hash=window.location&&window.location.hash;if(!hash||!/^#finding-[a-f0-9]{64}(?:-[0-9]+)?$/.test(hash))return;var row=rows.find(function(r){return r.id===hash.slice(1)});if(!row)return;if(!matches(row)){clearFilters();render()}row.open=true;row.scrollIntoView({block:'center'});var summary=row.querySelector('summary');if(summary)summary.focus()}
 window.addEventListener('hashchange',revealHash);
 render();

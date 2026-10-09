@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { verifyPackageJourney } from './package-journey.mjs'
 
 const repository = dirname(dirname(fileURLToPath(import.meta.url)))
 const version = JSON.parse(readFileSync(join(repository, 'package.json'), 'utf8')).version
@@ -452,7 +453,8 @@ void code; void id;
   assert.equal(workspaceResult.status, 1)
   assert.equal(JSON.parse(workspaceResult.stdout).partial, false)
   assert.deepEqual(JSON.parse(workspaceResult.stdout).findings.map(f => f.ruleId), ['api/admin-db-access-without-auth'])
-  console.log(JSON.stringify({ version, packageFiles: expected.length, runtimeDependencies: 0, smoke: 'passed' }))
+  verifyPackageJourney({ cli, sample, root })
+  console.log(JSON.stringify({ version, packageFiles: expected.length, runtimeDependencies: 0, smoke: 'passed', journey: 'passed' }))
 } finally {
   // 仅移除本次创建的隔离安装与样本目录。
   rmSync(root, { recursive: true, force: true })
