@@ -1,7 +1,7 @@
-src/**
-test/**
-node_modules/**
-**/*.map
-**/*.ts
-_备份/**
-.scratch/**
+**
+!package.json
+!README.md
+!README-zh-CN.md
+!LICENSE
+!dist/extension.cjs
+!dist/worker.cjs

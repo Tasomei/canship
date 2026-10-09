@@ -2,6 +2,7 @@ node_modules/
 dist/
 *.log
 *.tgz
+*.vsix
 .DS_Store
 
 # 排除可能包含认证令牌的项目级包管理配置。

@@ -10,6 +10,27 @@ permissions:
   contents: read
 
 jobs:
+  # VSIX 工具独立安装；检查包内容和真实 worker，不代表图形宿主验收。
+  extension-package:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            tools/vsix/package-lock.json
+      - run: npm ci
+      - run: npm run test:extension-package
+
   # 验证实际发布包，不将源码运行通过视为安装成功。
   package-smoke:
     runs-on: ${{ matrix.os }}

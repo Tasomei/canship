@@ -116,7 +116,7 @@ jobs:
 
 pre-commit 模板扫描**工作区，而非暂存区快照**。部署校验默认关闭，仅支持无认证的 HTTPS 请求；使用前须审阅[范围与隐私限制](./docs/reference-zh-CN.md#部署校验)。
 
-[VS Code 插件](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme)为独立开发预览，真实宿主验收及 Marketplace 发布尚未完成。
+[VS Code 插件](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme)为独立开发预览，本地 VSIX 打包及已验证宿主范围见插件 README；尚未发布到 Marketplace。
 
 ## 隐私与限制
 

@@ -116,7 +116,7 @@ Incomplete scans and tool errors always fail. Project configuration and SARIF up
 
 The pre-commit template scans the **working tree, not the staged snapshot**. Deployment probes are opt-in, HTTPS-only and unauthenticated; [review their scope and privacy limits](./docs/reference.md#deployment-probes) before use.
 
-The [VS Code extension](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme) is a separate development preview. Real-host acceptance and Marketplace publication are pending.
+The [VS Code extension](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme) is a separate development preview. See its README for local VSIX packaging and verified host coverage. Marketplace publication is pending.
 
 ## Privacy and limitations
 

@@ -1,6 +1,6 @@
 # Canship for VS Code
 
-[简体中文](./README-zh-CN.md)
+[简体中文](https://github.com/Tasomei/canship/blob/main/extensions/vscode/README-zh-CN.md)
 
 Development extension; not a published Marketplace release. Requires VS Code 1.95 or later and a trusted local-filesystem workspace.
 
@@ -15,6 +15,22 @@ Run **Canship: Scan Workspace** to inspect saved files. Multi-root workspaces re
 No telemetry, project uploads, or scan-time network requests. Excerpts are omitted; paths, descriptions, and copied prompts can still be sensitive. Reports describe static evidence, not proof that deployment or authorization is correct. The editor displays at most 5,000 findings per scan and discloses omitted counts.
 
 ## Development
+
+### Local package
+
+Requires Node.js 22 or later for packaging tools only; the scanner's runtime requirement is unchanged. From the repository root:
+
+```powershell
+npm run package:extension
+```
+
+This installs locked development tools locally, builds both entry points, and verifies the VSIX file list and bytes. Tool installation may use the network. The uniquely named package is written to `.scratch/vsix/`; existing packages are not overwritten. No Marketplace login or publication occurs.
+
+The VSIX contains the manifest, two runtime files, both READMEs and the license, plus two format metadata files. Source, tests, logs and local configuration are excluded. `npm run test:extension-package` also tests rejection cases and runs the packaged worker outside the source tree.
+
+Install the generated file with **Extensions: Install from VSIX** in the target VS Code window. Installation, activation, scanning and source navigation were verified in an isolated Windows / VS Code 1.141.0 profile, without development-host flags. This does not publish the extension or verify other editor versions.
+
+### Development host
 
 From the repository root:
 

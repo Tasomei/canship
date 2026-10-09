@@ -1,0 +1,11 @@
+{
+  "name": "canship-vsix-tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Development-only tools for packaging and checking the editor extension.",
+  "engines": { "node": ">=22" },
+  "dependencies": {
+    "@vscode/vsce": "4.0.0",
+    "yauzl": "3.4.0"
+  }
+}

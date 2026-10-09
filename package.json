@@ -58,6 +58,8 @@
   "scripts": {
     "build": "tsup",
     "build:extension": "npm run build && node scripts/build-extension.mjs",
+    "package:extension": "npm run build:extension && npm --prefix tools/vsix ci --ignore-scripts --no-audit --no-fund && node scripts/package-extension.mjs",
+    "test:extension-package": "npm run build:extension && npm --prefix tools/vsix ci --ignore-scripts --no-audit --no-fund && node --test tools/vsix/test/package.test.mjs",
     "benchmark": "npm run build && node --max-old-space-size=256 scripts/benchmark.mjs",
     "demo": "tsx scripts/render-demo.ts",
     "dev": "tsup --watch",
