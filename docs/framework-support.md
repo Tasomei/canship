@@ -2,7 +2,7 @@
 
 [Reference](./reference.md) · [简体中文](./framework-support-zh-CN.md)
 
-This describes the development branch's static recognition, not framework-version certification. No framework, dependency or application code is executed. The examples below are representative, not an exhaustive SDK list.
+This describes Canship's static recognition, not framework-version certification. No framework, dependency or application code is executed. The examples below are representative, not an exhaustive SDK list.
 
 ## Shared boundaries
 

@@ -2,7 +2,7 @@
 
 [Overview](../README.md) · [简体中文](./reference-zh-CN.md)
 
-This reference describes the development branch; see the README for the published-version boundary.
+This reference covers release candidate `0.8.0-rc.1` for npm `next`; see the README for stable-version documentation.
 
 ## Server entry points
 
@@ -152,11 +152,13 @@ console.log(summarize(result))
 
 JSON uses [schemaVersion 1](../schemas/scan-report-v1.schema.json). Check `partial`, `errors`, `skipped`, and `filesScanned` independently of exit status. New reports include stable `errors[].code` values; older reports may omit them. CLI failures include `[CODE]` on stderr without corrupting JSON stdout. SARIF includes evidence locations and execution diagnostics.
 
+Canship v3 fingerprints identify findings for its own baselines and report comparisons. Within `partialFingerprints`, [GitHub code scanning](https://docs.github.com/en/code-security/reference/code-scanning/sarif-files/sarif-support#result-object) uses only `primaryLocationLineHash`, which the pinned `upload-sarif` Action adds from checked-out source and valid line locations; direct REST uploads cannot rely on Canship's custom v3 fingerprint for deduplication.
+
 Build identity distinguishes development, prerelease, and release artifacts. Only a clean checkout matching the version tag is marked as a release; this label is not publisher authentication. JSON includes optional `build` metadata; consumers must tolerate absent metadata and unknown diagnostic codes. `--version` retains its package-version format.
 
 ## Compatibility
 
-The development branch is not a published release contract. Pin exact scanner versions in CI and consult the documentation for that release. Before 1.0, inspect release notes and regenerate reports when upgrading.
+This release candidate is a prerelease. Pin exact scanner versions in CI and consult the documentation for that release. Before 1.0, inspect release notes and regenerate reports when upgrading.
 
 For the 1.0 contract, breaking changes to public CLI options, exit semantics or exported API types require a major release. Incompatible report or baseline formats require a format-version change and migration guidance. Package versions and data-format versions are separate: scan JSON is v1, new baselines are v4 (v2/v3 readable), stable fingerprints are v3, and SARIF is 2.1.0. Dispatch JSON by operation `kind` and `schemaVersion`; ordinary scan reports have no `kind`. Accept documented optional additions and unknown diagnostic codes, but reject unsupported format versions rather than interpreting them as clean results.
 
@@ -194,7 +196,7 @@ Evidence traces are capped at 24 steps and disclose truncation.
 
 Publishing is staged for human approval: stable versions use `latest`; prereleases use `next`. The workflow requires an exact SemVer version without build metadata and a matching Git tag. Pushing `main` does not publish. See [npm staged publishing](https://docs.npmjs.com/cli/v11/commands/npm-stage/).
 
-From the repository root, after installing development dependencies, `node --import tsx scripts/prepare-sarif-validation.ts` previews four synthetic SARIF cases for repeated uploads, moved lines and changed wording/version. It does not scan, write files or upload. GitHub alert continuity still requires separately approved uploads with matching synthetic fixture commits on an isolated test branch.
+From the repository root, after installing development dependencies, `node --import tsx scripts/prepare-sarif-validation.ts` previews five synthetic SARIF cases: initial findings, a repeat, moved lines, changed wording/version, and fewer findings. It does not scan, write files or upload. To verify GitHub alert continuity and closure, upload the reports with explicit approval and matching synthetic fixture commits on an isolated test branch.
 
 The repository includes a [synthetic HTML demonstration](https://github.com/Tasomei/canship/blob/main/docs/demo.html). Download and open it locally; it is not included in the npm package and never scans a project. The page and copied prompts identify the data as examples. `npm run demo` previews HTML on stdout, `npm run demo -- --check` verifies the committed artifact, and explicit `npm run demo -- --write` regenerates it. Automated tests reject a stale demo.
 

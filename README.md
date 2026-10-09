@@ -6,20 +6,20 @@ Static scans are offline, read-only, and execute no project code. Deployment pro
 
 [简体中文](./README-zh-CN.md) · [Reference](./docs/reference.md) · [npm](https://www.npmjs.com/package/canship)
 
-> Development branch. For npm `0.7.1`, see the [release documentation](https://github.com/Tasomei/canship/blob/v0.7.1/README.md). Features documented here may not be published yet.
+> Release candidate `0.8.0-rc.1` for npm `next`. Examples below pin this prerelease. For stable `0.7.1`, see the [release documentation](https://github.com/Tasomei/canship/blob/v0.7.1/README.md).
 
 ## Scan a project
 
 Requires Node.js ≥18. No runtime dependencies; installation may use the network.
 
 ```powershell
-npx canship
+npx canship@0.8.0-rc.1
 ```
 
 To scan another directory:
 
 ```powershell
-npx canship "./my-app"
+npx canship@0.8.0-rc.1 "./my-app"
 ```
 
 Git checks inspect locally tracked files and commit history without contacting remotes. Unreadable history marks coverage incomplete.
@@ -41,7 +41,7 @@ The following screenshots use synthetic data from a development build.
 Route analysis supports documented entry points in Next.js, SvelteKit, Nuxt, Remix / React Router, Astro, Express, Hono and Fastify—not arbitrary framework behaviour. See [entry points and limits](./docs/reference.md#server-entry-points).
 
 ```powershell
-npx canship --list-rules
+npx canship@0.8.0-rc.1 --list-rules
 ```
 
 ## Review results
@@ -51,13 +51,13 @@ Reports are in English. `certain` means strong static evidence; `likely` require
 Show all confidence levels and detailed evidence:
 
 ```powershell
-npx canship --all --verbose
+npx canship@0.8.0-rc.1 --all --verbose
 ```
 
 Generate an offline HTML report:
 
 ```powershell
-npx canship --all --report
+npx canship@0.8.0-rc.1 --all --report
 ```
 
 ![HTML report](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
@@ -97,11 +97,11 @@ jobs:
           persist-credentials: false
       - uses: Tasomei/canship@7465c9560b8b3692777af080e8cc67b4be2335d7
         with:
-          version: '0.7.1'
+          version: '0.8.0-rc.1'
           honor-ignore-markers: false
 ```
 
-The hash pins the Action implementation; `version` selects the published npm scanner, not development-branch source. The Action uses Node.js 22, does not install or run project dependencies, and writes a counts-only summary.
+The hash pins the Action implementation; `version` selects this npm release candidate. Enable the workflow after the candidate is public. The Action uses Node.js 22, does not install or run project dependencies, and writes a counts-only summary.
 
 | Input | Pinned Action default | Meaning |
 |---|---|---|

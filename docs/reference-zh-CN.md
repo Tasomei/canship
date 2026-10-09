@@ -2,7 +2,7 @@
 
 [概览](../README-zh-CN.md) · [English](./reference.md)
 
-本文对应开发分支，已发布版本的边界见 README。
+本文对应 npm `next` 渠道的候选版本 `0.8.0-rc.1`；稳定版文档入口见 README。
 
 ## 服务端入口
 
@@ -152,11 +152,13 @@ console.log(summarize(result))
 
 JSON 使用 [schemaVersion 1](../schemas/scan-report-v1.schema.json)。须独立于退出码检查 `partial`、`errors`、`skipped`、`filesScanned`。新报告提供稳定的 `errors[].code`，旧报告可能缺少该字段。CLI 失败通过标准错误输出 `[CODE]`，不破坏 JSON 标准输出。SARIF 包含证据位置和执行诊断。
 
+Canship v3 指纹用于自身基线及报告比较中的结果识别。[GitHub code scanning](https://docs.github.com/en/code-security/reference/code-scanning/sarif-files/sarif-support#result-object) 在 `partialFingerprints` 中仅使用 `primaryLocationLineHash`，由固定提交的 `upload-sarif` Action 根据检出的源码及有效行号补充；直接通过 REST 上传时，不能依靠 Canship 自定义 v3 指纹保证去重。
+
 构建身份区分开发版、候选版和正式版；只有工作区干净且匹配版本标签时才标为发行构建，该标签不等同于发布者认证。JSON 可包含 `build` 元数据，调用方须兼容缺失元数据和未知诊断代码。`--version` 保持包版本格式。
 
 ## 兼容性
 
-开发分支不代表已发布版本契约。CI 应固定扫描器精确版本，并使用对应发行版文档；1.0 前升级须检查发行说明并重新生成报告。
+此候选版本属于预发布。CI 应固定扫描器精确版本，并使用对应发行版文档；1.0 前升级须检查发行说明并重新生成报告。
 
 1.0 的契约约定：公开 CLI 参数、退出码语义或 API 导出类型发生破坏性变更时升级主版本；报告或基线格式不兼容时升级格式版本并提供迁移说明。包版本与数据格式版本独立：扫描 JSON 为 v1，新基线为 v4（可读 v2/v3），稳定指纹为 v3，SARIF 为 2.1.0。须按操作 `kind` 和 `schemaVersion` 分派 JSON，普通扫描报告没有 `kind`。接受已约定的可选新增字段及未知诊断代码；不支持的格式版本应拒绝处理，不能当作无问题结果。
 
@@ -194,7 +196,7 @@ JSON 使用 [schemaVersion 1](../schemas/scan-report-v1.schema.json)。须独立
 
 发布先暂存、再由人工批准：稳定版本使用 `latest`，预发布使用 `next`。工作流要求不含构建元数据的精确 SemVer 版本及匹配的 Git 标签；推送 `main` 不会发布。参见 [npm 暂存发布](https://docs.npmjs.com/cli/v11/commands/npm-stage/)。
 
-在仓库根目录安装开发依赖后，`node --import tsx scripts/prepare-sarif-validation.ts` 预览重复上传、行号移动及文案/版本变化的四组合成 SARIF，不扫描、不写文件、不上传。GitHub 告警连续性仍须另行授权上传，并在隔离测试分支提交对应的合成文件。
+在仓库根目录安装开发依赖后，`node --import tsx scripts/prepare-sarif-validation.ts` 预览初始结果、重复上传、行号移动、文案/版本变化及结果减少的五组合成 SARIF，不扫描、不写文件、不上传。验证 GitHub 告警连续性及关闭状态时，须明确授权上传报告，并在隔离测试分支提交对应的合成文件。
 
 仓库提供[合成 HTML 演示](https://github.com/Tasomei/canship/blob/main/docs/demo.html)，下载后在本地打开；不包含在 npm 包中，也不扫描项目。页面与复制提示均标明示例性质。`npm run demo` 在标准输出预览 HTML，`npm run demo -- --check` 核对已提交文件，显式 `npm run demo -- --write` 重新生成；测试会拒绝过期演示。
 

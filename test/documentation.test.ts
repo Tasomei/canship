@@ -28,15 +28,20 @@ test('documentation links resolve to real package files and section anchors', ()
 
 test('English and Chinese entry points preserve identical commands and visible screenshots', () => {
   const en = read('README.md'), zh = read('README-zh-CN.md')
+  const version: string = JSON.parse(read('package.json')).version
   const commands = (text: string) => [...text.matchAll(/^```(?:powershell|yaml)\r?\n([\s\S]*?)^```/gm)].map(match => match[1]!.replace(/\r/g, ''))
   assert.equal(commands(en).length, 6)
   assert.deepEqual(commands(en), commands(zh))
+  assert.deepEqual(commands(en).slice(0, 5), ['', ' "./my-app"', ' --list-rules', ' --all --verbose', ' --all --report']
+    .map(args => `npx canship@${version}${args}\n`))
+  assert.ok(commands(en)[5]!.includes(`version: '${version}'`))
   for (const markdown of [en, zh]) {
     assert.doesNotMatch(markdown, /<details\b/i)
     const images = [...markdown.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map(match => match[1])
     assert.deepEqual(images, ['https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/terminal.png',
       'https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png'])
-    assert.ok(markdown.includes('0.7.1'))
+    assert.ok(markdown.includes(`\`${version}\``) && markdown.includes('`next`'))
+    assert.ok(markdown.includes('/blob/v0.7.1/README'))
     assert.ok(markdown.includes('--no-excerpts') && markdown.includes('--best-effort'))
   }
   assert.ok(en.length < 9000 && zh.length < 5000, 'Keep detailed contracts in the linked reference')
