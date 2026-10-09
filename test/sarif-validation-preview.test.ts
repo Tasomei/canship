@@ -16,12 +16,14 @@ test('preview produces repeatable synthetic reports with matching fixture locati
   assert.equal(preview.synthetic, true)
   for (const key of ['scanPerformed', 'networkPerformed', 'uploaded']) assert.equal(preview[key], false)
   assert.match(preview.notice, /remains unverified/)
-  assert.deepEqual(preview.cases.map((item: { id: string }) => item.id), ['initial', 'repeat', 'moved', 'wording-and-version'])
+  assert.deepEqual(preview.cases.map((item: { id: string }) => item.id), ['initial', 'repeat', 'moved', 'wording-and-version', 'reduced'])
   const initial = preview.cases[0].sarif.runs[0].results
   for (const item of preview.cases) {
     const results = item.sarif.runs[0].results
-    assert.equal(results.length, 2)
-    assert.equal(new Set(results.map((result: any) => result.partialFingerprints.canshipFindingV3)).size, 2)
+    const count = item.id === 'reduced' ? 1 : 2
+    assert.equal(preview.expected.counts[item.id], count)
+    assert.equal(results.length, count)
+    assert.equal(new Set(results.map((result: any) => result.partialFingerprints.canshipFindingV3)).size, count)
     for (let index = 0; index < results.length; index++) {
       const physical = results[index].locations[0].physicalLocation
       assert.equal(physical.artifactLocation.uri, item.fixture.path)
@@ -31,6 +33,7 @@ test('preview produces repeatable synthetic reports with matching fixture locati
   }
   assert.deepEqual(preview.cases[0].sarif, preview.cases[1].sarif)
   assert.notEqual(preview.cases[0].sarif.runs[0].tool.driver.version, preview.cases[3].sarif.runs[0].tool.driver.version)
+  assert.equal(preview.cases[4].fixture.content.split('\n')[13].trim(), 'allow read: if false;')
   assert.doesNotMatch(first.stdout, /[A-Z]:[\\/]Users[\\/]|LAPTOP-|@users\.noreply/)
 })
 

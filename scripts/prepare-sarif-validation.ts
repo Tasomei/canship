@@ -18,20 +18,24 @@ if (process.argv.length !== 2) {
     sourceFingerprint: createHash('sha256').update(`canship-sarif-synthetic-${index}`).digest('hex'),
     why: ['Synthetic test input, not a production finding.'], fix: ['No production resource is involved.'],
   }))
-  const cases = ['initial', 'repeat', 'moved', 'wording-and-version'] as const
+  const cases = ['initial', 'repeat', 'moved', 'wording-and-version', 'reduced'] as const
   const reports = cases.map(id => {
-    const moved = id === 'moved' || id === 'wording-and-version'
-    const changed = id === 'wording-and-version'
-    const result: ScanResult = { findings: findings.map(finding => ({ ...finding,
+    const moved = id === 'moved' || id === 'wording-and-version' || id === 'reduced'
+    const changed = id === 'wording-and-version' || id === 'reduced'
+    const selected = id === 'reduced' ? findings.slice(0, 1) : findings
+    const result: ScanResult = { findings: selected.map(finding => ({ ...finding,
       line: finding.line! + (moved ? 3 : 0), ...(changed ? { title: 'Reworded synthetic public-read validation' } : {}) })),
       filesScanned: 1, durationMs: 0, partial: false, errors: [], skipped: [], ignored: [], ignoredFindings: [],
       ruleSelection: null, vendored: 0 }
-    return { id, fixture: { path: file, content: (moved ? '\n\n\n' : '') + fixture },
+    const lines = fixture.split('\n')
+    if (id === 'reduced') lines[10] = '      allow read: if false;'
+    return { id, fixture: { path: file, content: (moved ? '\n\n\n' : '') + lines.join('\n') },
       sarif: JSON.parse(renderSarif(result, { version: changed ? '0.0.0-validation.2' : '0.0.0-validation.1' })) }
   })
   process.stdout.write(JSON.stringify({ schemaVersion: 1, kind: 'sarif-validation-preview', synthetic: true,
     scanPerformed: false, networkPerformed: false, uploaded: false,
     notice: 'Local synthetic preview only. GitHub alert continuity remains unverified. Upload requires separate approval and matching fixture commits in an isolated test branch.',
-    expected: { findingsPerReport: 2, relationship: 'Later cases should retain the initial alert identities; compare GitHub alert numbers after each upload.' },
+    expected: { counts: { initial: 2, repeat: 2, moved: 2, 'wording-and-version': 2, reduced: 1 },
+      relationship: 'Later cases should retain the initial alert identities; reduced should fix only the second alert on the test branch.' },
     cases: reports }, null, 2) + '\n')
 }

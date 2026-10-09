@@ -1,0 +1,77 @@
+name: SARIF upgrade validation
+
+# 仅专用测试分支触发；不扫描真实项目，也不上传主分支报告。
+on:
+  push:
+    branches: [codex/sarif-upgrade-validation]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canship-sarif-upgrade-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.repository == 'Tasomei/canship' && github.ref == 'refs/heads/codex/sarif-upgrade-validation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Prepare only the selected synthetic report
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --import tsx scripts/prepare-sarif-validation.ts > "$RUNNER_TEMP/validation-preview.json"
+          node --input-type=module - "$RUNNER_TEMP" <<'SYNTHETIC_INPUT'
+          import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import assert from 'node:assert/strict';
+          import { prepareUpload } from './scripts/sarif-cloud-validation.mjs';
+          const root = process.argv[2];
+          const preview = JSON.parse(readFileSync(join(root, 'validation-preview.json'), 'utf8'));
+          const id = readFileSync('.github/sarif-validation-case.txt', 'utf8').trim();
+          assert.ok(['initial', 'repeat', 'moved', 'wording-and-version', 'reduced'].includes(id));
+          const selected = preview.cases.find(item => item.id === id);
+          assert.equal(selected.fixture.path, 'synthetic/firestore.rules');
+          assert.equal(readFileSync(selected.fixture.path, 'utf8'), selected.fixture.content);
+          const prepared = prepareUpload(preview, id);
+          writeFileSync(join(root, 'selected.sarif'), JSON.stringify(prepared.log));
+          appendFileSync(process.env.GITHUB_ENV, `CANSHIP_SARIF_CASE=${id}\n`);
+          SYNTHETIC_INPUT
+      - name: Upload synthetic report with the supported GitHub fingerprints
+        id: upload
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd
+        with:
+          sarif_file: ${{ runner.temp }}/selected.sarif
+          category: canship-upgrade-validation-20261009
+          wait-for-processing: 'true'
+      - name: Verify this branch and analysis
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CANSHIP_SARIF_ID: ${{ steps.upload.outputs.sarif-id }}
+          CANSHIP_SARIF_CONFIRM: synthetic-only
+        run: |
+          set -euo pipefail
+          node scripts/sarif-cloud-validation.mjs --preview="$RUNNER_TEMP/validation-preview.json" | tee "$RUNNER_TEMP/validation-result.json"
+      - name: Keep only the verification result
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sarif-validation-result
+          path: ${{ runner.temp }}/validation-result.json
+          if-no-files-found: error
+          retention-days: 7
