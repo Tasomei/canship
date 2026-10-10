@@ -1,6 +1,6 @@
 {
   "name": "canship",
-  "version": "0.8.0-rc.1",
+  "version": "0.8.0",
   "description": "Static scanner for credentials, access rules and unsafe request input in JS/TS apps. Offline file scans; deployment probes require separate confirmation.",
   "keywords": [
     "security",

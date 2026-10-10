@@ -40,7 +40,8 @@ test('English and Chinese entry points preserve identical commands and visible s
     const images = [...markdown.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map(match => match[1])
     assert.deepEqual(images, ['https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/terminal.png',
       'https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png'])
-    assert.ok(markdown.includes(`\`${version}\``) && markdown.includes('`next`'))
+    // 预发布对应 npm next 渠道，正式版对应 latest。
+    assert.ok(markdown.includes(`\`${version}\``) && markdown.includes(version.includes('-') ? '`next`' : '`latest`'))
     assert.ok(markdown.includes('/blob/v0.7.1/README'))
     assert.ok(markdown.includes('--no-excerpts') && markdown.includes('--best-effort'))
   }

@@ -8,20 +8,20 @@
 
 [English](./README.md) · [使用参考](./docs/reference-zh-CN.md) · [发布说明](https://github.com/Tasomei/canship/releases) · [npm](https://www.npmjs.com/package/canship)
 
-> 候选版本 `0.8.0-rc.1` 使用 npm `next` 渠道。下方示例固定此预发布版本；稳定版 `0.7.1` 请参阅[发行版文档](https://github.com/Tasomei/canship/blob/v0.7.1/README-zh-CN.md)。
+> 本文对应 npm `latest` 渠道的 `0.8.0`，下方示例固定此版本；`0.7.1` 请参阅[发行版文档](https://github.com/Tasomei/canship/blob/v0.7.1/README-zh-CN.md)。
 
 ## 扫描项目
 
 要求 Node.js ≥18，无运行时依赖；安装可能联网。
 
 ```powershell
-npx canship@0.8.0-rc.1
+npx canship@0.8.0
 ```
 
 扫描其他目录：
 
 ```powershell
-npx canship@0.8.0-rc.1 "./my-app"
+npx canship@0.8.0 "./my-app"
 ```
 
 Git 检查读取本地跟踪文件及提交历史，不访问远程仓库；历史无法读取时标记覆盖不完整。
@@ -43,7 +43,7 @@ Git 检查读取本地跟踪文件及提交历史，不访问远程仓库；历�
 路由分析覆盖 Next.js、SvelteKit、Nuxt、Remix / React Router、Astro、Express、Hono、Fastify 的指定入口，不支持任意框架行为。详见[入口及限制](./docs/reference-zh-CN.md#服务端入口)。
 
 ```powershell
-npx canship@0.8.0-rc.1 --list-rules
+npx canship@0.8.0 --list-rules
 ```
 
 ## 审阅结果
@@ -53,13 +53,13 @@ npx canship@0.8.0-rc.1 --list-rules
 显示全部置信度及详细证据：
 
 ```powershell
-npx canship@0.8.0-rc.1 --all --verbose
+npx canship@0.8.0 --all --verbose
 ```
 
 生成离线 HTML 报告：
 
 ```powershell
-npx canship@0.8.0-rc.1 --all --report
+npx canship@0.8.0 --all --report
 ```
 
 ![HTML 报告](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
@@ -99,11 +99,11 @@ jobs:
           persist-credentials: false
       - uses: Tasomei/canship@7465c9560b8b3692777af080e8cc67b4be2335d7
         with:
-          version: '0.8.0-rc.1'
+          version: '0.8.0'
           honor-ignore-markers: false
 ```
 
-提交哈希固定 Action 实现；`version` 指定此 npm 候选版本，须在候选包公开后启用工作流。Action 使用 Node.js 22，不安装或运行项目依赖，仅输出统计摘要。
+提交哈希固定 Action 实现；`version` 指定已发布的 npm 扫描器，不使用开发分支源码。Action 使用 Node.js 22，不安装或运行项目依赖，仅输出统计摘要。
 
 | 输入 | 固定 Action 的默认值 | 含义 |
 |---|---|---|

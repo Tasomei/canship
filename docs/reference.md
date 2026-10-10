@@ -2,7 +2,7 @@
 
 [Overview](../README.md) · [简体中文](./reference-zh-CN.md)
 
-This reference covers release candidate `0.8.0-rc.1` for npm `next`; see the README for stable-version documentation.
+This reference covers `0.8.0`; see the README for earlier release documentation.
 
 ## Server entry points
 
@@ -158,7 +158,7 @@ Build identity distinguishes development, prerelease, and release artifacts. Onl
 
 ## Compatibility
 
-This release candidate is a prerelease. Pin exact scanner versions in CI and consult the documentation for that release. Before 1.0, inspect release notes and regenerate reports when upgrading.
+Pin exact scanner versions in CI and consult the documentation for that release. Before 1.0, inspect release notes and regenerate reports when upgrading.
 
 For the 1.0 contract, breaking changes to public CLI options, exit semantics or exported API types require a major release. Incompatible report or baseline formats require a format-version change and migration guidance. Package versions and data-format versions are separate: scan JSON is v1, new baselines are v4 (v2/v3 readable), stable fingerprints are v3, and SARIF is 2.1.0. Dispatch JSON by operation `kind` and `schemaVersion`; ordinary scan reports have no `kind`. Accept documented optional additions and unknown diagnostic codes, but reject unsupported format versions rather than interpreting them as clean results.
 
