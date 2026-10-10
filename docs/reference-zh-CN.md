@@ -2,7 +2,7 @@
 
 [概览](../README-zh-CN.md) · [English](./reference.md)
 
-本文对应 `0.8.0`；更早版本的文档入口见 README。
+本文对应 `0.8.0`。其他版本见[发布说明](https://github.com/Tasomei/canship/releases)。
 
 ## 服务端入口
 

@@ -2,7 +2,7 @@
 
 [Overview](../README.md) · [简体中文](./reference-zh-CN.md)
 
-This reference covers `0.8.0`; see the README for earlier release documentation.
+This reference covers `0.8.0`. Other versions are listed under [Releases](https://github.com/Tasomei/canship/releases).
 
 ## Server entry points
 

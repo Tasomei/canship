@@ -6,7 +6,7 @@
 
 [English](./README.md) · [使用参考](./docs/reference-zh-CN.md) · [发布说明](https://github.com/Tasomei/canship/releases) · [npm](https://www.npmjs.com/package/canship)
 
-> 本文对应 npm `latest` 渠道的 `0.8.0`；`0.7.1` 请参阅[发行版文档](https://github.com/Tasomei/canship/blob/v0.7.1/README-zh-CN.md)。
+> 本文对应 npm `latest` 渠道的 `0.8.0`。其他版本见[发布说明](https://github.com/Tasomei/canship/releases)。
 
 ## 快速开始
 

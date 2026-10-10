@@ -6,7 +6,7 @@ Static scans run locally: they are read-only, execute no project code and make n
 
 [简体中文](./README-zh-CN.md) · [Reference](./docs/reference.md) · [Releases](https://github.com/Tasomei/canship/releases) · [npm](https://www.npmjs.com/package/canship)
 
-> Documentation for `0.8.0` on npm `latest`. For `0.7.1`, see the [release documentation](https://github.com/Tasomei/canship/blob/v0.7.1/README.md).
+> Documentation for `0.8.0` on npm `latest`. Other versions are listed under [Releases](https://github.com/Tasomei/canship/releases).
 
 ## Quick start
 

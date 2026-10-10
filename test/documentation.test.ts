@@ -42,7 +42,8 @@ test('English and Chinese entry points preserve identical commands and visible s
       'https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png'])
     // 预发布对应 npm next 渠道，正式版对应 latest。
     assert.ok(markdown.includes(`\`${version}\``) && markdown.includes(version.includes('-') ? '`next`' : '`latest`'))
-    assert.ok(markdown.includes('/blob/v0.7.1/README'))
+    // 其他版本统一经发布页查找，不在首页绑定具体旧版本号。
+    assert.ok(markdown.includes('](https://github.com/Tasomei/canship/releases)'))
     assert.ok(markdown.includes('--no-excerpts') && markdown.includes('--best-effort'))
   }
   assert.ok(en.length < 9000 && zh.length < 5000, 'Keep detailed contracts in the linked reference')
