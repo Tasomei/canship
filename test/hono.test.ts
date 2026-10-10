@@ -196,6 +196,43 @@ describe('Hono middleware', () => {
     assert.deepEqual(summary(await findings(files("export * from './auth'\n", "api.route('/monitor', monitors)\napi.use('/*', authMiddleware)\n"))), write)
   })
 
+  test('a test-only mount does not undo the protected production mount of a sub-app', async () => {
+    const sub = (dir: string) => ({
+      [`${dir}/monitors.ts`]: HONO + PRISMA + 'export const monitors = new Hono()\n' +
+        "monitors.delete('/:id', async (c) => {\n  await prisma.monitor.delete({ where: { id: c.req.param('id') } })\n  return c.json({})\n})\n",
+      [`${dir}/index.ts`]: HONO + "import { HTTPException } from 'hono/http-exception'\nimport { monitors } from './monitors'\n" +
+        "export const api = new Hono()\napi.use('/*', async (c, next) => {\n  if (!c.req.header('x-api-key')) throw new HTTPException(401)\n  await next()\n})\n" +
+        "api.route('/monitor', monitors)\n",
+    })
+    const testMount = (dir: string) => ({ [`${dir}/monitors.test.ts`]: HONO + "import { monitors } from './monitors'\n" +
+      "const app = new Hono()\napp.use('*', async (c, next) => { await next() })\napp.route('/', monitors)\n" })
+    assert.deepEqual(summary(await findings({ ...sub('src/routes'), ...testMount('src/routes') })), [])
+    // 只有测试中的挂载时不能视为受保护。
+    const unprotected = { ...sub('src/routes'), 'src/routes/index.ts': HONO + "import { monitors } from './monitors'\nexport const api = new Hono()\n" }
+    assert.deepEqual(summary(await findings({ ...unprotected, ...testMount('src/routes') })),
+      [['api/db-write-without-auth', 'src/routes/monitors.ts', 6, 'likely']])
+    // 路由本身位于示例中时，示例里的受保护挂载照常计入。
+    assert.deepEqual(summary(await findings(sub('examples/api'))), [])
+  })
+
+  test('outer middleware and prefixes carry through nested cross-file mounts', async () => {
+    const auth = "async (c, next) => {\n  if (!c.req.header('x-api-key')) throw new HTTPException(401)\n  await next()\n}"
+    const files = (outer: string) => ({
+      'src/routes/monitors.ts': HONO + PRISMA + 'export const monitors = new Hono()\n' +
+        "monitors.delete('/:id', async (c) => {\n  await prisma.monitor.delete({ where: { id: c.req.param('id') } })\n  return c.json({})\n})\n",
+      'src/routes/v1.ts': HONO + "import { monitors } from './monitors'\nexport const api = new Hono()\napi.route('/monitor', monitors)\n",
+      'src/index.ts': HONO + "import { HTTPException } from 'hono/http-exception'\nimport { api } from './routes/v1'\nconst app = new Hono()\n" +
+        outer + 'export default app\n',
+    })
+    assert.deepEqual(summary(await findings(files(`app.use('/v1/*', ${auth})\napp.route('/v1', api)\n`))), [])
+    const write = [['api/db-write-without-auth', 'src/routes/monitors.ts', 6, 'likely']]
+    const open = await findings(files("app.route('/v1', api)\n"))
+    assert.deepEqual(summary(open), write)
+    assert.match(titleOf(open), /^\/v1\/monitor\/:id writes/)
+    // 挂载之后才注册的中间件不保护已挂载的子应用。
+    assert.deepEqual(summary(await findings(files(`app.route('/v1', api)\napp.use('/v1/*', ${auth})\n`))), write)
+  })
+
   test('an auth-looking middleware from a package lowers confidence and says why', async () => {
     const list = await findings({ 'src/index.ts': HONO + ADMIN + "import { requireSession } from '@acme/session-kit'\nconst app = new Hono()\n" +
       "app.post('/wipe', requireSession(), async (c) => {\n  await admin.from('logs').delete().neq('id', 0)\n  return c.text('ok')\n})\n" })

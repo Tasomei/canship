@@ -1426,6 +1426,9 @@ function serverIndex(files: ScanFile[]): ServerIndex {
   const fileRoutes = (file: ScanFile): Route[] => [...new Set([...(byRouterFile.get(file) ?? []),
     ...sites.filter(other => other.a.file === file && other.range === null && !other.root).flatMap(other => byRoot.get(other) ?? [])])]
   // 挂载：app.use('/admin', requireAuth, adminRouter)、app.route('/admin', admin)；同一实例上更早的中间件同样生效。
+  // 先收集全部挂载，再沿嵌套关系组合：被挂载文件自身又被挂载时，外层中间件与前缀依次叠加。
+  interface Mount { parent: ScanFile; target: ScanFile | null; routes: Route[]; chain: MiddlewareRef[]; prefix: string }
+  const mounts: Mount[] = []
   for (const site of sites) {
     if (site.framework === 'fastify') continue
     const { a } = site
@@ -1434,8 +1437,10 @@ function serverIndex(files: ScanFile[]): ServerIndex {
       if (site.framework === 'hono' && !use.mount) continue
       use.args.forEach((arg, index) => {
         const target = mountedFile(a, arg, files)
-        const routes = target && target !== a.file ? fileRoutes(target) : localRoutes(a, arg)
-        if (!routes || routes.length === 0) return
+        const crossFile = target !== null && target !== a.file
+        const routes = crossFile ? fileRoutes(target) : localRoutes(a, arg)
+        // 跨文件挂载即使目标没有直接路由也要保留，其中可能还挂载了下一层子应用。
+        if (!routes || (routes.length === 0 && !crossFile)) return
         const isMiddleware = (x: Arg): boolean => mountedFile(a, x, files) === null && localRoutes(a, x) === undefined
         // Hono 子应用的路由都在挂载前缀之下，只有通配路径的中间件能覆盖全部。
         const covers = (other: Use): boolean => site.framework === 'hono'
@@ -1443,13 +1448,32 @@ function serverIndex(files: ScanFile[]): ServerIndex {
           : pathMatches(other.prefix, use.prefix, site.framework)
         const earlier = uses.filter(other => !other.mount && other.at < use.at && contextOf(a).covers(other.at, use.at) && covers(other))
           .flatMap(other => site.framework === 'hono' ? other.args : other.args.filter(isMiddleware))
-        const middleware = [...site.inherited, ...toRefs(a, earlier), ...toRefs(a, use.args.slice(0, index).filter(isMiddleware))]
-        const prefix = joinPath(site.prefix, use.prefix ?? '/')
-        for (const route of routes) {
-          route.mounts!.push(middleware)
-          if (prefix !== '/' && route.mounts!.length === 1 && route.url.startsWith('/')) route.url = joinPath(prefix, route.url)
-        }
+        mounts.push({ parent: a.file, target: crossFile ? target : null, routes,
+          chain: [...site.inherited, ...toRefs(a, earlier), ...toRefs(a, use.args.slice(0, index).filter(isMiddleware))],
+          prefix: joinPath(site.prefix, use.prefix ?? '/') })
       })
+    }
+  }
+  // 一处挂载的完整路径：其父文件若又被跨文件挂载，则逐层加上外层的中间件与前缀；有环或超过层数上限时停止展开并披露。
+  const MAX_MOUNT_DEPTH = 8, MAX_MOUNT_PATHS = 64
+  const pathsOf = (mount: Mount, production: boolean, seen: Set<Mount>): { chain: MiddlewareRef[]; prefix: string }[] => {
+    const outers = mounts.filter(outer => outer.target === mount.parent && !seen.has(outer) && !(production && outer.parent.isExampleContext))
+    if (outers.length === 0) return [{ chain: mount.chain, prefix: mount.prefix }]
+    if (seen.size >= MAX_MOUNT_DEPTH) { registrationGaps.add(mount.parent); return [{ chain: mount.chain, prefix: mount.prefix }] }
+    return outers.flatMap(outer => pathsOf(outer, production, new Set([...seen, outer]))
+      .map(path => ({ chain: [...path.chain, ...mount.chain], prefix: joinPath(path.prefix, mount.prefix) })))
+  }
+  for (const mount of mounts) {
+    for (const route of mount.routes) {
+      // 测试或示例中的挂载不会部署，不计入正式路由的挂载；路由本身位于测试或示例中时照常计入。
+      const production = !route.file.isExampleContext
+      if (production && mount.parent.isExampleContext) continue
+      let paths = pathsOf(mount, production, new Set([mount]))
+      if (paths.length > MAX_MOUNT_PATHS) { registrationGaps.add(mount.parent); paths = paths.slice(0, MAX_MOUNT_PATHS) }
+      for (const path of paths) {
+        route.mounts!.push(path.chain)
+        if (path.prefix !== '/' && route.mounts!.length === 1 && route.url.startsWith('/')) route.url = joinPath(path.prefix, route.url)
+      }
     }
   }
   const byHandlerFile = new Map<ScanFile, Route[]>()
