@@ -1,46 +1,42 @@
 # canship
 
-面向 JavaScript / TypeScript Web 应用的本地静态扫描器，检测凭据暴露、访问控制配置错误及请求输入风险。
+面向 JavaScript / TypeScript Web 应用的发布前安全检查工具。Canship 在源码中查找凭据泄露、缺失的访问控制及不安全的请求输入处理，并可选择对你拥有的部署进行校验。
 
-静态扫描离线、只读，不执行项目代码。部署校验为独立功能，须显式确认请求计划。
-
-除单次扫描外，还支持带理由和到期时间的基线审阅、已保存报告比较、多工作区独立扫描、CI 与 pre-commit 模板、编码助手修复提示，以及 VS Code 预览插件。
+静态扫描在本地运行：只读、不执行项目代码、不发起网络请求。部署校验是独立的可选模式，只访问经你确认的目标。
 
 [English](./README.md) · [使用参考](./docs/reference-zh-CN.md) · [发布说明](https://github.com/Tasomei/canship/releases) · [npm](https://www.npmjs.com/package/canship)
 
-> 本文对应 npm `latest` 渠道的 `0.8.0`，下方示例固定此版本；`0.7.1` 请参阅[发行版文档](https://github.com/Tasomei/canship/blob/v0.7.1/README-zh-CN.md)。
+> 本文对应 npm `latest` 渠道的 `0.8.0`；`0.7.1` 请参阅[发行版文档](https://github.com/Tasomei/canship/blob/v0.7.1/README-zh-CN.md)。
 
-## 扫描项目
+## 快速开始
 
-要求 Node.js ≥18，无运行时依赖；安装可能联网。
+要求 Node.js 18 及以上，无运行时依赖。
 
 ```powershell
 npx canship@0.8.0
 ```
 
-扫描其他目录：
+扫描指定目录：
 
 ```powershell
 npx canship@0.8.0 "./my-app"
 ```
 
-Git 检查读取本地跟踪文件及提交历史，不访问远程仓库；历史无法读取时标记覆盖不完整。
-
-以下截图来自合成项目，可用 `node scripts/render-screenshots.mjs` 基于本地构建重新生成。
+合成项目的输出示例：
 
 ![终端报告](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/terminal.png)
 
 ## 检测范围
 
-| 类别 | 级别 | 范围 |
+| 类别 | 级别 | 内容 |
 |---|:---:|---|
-| 凭据 | `P0` | 硬编码凭据、公开环境变量暴露、Supabase 管理员密钥、Git 跟踪或历史中的非模板 `.env` 文件 |
-| API 访问 | `P0/P1` | 未识别到鉴权的数据库操作、服务端信任 Supabase `getSession()`、未验证的 Stripe webhook |
-| 数据库规则 | `P1/P2` | Supabase RLS、无条件放行策略及公开对象列表；Firebase 开放规则及测试模式到期时间 |
-| CORS | `P1/P2` | 携带凭据的来源回显或通配符配置 |
-| 代码（Code） | `P1/P2` | SQL 和命令构造、调用方可控的请求主机及重定向目标 |
+| 凭据 | `P0` | 硬编码密钥、公开环境变量中的密钥、Supabase 服务密钥、被 Git 跟踪或存在于历史中的 `.env` 文件 |
+| API 访问 | `P0/P1` | 未识别到鉴权的数据库操作、服务端信任 Supabase `getSession()`、未验签的 Stripe webhook |
+| 数据库规则 | `P1/P2` | 未启用 Supabase RLS、过宽的策略、公开存储列表、开放的 Firebase 规则 |
+| CORS | `P1/P2` | 携带凭据时回显来源或使用通配符 |
+| 代码（Code） | `P1/P2` | 由请求输入拼接的 SQL 与 shell 命令；向调用方指定地址发起的服务端请求和重定向 |
 
-路由分析覆盖 Next.js、SvelteKit、Nuxt、Remix / React Router、Astro、Express、Hono、Fastify 的指定入口，不支持任意框架行为。详见[入口及限制](./docs/reference-zh-CN.md#服务端入口)。
+路由分析覆盖 Next.js、SvelteKit、Nuxt、Remix / React Router、Astro、Express、Hono、Fastify 的指定入口，详见[入口及限制](./docs/reference-zh-CN.md#服务端入口)。
 
 ```powershell
 npx canship@0.8.0 --list-rules
@@ -48,15 +44,11 @@ npx canship@0.8.0 --list-rules
 
 ## 审阅结果
 
-报告正文为英文。`certain` 表示静态证据充分，`likely` 需人工审阅。测试和示例中的结果降为 `likely`；置信度不代表凭据有效或风险可被利用。
-
-显示全部置信度及详细证据：
+每条结果标为 `certain`（静态证据充分）或 `likely`（需人工审阅），默认只显示 `certain`。两者都不代表凭据有效或问题可被利用。
 
 ```powershell
 npx canship@0.8.0 --all --verbose
 ```
-
-生成离线 HTML 报告：
 
 ```powershell
 npx canship@0.8.0 --all --report
@@ -64,21 +56,14 @@ npx canship@0.8.0 --all --report
 
 ![HTML 报告](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
 
-[合成 HTML 示例](https://github.com/Tasomei/canship/blob/main/docs/demo.html)：下载文件后在本地打开，无需安装扫描器。
+离线 HTML 报告支持筛选和复制修复提示；`--fix-prompt` 在终端输出同样的说明。报告包含文件路径，也可能包含源码摘录：`--no-excerpts` 去除摘录，`--share-summary` 仅输出计数。可下载[合成示例报告](https://github.com/Tasomei/canship/blob/main/docs/demo.html)查看。
 
-HTML 支持严重度及置信度筛选、稳定定位和修复提示复制；`--fix-prompt` 在终端输出同样的修复说明，供编码助手使用。`--no-excerpts` 移除摘录，但保留路径等项目文本。`--share-summary` 仅输出计数及范围标记，分享前仍须审阅。
-
-| 退出码 | 静态扫描结果 |
+| 退出码 | 含义 |
 |---|---|
-| `0` | 无结果，且扫描完整或由 `--best-effort` 接受 |
+| `0` | 无结果，且覆盖完整（或经 `--best-effort` 接受不完整覆盖） |
 | `1` | 至少一条 `certain` 的 P0/P1 结果 |
-| `2` | 其他结果，包括隐藏的 `likely` |
-| `3` | 参数错误、工具错误或未被接受的不完整扫描 |
-| `130` / `143` | 收到 SIGINT / SIGTERM，不生成扫描报告 |
-
-退出码基于规则选择、源码抑制及基线处理后的结果。有结果时优先于覆盖不完整；`--best-effort` 不改变 `1` 或 `2`。须另行检查 JSON 的 `partial`、`errors`、`skipped` 和 `filesScanned`。
-
-基线表示接受结果，不代表问题已修复。[基线管理](./docs/reference-zh-CN.md#配置)支持审阅已有记录、选择性接受、理由及到期时间。[报告比较](./docs/reference-zh-CN.md#命令行)提供终端、JSON 和离线 HTML 视图，区分新增、持续存在及本次未再出现，不将结果消失视为修复证明。
+| `2` | 其他结果，包括被隐藏的 `likely` |
+| `3` | 输入无效、工具错误或覆盖不完整 |
 
 ## 接入 CI
 
@@ -103,35 +88,32 @@ jobs:
           honor-ignore-markers: false
 ```
 
-提交哈希固定 Action 实现；`version` 指定已发布的 npm 扫描器，不使用开发分支源码。Action 使用 Node.js 22，不安装或运行项目依赖，仅输出统计摘要。
+提交哈希固定 Action 实现，`version` 固定 npm 扫描器版本。Action 不安装项目依赖，只输出计数摘要；扫描不完整或工具出错时始终失败。SARIF 上传需显式开启。
 
 | 输入 | 固定 Action 的默认值 | 含义 |
 |---|---|---|
-| `version` | `0.7.0` | 精确 npm 版本；上例已覆盖 |
-| `fail-on` | `blocking` | `blocking`：确定的 P0/P1；`any`：全部结果；`none`：仅报告 |
+| `version` | `0.7.0` | 精确的 npm 扫描器版本；请如上例显式设置 |
+| `fail-on` | `blocking` | `blocking`：`certain` 的 P0/P1；`any`：全部结果；`none`：仅报告 |
 
-扫描不完整或工具错误始终失败。默认不读取项目配置、不上传 SARIF。上传需 `security-events: write` 及代码扫描支持，操作前须审阅报告。不可信 PR 使用 `pull_request`，不要使用 `pull_request_target`。详见 [Action 输入](https://github.com/Tasomei/canship/blob/main/action.yml)。
+完整说明见 [Action 输入](https://github.com/Tasomei/canship/blob/main/action.yml)。
 
-## 进阶用法
+## 扫描之外
 
-[完整命令参考](./docs/reference-zh-CN.md#命令行)涵盖 JSON/SARIF、规则选择、配置、排除项、独立工作区、诊断及模板预览。[API](./docs/reference-zh-CN.md#api-与结构化输出)返回结构化结果，不加载项目配置、不写文件。
+- **基线**：接受已审阅的结果，可附理由和到期时间，见[基线管理](./docs/reference-zh-CN.md#配置)。
+- **报告比较**：比较两份已保存的 JSON 报告，列出新增、持续存在和不再出现的结果，见[命令参考](./docs/reference-zh-CN.md#命令行)。
+- **工作区与配置**：独立扫描 monorepo 子项目、排除路径，并用 `--explain-config` 或 `--doctor` 查看生效设置。
+- **模板**：用 `--init` 预览 CI 与 pre-commit 配置。pre-commit 钩子扫描工作区，而非暂存区快照。
+- **部署校验**：`--probe=https://…` 预览少量无认证的 HTTPS 请求，确认计划前不会发出任何请求。使用前请阅读[范围与隐私说明](./docs/reference-zh-CN.md#部署校验)。
+- **API 与编辑器**：[编程接口](./docs/reference-zh-CN.md#api-与结构化输出)及 [VS Code 插件预览版](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme)。
 
-pre-commit 模板扫描**工作区，而非暂存区快照**。部署校验默认关闭，仅支持无认证的 HTTPS 请求；使用前须审阅[范围与隐私限制](./docs/reference-zh-CN.md#部署校验)。
+## 限制
 
-[VS Code 插件](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme)为独立开发预览，本地 VSIX 打包及已验证宿主范围见插件 README；尚未发布到 Marketplace。
+- 静态分析可能漏报或误报有意为之的配置，不评估业务授权、限流或依赖漏洞。
+- 脱敏仅覆盖已识别的密钥格式。详细报告和基线应作为内部资料处理。
+- Google 与 Firebase 的 `AIza…` 密钥属于公开标识符，不单独作为泄露报告。
 
-## 隐私与限制
-
-- 静态分析可能误报或漏报，不验证业务授权、限流或依赖漏洞。
-- 脱敏仅覆盖已识别格式，未知敏感值可能保留在摘录中；详细报告及基线应按内部材料处理。
-- Google/Firebase/Maps 的 `AIza…` 密钥按公开标识符处理，不单凭其值判定泄露。
-- 不跟随符号链接；嵌套仓库及子模块须单独扫描。范围内跳过项及分析上限会披露；默认排除的依赖和构建目录不计为覆盖缺口。
-- 显式部署校验会访问已确认目标；安装、评估下载及可选 SARIF 上传也可能联网。静态扫描保持离线。
-
-详见[资源上限与覆盖边界](./docs/reference-zh-CN.md#隐私与限制)。
+详见[隐私与覆盖限制](./docs/reference-zh-CN.md#隐私与限制)。
 
 ## 开发与许可
 
-分别运行 `npm ci`、`npm run prepublishOnly`、`npm run test:package`、`npm run evaluate`。新增规则须包含应检出和不应检出的夹具；样本通过不代表真实检出率。详见[开发参考](./docs/reference-zh-CN.md#开发)。
-
-[MIT](./LICENSE)。Supabase/Firebase 夹具保留 Apache-2.0，Next.js/`cors` 夹具保留 MIT。
+见[开发参考](./docs/reference-zh-CN.md#开发)。采用 [MIT](./LICENSE) 许可；Supabase 与 Firebase 测试夹具保留 Apache-2.0，Next.js 与 `cors` 夹具保留 MIT。

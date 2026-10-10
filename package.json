@@ -1,7 +1,7 @@
 {
   "name": "canship",
   "version": "0.8.0",
-  "description": "Static scanner for credentials, access rules and unsafe request input in JS/TS apps. Offline file scans; deployment probes require separate confirmation.",
+  "description": "Pre-deployment security checks for JS/TS web apps: offline static scanning for credentials, access rules and unsafe request input, with opt-in deployment probes.",
   "keywords": [
     "security",
     "audit",
