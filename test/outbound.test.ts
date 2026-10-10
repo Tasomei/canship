@@ -142,4 +142,57 @@ export async function importFrom(url: string) { return (await fetch(url)).text()
   return Response.json([a, b, c, d, e])
 }` }, [])
   })
+
+  test('a parsed URL whose origin, host or hostname must equal a literal before the request is not reported', async () => {
+    const handler = (check: string, setup = '') => ({ 'app/api/download/route.ts': `${setup}export async function GET(req) {
+  const url = req.nextUrl.searchParams.get('url')
+  let parsed
+  try {
+    parsed = new URL(url)
+  } catch {
+    return new Response('bad', { status: 400 })
+  }
+${check}
+  const res = await fetch(url)
+  return new Response(res.body)
+}` })
+    // 允许多个固定来源、条件写在布尔常量中，与 midday 的写法一致。
+    await expectHits(handler(`  const isRelease = parsed.origin === 'https://github.com' && parsed.pathname.startsWith('/acme/app/releases/')
+  const isAsset = parsed.origin === "https://api.github.com" && parsed.pathname.startsWith('/repos/acme/app/')
+  if (!isRelease && !isAsset) {
+    return new Response('bad', { status: 400 })
+  }`), [])
+    await expectHits(handler("  if (parsed.hostname !== 'files.example.com') throw new Error('bad host')"), [])
+    await expectHits(handler("  if (!(parsed.host === 'a.example.com' || parsed.host === 'b.example.com')) return new Response('bad', { status: 400 })"), [])
+    await expectHits(handler('  if (!ALLOWED.includes(parsed.origin)) return new Response(\'bad\', { status: 400 })',
+      "const ALLOWED = ['https://a.example.com', 'https://b.example.com']\n"), [])
+  })
+
+  test('checks that do not fix the host, do not exit, or come after the request are still reported', async () => {
+    const handler = (check: string, after = '') => ({ 'app/api/download/route.ts': `export async function GET(req) {
+  const url = req.nextUrl.searchParams.get('url')
+  const other = req.nextUrl.searchParams.get('other')
+  const parsed = new URL(url)
+${check}
+  const res = await fetch(url)
+${after}  return new Response(res.body)
+}` })
+    const hit: Array<[string, number, Finding['confidence']]> = [['ssrf/request-url', 6, 'likely']]
+    // 只检查路径、与另一个请求值比较、检查后不退出、一个分支未固定主机。
+    await expectHits(handler("  if (!parsed.pathname.startsWith('/files/')) return new Response('bad', { status: 400 })"), hit)
+    await expectHits(handler('  if (parsed.origin !== other) return new Response(\'bad\', { status: 400 })'), hit)
+    await expectHits(handler("  if (parsed.origin !== 'https://files.example.com') console.warn('unexpected host')"), hit)
+    await expectHits(handler("  if (!(parsed.origin === 'https://files.example.com' || parsed.protocol === 'https:')) return new Response('bad', { status: 400 })"), hit)
+    // 主机由插值构成的模板字符串不是固定字面量。
+    await expectHits(handler('  if (parsed.origin !== `https://${other}`) return new Response(\'bad\', { status: 400 })'), hit)
+    // 检查位于请求之后，或解析的是另一个输入。
+    await expectHits(handler('', "  if (parsed.origin !== 'https://files.example.com') return new Response('bad', { status: 400 })\n"), hit)
+    await expectHits({ 'app/api/download/route.ts': `export async function GET(req) {
+  const url = req.nextUrl.searchParams.get('url')
+  const other = new URL(req.nextUrl.searchParams.get('other'))
+  if (other.origin !== 'https://files.example.com') return new Response('bad', { status: 400 })
+  const res = await fetch(url)
+  return new Response(res.body)
+}` }, [['ssrf/request-url', 5, 'likely']])
+  })
 })

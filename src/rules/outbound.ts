@@ -272,6 +272,145 @@ function targetOf(call: Call, analysed: HandlerFile): { expr: string; at: number
   return { expr, at: positions[index]! }
 }
 
+/** 按顶层运算符拆分表达式，跳过括号内的内容。 */
+function splitTopLevelOperator(text: string, operator: '&&' | '||'): string[] {
+  const parts: string[] = []
+  let depth = 0, from = 0
+  for (let i = 0; i < text.length; i++) {
+    if ('([{'.includes(text[i]!)) depth++
+    else if (')]}'.includes(text[i]!)) depth--
+    else if (depth === 0 && text.startsWith(operator, i)) { parts.push(text.slice(from, i)); from = i + 2; i++ }
+  }
+  parts.push(text.slice(from))
+  return parts.map(part => part.trim())
+}
+
+/** 去掉包住整个表达式的一层括号。 */
+function unwrap(text: string): string {
+  let current = text.trim()
+  while (current.startsWith('(') && matchingParen(current, 0) === current.length - 1) current = current.slice(1, -1).trim()
+  return current
+}
+
+/** 声明语句的初始化表达式结束处：顶层分号，或不在运算符前后的换行。 */
+function initializerEnd(code: string, from: number, limit: number): number {
+  let depth = 0
+  for (let i = from; i < limit; i++) {
+    const ch = code[i]!
+    if ('([{'.includes(ch)) depth++
+    else if (')]}'.includes(ch)) { if (--depth < 0) return i }
+    else if (depth === 0 && ch === ';') return i
+    else if (depth === 0 && ch === '\n') {
+      const before = code.slice(from, i).trimEnd(), after = code.slice(i + 1, limit).trimStart()
+      if (!/(?:&&|\|\||[=?:+,(-])$/.test(before) && !/^(?:&&|\|\||[?:.+])/.test(after)) return i
+    }
+  }
+  return limit
+}
+
+/**
+ * 外发请求前的主机白名单：先用 new URL() 解析同一输入，再在不满足时 return/throw 的 if 中，
+ * 令所有继续执行的分支都要求 origin、host 或 hostname 等于代码中的字符串字面量（或字面量数组之一）。
+ * 只认这种能证明目标主机固定的结构，函数名或路径检查都不算。
+ */
+function allowlistedHost(analysed: HandlerFile, bodyStart: number, callAt: number, targetExpr: string, names: Set<string>): boolean {
+  const { code, source, pairs } = analysed
+  const region = code.slice(bodyStart, callAt)
+  const parsed = new Set<string>()
+  for (const m of region.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*(?::\s*URL\s*)?=\s*new\s+URL\s*\(/g)) {
+    const open = bodyStart + m.index + m[0].length - 1
+    const close = pairs.get(open)
+    const argument = close === undefined ? '' : code.slice(open + 1, close).trim()
+    if (names.has(argument)) parsed.add(m[1]!)
+  }
+  if (parsed.size === 0) return false
+  const target = targetExpr.trim()
+  const targetOk = names.has(target) || [...parsed].some(p => new RegExp(`^${p}(?:\\s*\\.\\s*(?:href|toString\\s*\\(\\s*\\)))?$`).test(target))
+  if (!targetOk) return false
+  const isLiteral = (at: number, text: string): boolean => {
+    const raw = source.slice(at, at + text.length).trim()
+    return /^(['"])[^'"\\\n]*\1$/.test(raw) || /^`[^`$\\]*`$/.test(raw)
+  }
+  // 当前文件中的字符串字面量数组常量，以及函数体内请求前的布尔常量。
+  const literalArray = (expr: string, at: number): boolean => {
+    const inner = expr.trim()
+    if (inner.startsWith('[')) {
+      const items = splitTopLevel(inner.slice(1, -1)).filter(item => item.trim() !== '')
+      let cursor = at + code.slice(at).indexOf('[') + 1
+      return items.length > 0 && items.every(item => { const itemAt = code.indexOf(item, cursor); cursor = itemAt + item.length; return isLiteral(itemAt, item) })
+    }
+    const name = /^[A-Za-z_$][\w$]*$/.exec(inner)?.[0]
+    if (!name) return false
+    const def = new RegExp(`\\bconst\\s+${name}\\s*(?::[^=]+)?=\\s*\\[`).exec(code)
+    if (!def) return false
+    const open = def.index + def[0].length - 1
+    const close = pairs.get(open)
+    return close !== undefined && literalArray(code.slice(open, close + 1), open)
+  }
+  const definitions = new Map<string, { expr: string; at: number }>()
+  for (const m of region.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*/g)) {
+    const start = bodyStart + m.index + m[0].length
+    const end = initializerEnd(code, start, callAt)
+    definitions.set(m[1]!, { expr: code.slice(start, end), at: start })
+  }
+  const field = `(?:${[...parsed].join('|')})\\s*\\.\\s*(?:origin|host|hostname)`
+  // negated 表示原文为 x !== 'lit' 形式的退出条件，继续执行时即 x === 'lit'。
+  const fixesHost = (atom: string, at: number, negated = false): boolean => {
+    const text = unwrap(atom)
+    const offset = at + atom.indexOf(text)
+    const operator = negated ? '!==?' : '===?'
+    const left = new RegExp(`^${field}\\s*${operator}\\s*([\\s\\S]+)$`).exec(text)
+    if (left) return isLiteral(offset + text.length - left[1]!.length, left[1]!)
+    const right = new RegExp(`^([\\s\\S]+?)\\s*${operator}\\s*${field}$`).exec(text)
+    if (right) return isLiteral(offset, right[1]!)
+    if (negated) return false
+    const includes = new RegExp(`^([\\s\\S]+?)\\s*\\.\\s*includes\\s*\\(\\s*${field}\\s*\\)$`).exec(text)
+    return includes ? literalArray(includes[1]!, offset) : false
+  }
+  // 一个继续执行的分支（合取式）中只要有一项固定主机即可。
+  const branchFixes = (expr: string, at: number, depth = 0): boolean => {
+    const text = unwrap(expr)
+    const offset = at + expr.indexOf(text)
+    const name = /^[A-Za-z_$][\w$]*$/.exec(text)?.[0]
+    const definition = name ? definitions.get(name) : undefined
+    if (definition && depth < 2) return allFix(definition.expr, definition.at, depth + 1)
+    let cursor = offset
+    return splitTopLevelOperator(text, '&&').some(atom => { const atomAt = code.indexOf(atom, cursor); cursor = atomAt + atom.length; return fixesHost(atom, atomAt) })
+  }
+  const allFix = (expr: string, at: number, depth = 0): boolean => {
+    let cursor = at
+    return splitTopLevelOperator(unwrap(expr), '||').every(branch => { const branchAt = code.indexOf(branch, cursor); cursor = branchAt + branch.length; return branchFixes(branch, branchAt, depth) })
+  }
+  for (const m of region.matchAll(/\bif\s*\(/g)) {
+    const open = bodyStart + m.index + m[0].length - 1
+    const close = pairs.get(open)
+    if (close === undefined || close >= callAt) continue
+    // 退出语句：return 或 throw，可包在花括号中。
+    if (!/^\s*(?:\{\s*)?(?:return|throw)\b/.test(code.slice(close + 1, callAt))) continue
+    // 位于请求之前已结束的嵌套块中的检查不一定执行。
+    let nested = false
+    for (const [blockOpen, blockClose] of pairs) {
+      if (code[blockOpen] === '{' && blockOpen > bodyStart && blockOpen < m.index + bodyStart && blockClose > m.index + bodyStart && blockClose < callAt) { nested = true; break }
+    }
+    if (nested) continue
+    // 继续执行的条件是退出条件的否定：!A && !B → A || B；!(E) → E；x !== 'lit' → x === 'lit'。
+    const condition = unwrap(code.slice(open + 1, close))
+    const conditionAt = open + 1 + code.slice(open + 1, close).indexOf(condition)
+    if (condition.startsWith('!(') && matchingParen(condition, 1) === condition.length - 1) {
+      if (allFix(condition.slice(2, -1), conditionAt + 2)) return true
+      continue
+    }
+    let cursor = conditionAt
+    const terms = splitTopLevelOperator(condition, '&&').map(term => { const termAt = code.indexOf(term, cursor); cursor = termAt + term.length; return { term, at: termAt } })
+    const continues = terms.map(({ term, at }) => {
+      if (term.startsWith('!') && !term.startsWith('!=')) return branchFixes(term.slice(1), at + 1)
+      return /!==?/.test(term) && fixesHost(term, at, true)
+    })
+    if (continues.length > 0 && continues.every(Boolean)) return true
+  }
+  return false
+}
+
 function capitalised(text: string): string {
   return `${text.charAt(0).toUpperCase()}${text.slice(1)}`
 }
@@ -335,6 +474,7 @@ function check(ctx: ScanContext, kind: Kind): Finding[] {
         if (!target) continue
         const taint = controlsStart(target.expr, target.at, flow, analysed.source, kind)
         if (!taint) continue
+        if (kind === 'ssrf' && allowlistedHost(analysed, body.start, call.at, target.expr, taint.names)) continue
         reported.add(call.at)
         const line = lineNumberAt(analysed.lineStarts, call.at)
         const originLine = lineNumberAt(analysed.lineStarts, taint.origin)
