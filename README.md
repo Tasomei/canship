@@ -4,7 +4,9 @@ A local static scanner for JavaScript and TypeScript web apps. Detects exposed c
 
 Static scans are offline, read-only, and execute no project code. Deployment probes are separate and require explicit plan confirmation.
 
-[简体中文](./README-zh-CN.md) · [Reference](./docs/reference.md) · [npm](https://www.npmjs.com/package/canship)
+Beyond a single scan, Canship supports reviewed baselines with reasons and expiry, saved-report comparison, independent workspace scans, CI and pre-commit templates, repair prompts for coding assistants, and a VS Code preview.
+
+[简体中文](./README-zh-CN.md) · [Reference](./docs/reference.md) · [Releases](https://github.com/Tasomei/canship/releases) · [npm](https://www.npmjs.com/package/canship)
 
 > Release candidate `0.8.0-rc.1` for npm `next`. Examples below pin this prerelease. For stable `0.7.1`, see the [release documentation](https://github.com/Tasomei/canship/blob/v0.7.1/README.md).
 
@@ -24,7 +26,7 @@ npx canship@0.8.0-rc.1 "./my-app"
 
 Git checks inspect locally tracked files and commit history without contacting remotes. Unreadable history marks coverage incomplete.
 
-The following screenshots use synthetic data from a development build.
+The following screenshots show a synthetic project; `node scripts/render-screenshots.mjs` regenerates them from a local build.
 
 ![Terminal report](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/terminal.png)
 
@@ -36,7 +38,7 @@ The following screenshots use synthetic data from a development build.
 | API access | `P0/P1` | Database operations without recognised authentication, server-side trust in Supabase `getSession()`, unverified Stripe webhooks |
 | Database rules | `P1/P2` | Supabase RLS, unconditional policies and public object listing; Firebase open rules and test-mode expiry |
 | CORS | `P1/P2` | Reflected or wildcard origins with credentials |
-| Request input | `P1/P2` | SQL and command construction, caller-controlled request hosts and redirect targets |
+| Code | `P1/P2` | SQL and command construction, caller-controlled request hosts and redirect targets |
 
 Route analysis supports documented entry points in Next.js, SvelteKit, Nuxt, Remix / React Router, Astro, Express, Hono and Fastify—not arbitrary framework behaviour. See [entry points and limits](./docs/reference.md#server-entry-points).
 
@@ -64,7 +66,7 @@ npx canship@0.8.0-rc.1 --all --report
 
 [Synthetic HTML sample](https://github.com/Tasomei/canship/blob/main/docs/demo.html): download the file and open it locally; no scanner installation is required.
 
-HTML provides severity/confidence filters, stable finding links, and copyable repair prompts. Use `--no-excerpts` to omit excerpts; paths and other project text remain. For counts without project text, use `--share-summary` and review before sharing.
+HTML provides severity/confidence filters, stable finding links, and copyable repair prompts; `--fix-prompt` prints the same instructions for a coding assistant. Use `--no-excerpts` to omit excerpts; paths and other project text remain. For counts without project text, use `--share-summary` and review before sharing.
 
 | Exit | Static scan result |
 |---|---|

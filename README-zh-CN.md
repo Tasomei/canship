@@ -4,7 +4,9 @@
 
 静态扫描离线、只读，不执行项目代码。部署校验为独立功能，须显式确认请求计划。
 
-[English](./README.md) · [使用参考](./docs/reference-zh-CN.md) · [npm](https://www.npmjs.com/package/canship)
+除单次扫描外，还支持带理由和到期时间的基线审阅、已保存报告比较、多工作区独立扫描、CI 与 pre-commit 模板、编码助手修复提示，以及 VS Code 预览插件。
+
+[English](./README.md) · [使用参考](./docs/reference-zh-CN.md) · [发布说明](https://github.com/Tasomei/canship/releases) · [npm](https://www.npmjs.com/package/canship)
 
 > 候选版本 `0.8.0-rc.1` 使用 npm `next` 渠道。下方示例固定此预发布版本；稳定版 `0.7.1` 请参阅[发行版文档](https://github.com/Tasomei/canship/blob/v0.7.1/README-zh-CN.md)。
 
@@ -24,7 +26,7 @@ npx canship@0.8.0-rc.1 "./my-app"
 
 Git 检查读取本地跟踪文件及提交历史，不访问远程仓库；历史无法读取时标记覆盖不完整。
 
-以下截图使用开发构建及合成数据。
+以下截图来自合成项目，可用 `node scripts/render-screenshots.mjs` 基于本地构建重新生成。
 
 ![终端报告](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/terminal.png)
 
@@ -36,7 +38,7 @@ Git 检查读取本地跟踪文件及提交历史，不访问远程仓库；历�
 | API 访问 | `P0/P1` | 未识别到鉴权的数据库操作、服务端信任 Supabase `getSession()`、未验证的 Stripe webhook |
 | 数据库规则 | `P1/P2` | Supabase RLS、无条件放行策略及公开对象列表；Firebase 开放规则及测试模式到期时间 |
 | CORS | `P1/P2` | 携带凭据的来源回显或通配符配置 |
-| 请求输入 | `P1/P2` | SQL 和命令构造、调用方可控的请求主机及重定向目标 |
+| 代码（Code） | `P1/P2` | SQL 和命令构造、调用方可控的请求主机及重定向目标 |
 
 路由分析覆盖 Next.js、SvelteKit、Nuxt、Remix / React Router、Astro、Express、Hono、Fastify 的指定入口，不支持任意框架行为。详见[入口及限制](./docs/reference-zh-CN.md#服务端入口)。
 
@@ -64,7 +66,7 @@ npx canship@0.8.0-rc.1 --all --report
 
 [合成 HTML 示例](https://github.com/Tasomei/canship/blob/main/docs/demo.html)：下载文件后在本地打开，无需安装扫描器。
 
-HTML 支持严重度及置信度筛选、稳定定位和修复提示复制。`--no-excerpts` 移除摘录，但保留路径等项目文本。`--share-summary` 仅输出计数及范围标记，分享前仍须审阅。
+HTML 支持严重度及置信度筛选、稳定定位和修复提示复制；`--fix-prompt` 在终端输出同样的修复说明，供编码助手使用。`--no-excerpts` 移除摘录，但保留路径等项目文本。`--share-summary` 仅输出计数及范围标记，分享前仍须审阅。
 
 | 退出码 | 静态扫描结果 |
 |---|---|

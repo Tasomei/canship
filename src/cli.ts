@@ -414,7 +414,7 @@ function parseArgs(argv: string[]): Args {
 }
 
 const HELP = `
-  ${bold('canship')} — static scanner for exposed credentials and open access rules in JS/TS apps
+  ${bold('canship')} — static scanner for credentials, access rules and unsafe request input in JS/TS apps
 
   ${bold('Usage')}
     npx canship [path]

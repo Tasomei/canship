@@ -1567,7 +1567,7 @@ describe('the CLI contract', () => {
     const help = run(['--help'])
     assert.equal(help.status, 0)
     assert.match(help.stdout, /Exit codes/)
-    assert.match(help.stdout, /static scanner for exposed credentials and open access rules/)
+    assert.match(help.stdout, /static scanner for credentials, access rules and unsafe request input/)
     assert.doesNotMatch(help.stdout, /find the secrets/)
     assert.match(help.stdout, /--all\s+Show likely findings/)
     assert.match(help.stdout, /--best-effort\s+Allow exit 0 for an incomplete scan with no findings/)
