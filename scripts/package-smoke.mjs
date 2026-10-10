@@ -37,7 +37,7 @@ try {
   assert.deepEqual(readFileSync(join(packageRoot, 'schemas/config-v1.schema.json')),
     readFileSync(join(repository, 'schemas/config-v1.schema.json')))
   assert.equal(npm(['exec', '--offline', '--yes=false', '--', 'canship', '--version'], install).trim(), version)
-  assert.match(readFileSync(join(packageRoot, 'README.md'), 'utf8'), /A local static scanner/)
+  assert.match(readFileSync(join(packageRoot, 'README.md'), 'utf8'), /Pre-deployment security checks for JavaScript and TypeScript/)
   for (const name of ['README.md', 'README-zh-CN.md', 'docs/reference.md', 'docs/reference-zh-CN.md',
     'docs/framework-support.md', 'docs/framework-support-zh-CN.md']) {
     assert.deepEqual(readFileSync(join(packageRoot, name)), readFileSync(join(repository, name)))
