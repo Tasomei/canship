@@ -175,6 +175,27 @@ describe('Hono middleware', () => {
     assert.deepEqual(summary(await findings({ 'src/index.ts': route("c.req.query('key')") })), [['api/db-write-without-auth', 'src/index.ts', 7, 'likely']])
   })
 
+  test('re-exported middleware protects routes a helper registers on a sub-app mounted from another file', async () => {
+    const auth = "import { HTTPException } from 'hono/http-exception'\n" +
+      "export async function authMiddleware(c, next) {\n  if (!c.req.header('x-api-key')) throw new HTTPException(401)\n  await next()\n}\n"
+    const files = (barrel: string, mount: string) => ({
+      'src/libs/middlewares/auth.ts': auth,
+      'src/libs/middlewares/index.ts': barrel,
+      'src/routes/monitors/delete.ts': PRISMA + 'export function registerDelete(app) {\n' +
+        "  app.delete('/:id', async (c) => {\n    await prisma.monitor.delete({ where: { id: c.req.param('id') } })\n    return c.json({})\n  })\n}\n",
+      'src/routes/monitors/index.ts': HONO + "import { registerDelete } from './delete'\nexport const monitors = new Hono()\nregisterDelete(monitors)\n",
+      'src/routes/index.ts': HONO + "import { authMiddleware } from '../libs/middlewares'\nimport { monitors } from './monitors'\n" +
+        `export const api = new Hono()\n${mount}`,
+    })
+    const protectedMount = "api.use('/*', authMiddleware)\napi.route('/monitor', monitors)\n"
+    assert.deepEqual(summary(await findings(files("export * from './auth'\n", protectedMount))), [])
+    assert.deepEqual(summary(await findings(files("export { authMiddleware } from './auth'\n", protectedMount))), [])
+    // 没有中间件，或中间件在挂载之后才注册，都不构成保护。
+    const write = [['api/db-write-without-auth', 'src/routes/monitors/delete.ts', 5, 'likely']]
+    assert.deepEqual(summary(await findings(files("export * from './auth'\n", "api.route('/monitor', monitors)\n"))), write)
+    assert.deepEqual(summary(await findings(files("export * from './auth'\n", "api.route('/monitor', monitors)\napi.use('/*', authMiddleware)\n"))), write)
+  })
+
   test('an auth-looking middleware from a package lowers confidence and says why', async () => {
     const list = await findings({ 'src/index.ts': HONO + ADMIN + "import { requireSession } from '@acme/session-kit'\nconst app = new Hono()\n" +
       "app.post('/wipe', requireSession(), async (c) => {\n  await admin.from('logs').delete().neq('id', 0)\n  return c.text('ok')\n})\n" })

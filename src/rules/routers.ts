@@ -1422,6 +1422,9 @@ function serverIndex(files: ScanFile[]): ServerIndex {
     const root = sites.find(other => other.a === a && other.range === null && other.name === arg.text && !other.root)
     return root ? byRoot.get(root) : undefined
   }
+  // 跨文件挂载：除该文件中注册的路由外，还包括该文件创建的实例经参数传出后在其他文件注册的路由。
+  const fileRoutes = (file: ScanFile): Route[] => [...new Set([...(byRouterFile.get(file) ?? []),
+    ...sites.filter(other => other.a.file === file && other.range === null && !other.root).flatMap(other => byRoot.get(other) ?? [])])]
   // 挂载：app.use('/admin', requireAuth, adminRouter)、app.route('/admin', admin)；同一实例上更早的中间件同样生效。
   for (const site of sites) {
     if (site.framework === 'fastify') continue
@@ -1431,7 +1434,7 @@ function serverIndex(files: ScanFile[]): ServerIndex {
       if (site.framework === 'hono' && !use.mount) continue
       use.args.forEach((arg, index) => {
         const target = mountedFile(a, arg, files)
-        const routes = target && target !== a.file ? byRouterFile.get(target) : localRoutes(a, arg)
+        const routes = target && target !== a.file ? fileRoutes(target) : localRoutes(a, arg)
         if (!routes || routes.length === 0) return
         const isMiddleware = (x: Arg): boolean => mountedFile(a, x, files) === null && localRoutes(a, x) === undefined
         // Hono 子应用的路由都在挂载前缀之下，只有通配路径的中间件能覆盖全部。
@@ -1573,7 +1576,10 @@ export function middlewareDefinition(ref: MiddlewareRef, files: ScanFile[]): {
   const local = member === null ? findFunction(a, root) : null
   if (local) return { name: callee, range: local, spec: null, inline }
   const target = importOf(a, root, files)
-  const range = target ? importedFunction(target, member) ?? (member ? propertyValue(analyse(target.file), member) : null) : null
+  // 汇总模块的 export { name } from、export * from 继续跟到定义处，与 exportedMember 的层数上限一致。
+  const exported = member ?? (target && target.name !== 'default' ? target.name : null)
+  const range = target ? importedFunction(target, member) ?? (member ? propertyValue(analyse(target.file), member) : null) ??
+    (exported ? exportedMember(target.file, exported, files, 0) : null) : null
   return { name: callee, range, spec: null, inline }
 }
 
