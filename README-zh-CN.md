@@ -82,7 +82,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@7465c9560b8b3692777af080e8cc67b4be2335d7
+      - uses: Tasomei/canship@8ae4d5f4508fbd68fc2cf440e138c1217064a0e0
         with:
           version: '0.8.0'
           honor-ignore-markers: false
@@ -92,7 +92,7 @@ jobs:
 
 | 输入 | 固定 Action 的默认值 | 含义 |
 |---|---|---|
-| `version` | `0.7.0` | 精确的 npm 扫描器版本；请如上例显式设置 |
+| `version` | `0.8.0` | 精确的 npm 扫描器版本；请如上例显式设置 |
 | `fail-on` | `blocking` | `blocking`：`certain` 的 P0/P1；`any`：全部结果；`none`：仅报告 |
 
 完整说明见 [Action 输入](https://github.com/Tasomei/canship/blob/main/action.yml)。
