@@ -1,5 +1,5 @@
 /** 在确认目标后解析并固定公网地址；请求不继承代理、凭据或重定向行为。 */
-import { Resolver } from 'node:dns/promises'
+import { Resolver, lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
 import { Agent, request } from 'node:https'
 import { createHash } from 'node:crypto'
@@ -25,11 +25,40 @@ export function checkProbeRuntime(env: NodeJS.ProcessEnv = process.env, args: re
   }
 }
 interface ProbeResolver { resolve4(hostname: string): Promise<string[]>; resolve6(hostname: string): Promise<string[]>; cancel(): void }
+type SystemLookup = (hostname: string) => Promise<{ address: string; family: number }[]>
+const DNS_FAILED = () => new ProbeError('PROBE_DNS_FAILED', 'DNS resolution did not complete for the requested target.')
+const DNS_TIMEOUT = () => new ProbeError('PROBE_DNS_TIMEOUT', 'DNS resolution exceeded the probe time limit.')
+/** 配置的 DNS 服务器不可达时的错误码；明确的否定回答不在此列。 */
+const DNS_UNREACHABLE = ['ECONNREFUSED', 'ETIMEOUT']
+
+/** 系统解析器只作回退，共用同一 DNS 时限并响应取消；其返回的地址仍须通过公网地址校验。 */
+async function systemAddresses(hostname: string, signal: AbortSignal | undefined, remainingMs: number,
+  systemLookup: SystemLookup): Promise<ProbeAddress[]> {
+  if (remainingMs <= 0) throw DNS_TIMEOUT()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let onAbort: (() => void) | undefined
+  try {
+    const entries = await Promise.race([
+      systemLookup(hostname).catch(() => { throw DNS_FAILED() }),
+      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(DNS_TIMEOUT()), remainingMs) }),
+      new Promise<never>((_resolve, reject) => {
+        onAbort = () => reject(new ProbeError('PROBE_CANCELLED', 'Probe cancelled; no complete validation result was produced.'))
+        signal?.addEventListener('abort', onAbort, { once: true })
+      }),
+    ])
+    if (!Array.isArray(entries)) throw DNS_FAILED()
+    return entries.filter(entry => entry && (entry.family === 4 || entry.family === 6) && typeof entry.address === 'string')
+      .map(entry => ({ address: entry.address, family: entry.family as 4 | 6 }))
+  } finally { clearTimeout(timer); if (onAbort) signal?.removeEventListener('abort', onAbort) }
+}
+
 export async function resolveProbeAddresses(hostname: string, signal?: AbortSignal,
-  createResolver: () => ProbeResolver = () => new Resolver({ timeout: PROBE_LIMITS.dnsTimeoutMs, tries: 1 })): Promise<ProbeAddress[]> {
+  createResolver: () => ProbeResolver = () => new Resolver({ timeout: PROBE_LIMITS.dnsTimeoutMs, tries: 1 }),
+  systemLookup: SystemLookup = name => lookup(name, { all: true, verbatim: true })): Promise<ProbeAddress[]> {
   checkProbeCancelled(signal)
   const literal = isIP(hostname)
   if (literal === 4 || literal === 6) return [{ address: hostname, family: literal }]
+  const started = Date.now()
   const resolver = createResolver()
   let timedOut = false, stopped = false
   const cancel = () => { if (!stopped) { stopped = true; resolver.cancel() } }
@@ -41,11 +70,16 @@ export async function resolveProbeAddresses(hostname: string, signal?: AbortSign
       Promise.resolve().then(() => { checkProbeCancelled(signal); return resolver.resolve6(hostname) }),
     ])
     checkProbeCancelled(signal)
-    if (timedOut) throw new ProbeError('PROBE_DNS_TIMEOUT', 'DNS resolution exceeded the probe time limit.')
+    if (timedOut) throw DNS_TIMEOUT()
+    // 两族查询都连不上配置的服务器（常见于代理或 VPN 的虚拟网卡）时改用系统解析器；部分成功或否定回答不回退。
+    if (a.status === 'rejected' && aaaa.status === 'rejected' &&
+        [a.reason?.code, aaaa.reason?.code].every(code => DNS_UNREACHABLE.includes(String(code)))) {
+      return await systemAddresses(hostname, signal, PROBE_LIMITS.dnsTimeoutMs - (Date.now() - started), systemLookup)
+    }
     const addresses: ProbeAddress[] = []
     for (const [result, family] of [[a, 4], [aaaa, 6]] as const) {
       if (result.status === 'fulfilled') addresses.push(...result.value.map(address => ({ address, family })))
-      else if (!['ENODATA', 'ENOTFOUND'].includes(String(result.reason?.code))) throw new ProbeError('PROBE_DNS_FAILED', 'DNS resolution did not complete for the requested target.')
+      else if (!['ENODATA', 'ENOTFOUND'].includes(String(result.reason?.code))) throw DNS_FAILED()
     }
     return addresses
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel); cancel() }

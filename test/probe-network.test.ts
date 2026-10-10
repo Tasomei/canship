@@ -24,6 +24,37 @@ test('DNS queries both families, permits absent records and treats resolver erro
   error => error instanceof ProbeError && error.code === 'PROBE_DNS_FAILED' && !error.message.includes('PRIVATE'))
   assert.deepEqual(await resolveProbeAddresses('8.8.8.8', undefined, () => { throw new Error('Literal address must not query DNS') }), [{ address: '8.8.8.8', family: 4 }])
 })
+test('unreachable DNS servers fall back to the system resolver; answers and partial failures do not', async () => {
+  const unreachable = (code: string) => () => ({ resolve4: async () => { throw { code } }, resolve6: async () => { throw { code } }, cancel() {} })
+  let lookups = 0
+  const system = async () => { lookups++; return [{ address: '8.8.8.8', family: 4 }, { address: '2606:4700:4700::1111', family: 6 }, { address: 'x', family: 0 }] }
+  assert.deepEqual(await resolveProbeAddresses('api.example.com', undefined, unreachable('ECONNREFUSED'), system),
+    [{ address: '8.8.8.8', family: 4 }, { address: '2606:4700:4700::1111', family: 6 }])
+  assert.equal(lookups, 1)
+  // 回退结果照样交给公网地址校验，这里只确认不做额外放行。
+  assert.deepEqual(await resolveProbeAddresses('api.example.com', undefined, unreachable('ECONNREFUSED'), async () => [{ address: '10.0.0.1', family: 4 }]),
+    [{ address: '10.0.0.1', family: 4 }])
+  // 否定回答、一族成功一族失败都不回退。
+  assert.deepEqual(await resolveProbeAddresses('api.example.com', undefined, unreachable('ENOTFOUND'), system), [])
+  await assert.rejects(resolveProbeAddresses('api.example.com', undefined, () => ({ resolve4: async () => ['8.8.8.8'],
+    resolve6: async () => { throw { code: 'ECONNREFUSED' } }, cancel() {} }), system), error => error instanceof ProbeError && error.code === 'PROBE_DNS_FAILED')
+  assert.equal(lookups, 1)
+  // 系统解析器失败时不泄露错误内容。
+  await assert.rejects(resolveProbeAddresses('api.example.com', undefined, unreachable('ECONNREFUSED'), async () => { throw new Error('PRIVATE_LOOKUP_ERROR') }),
+    error => error instanceof ProbeError && error.code === 'PROBE_DNS_FAILED' && !error.message.includes('PRIVATE'))
+})
+test('the system-resolver fallback honours cancellation and the shared DNS deadline', async () => {
+  const unreachable = () => ({ resolve4: async () => { throw { code: 'ECONNREFUSED' } }, resolve6: async () => { throw { code: 'ECONNREFUSED' } }, cancel() {} })
+  const hanging = () => new Promise<never>(() => {})
+  const controller = new AbortController()
+  const cancelled = resolveProbeAddresses('api.example.com', controller.signal, unreachable, hanging)
+  setTimeout(() => controller.abort('PRIVATE_ABORT_REASON'), 20)
+  await assert.rejects(cancelled, error => error instanceof ProbeError && error.code === 'PROBE_CANCELLED')
+  const started = Date.now()
+  await assert.rejects(resolveProbeAddresses('api.example.com', undefined, unreachable, hanging),
+    error => error instanceof ProbeError && error.code === 'PROBE_DNS_TIMEOUT')
+  assert.ok(Date.now() - started < PROBE_LIMITS.dnsTimeoutMs + 1000)
+})
 test('DNS cancellation and its deadline cancel outstanding queries', async () => {
   for (const cancelled of [true, false]) {
     const rejectors: ((error: unknown) => void)[] = []

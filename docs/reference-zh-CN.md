@@ -129,11 +129,11 @@ OpenAPI 配置支持内联对象、常量及静态 ESM 导入与重导出，路�
 
 `--probe=https://app.example.com/status` 预览 HEAD 和携带固定测试 Origin 的 OPTIONS 请求。使用前替换为获授权的目标。审阅目标、限制及隐私提示后，保留原选项并附加展示的 `--confirm-probe` 摘要执行。摘要仅绑定选项，不证明域名所有权。此独立 CLI 模式支持 `--json`，不读取项目配置，也不会让 `scan()` 或编辑器自动联网。
 
-仅接受 443 端口的 HTTPS 和简单字面路径，不支持凭据、查询、片段或路径编码。DNS 返回的地址须全部为普通公网地址；连接固定到已验证地址，并保留主机名及 TLS 校验。不跟随重定向，不携带认证信息。检测到代理、网络调试或不安全 TLS 选项时拒绝执行，不绕过配置。DNS 限时 3 秒，单请求 5 秒，响应头上限 16 KiB。
+仅接受 443 端口的 HTTPS 和简单字面路径，不支持凭据、查询、片段或路径编码。DNS 返回的地址须全部为普通公网地址。若 A 与 AAAA 查询都无法连接配置的 DNS 服务器（常见于 VPN 或代理的虚拟网卡），在同一时限内改用系统解析器；否定回答不回退。连接固定到已验证地址，并保留主机名及 TLS 校验。不跟随重定向，不携带认证信息。检测到代理、网络调试或不安全 TLS 选项时拒绝执行，不绕过配置。DNS 限时 3 秒，单请求 5 秒，响应头上限 16 KiB。
 
 可选 `--probe-canary-sha256` 仅对名为 `canship-canary`、`canship-canary.txt` 或 `canship-canary.json` 的资源增加 GET。资源须为 16–4096 字节的专用合成内容；正文仅在内存中计算散列，报告只保留匹配状态与字节数，不保留正文或计算出的摘要。压缩或超限正文判失败。不支持 Supabase/Firebase 管理员密钥或业务记录导出。
 
-执行会向目标暴露连接 IP 和请求路径，请求仍可能有副作用。响应头、状态码及 canary 可读性均不证明整体应用安全。预览退出 `0`；执行完成且无待审阅观察时退出 `0`，需审阅时退出 `2`，参数无效或执行不完整时退出 `3`。JSON 使用 `probe-plan` 或 `probe-report`，不属于扫描报告格式。真实目标验收尚未完成。
+执行会向目标暴露连接 IP 和请求路径，请求仍可能有副作用。响应头、状态码及 canary 可读性均不证明整体应用安全。预览退出 `0`；执行完成且无待审阅观察时退出 `0`，需审阅时退出 `2`，参数无效或执行不完整时退出 `3`。JSON 使用 `probe-plan` 或 `probe-report`，不属于扫描报告格式。已在专用 GitHub Pages 目标上完成验收，覆盖 HEAD、OPTIONS、canary 匹配与不匹配、期望拒绝的复核提示及不跟随重定向。
 
 地址策略依据：[IANA IPv4](https://www.iana.org/assignments/iana-ipv4-special-registry)、[IANA IPv6](https://www.iana.org/assignments/iana-ipv6-special-registry)及 [Azure 平台地址](https://learn.microsoft.com/en-us/azure/virtual-network/what-is-ip-address-168-63-129-16)。应用层过滤不能替代网络出口控制。
 
