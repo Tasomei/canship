@@ -24,7 +24,7 @@ function mock(caseId = 'initial', options: Options = {}) {
   const calls: URL[] = []
   let polls = 0
   const prepared = prepareUpload(preview, caseId)
-  const numbers = options.ids ?? (caseId === 'reduced' ? [101] : [101, 102])
+  const numbers = options.ids ?? (caseId === 'reduced' ? [102] : [101, 102])
   const analysis = { id: 200, ref: TARGET.ref, category: options.wrongCategory ? `${TARGET.category}-other` : TARGET.category,
     commit_sha: options.wrongSha ? 'b'.repeat(40) : sha, sarif_id: 'upload-current',
     tool: { name: 'canship', version: options.wrongVersion ? '0.0.0-unexpected' : prepared.expected.version },
@@ -138,11 +138,14 @@ test('初次等待上传完成后建立编号，后续保持初始 A/B 编号', 
   }
 })
 
-test('减少结果必须保留 A 且 B 在本分支本配置 fixed，旧 SHA 允许保留在 fixed 实例', async () => {
+test('减少结果必须保留 B 且 A 在本分支本配置 fixed，旧 SHA 允许保留在 fixed 实例', async () => {
   const result = await mock('reduced', { extraInstances: true }).run()
-  assert.deepEqual(result.active, [{ number: 101, line: 10 }])
-  assert.deepEqual(result.fixed, [102])
+  assert.deepEqual(result.active, [{ number: 102, line: 14 }])
+  assert.deepEqual(result.fixed, [101])
   await assert.rejects(mock('reduced', { fixed: false }).run(), /BRANCH_INSTANCES_MISMATCH/)
+  // 保留项换成 A 的编号或全新编号（GitHub 重新开告警）都不能通过。
+  await assert.rejects(mock('reduced', { ids: [101] }).run(), /ALERT_IDENTITY_CHANGED/)
+  await assert.rejects(mock('reduced', { ids: [103] }).run(), /ALERT_IDENTITY_CHANGED/)
 })
 
 test('同数量的新编号或 A/B 交换不能误报连续性通过', async () => {
@@ -187,7 +190,7 @@ test('核对平台实际工具版本和文案，平台指纹变化仅披露而�
   const result = await mock('reduced', { changedPrimary: true }).run()
   assert.equal(result.verified, true)
   assert.equal(result.platformFingerprintsUnchanged, false)
-  assert.deepEqual(result.fixed, [102])
+  assert.deepEqual(result.fixed, [101])
 })
 
 test('提交中的合成文件不匹配时在任何请求前中止', async () => {

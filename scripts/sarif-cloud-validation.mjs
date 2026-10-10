@@ -6,7 +6,7 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 export const TARGET = Object.freeze({ repository: 'Tasomei/canship',
-  ref: 'refs/heads/codex/sarif-upgrade-validation', category: 'canship-upgrade-validation-20261009',
+  ref: 'refs/heads/codex/sarif-upgrade-validation', category: 'canship-upgrade-validation-20261010',
   path: 'synthetic/firestore.rules', rule: 'firebase/open-rules' })
 const CASES = ['initial', 'repeat', 'moved', 'wording-and-version', 'reduced']
 const INITIAL_TITLE = 'Synthetic public-read validation'
@@ -27,7 +27,8 @@ function expectedCase(id) {
   ensure(CASES.includes(id), 'INVALID_CASE')
   const moved = !['initial', 'repeat'].includes(id)
   const changed = ['wording-and-version', 'reduced'].includes(id)
-  return { lines: id === 'reduced' ? [10] : moved ? [10, 14] : [7, 11],
+  // reduced 修复 A、保留 B：被编辑行不在 B 的 GitHub 行指纹窗口内。
+  return { lines: id === 'reduced' ? [14] : moved ? [10, 14] : [7, 11], kept: id === 'reduced' ? [1] : [0, 1],
     title: changed ? UPDATED_TITLE : INITIAL_TITLE,
     version: changed ? '0.0.0-validation.2' : '0.0.0-validation.1' }
 }
@@ -57,8 +58,8 @@ export function prepareUpload(preview, caseId) {
   ensure(item.fixture?.path === TARGET.path && typeof item.fixture.content === 'string', 'INVALID_FIXTURE')
   const original = ["rules_version = '2';", 'service cloud.firestore {', '  match /databases/{database}/documents {',
     '    // 仅供合成验收。', '    match /sampleA/{id} {', '      // 公开读取测试。',
-    '      allow read: if true;', '    }', '    match /sampleB/{id} {', '      // 公开读取测试。',
-    `      allow read: if ${caseId === 'reduced' ? 'false' : 'true'};`, '    }', '  }', '}', ''].join('\n')
+    `      allow read: if ${caseId === 'reduced' ? 'false' : 'true'};`, '    }', '    match /sampleB/{id} {',
+    '      // 公开读取测试。', '      allow read: if true;', '    }', '  }', '}', ''].join('\n')
   ensure(item.fixture.content === (['initial', 'repeat'].includes(caseId) ? '' : '\n\n\n') + original,
     'UNEXPECTED_FIXTURE_CONTENT')
   const log = structuredClone(item.sarif)
@@ -208,8 +209,9 @@ export async function validateCloud(preview, env, dependencies = {}) {
     ensure(history[0].analysis_key === analysis.analysis_key && history[0].environment === analysis.environment,
       'ANALYSIS_CONFIGURATION_CHANGED')
   }
-  ensure(rows.every((row, index) => row.number === baseline[index].number), 'ALERT_IDENTITY_CHANGED')
-  const fixed = context.caseId === 'reduced' ? [baseline[1].number] : []
+  const kept = prepared.expected.kept
+  ensure(rows.every((row, index) => row.number === baseline[kept[index]].number), 'ALERT_IDENTITY_CHANGED')
+  const fixed = baseline.filter((_, index) => !kept.includes(index)).map(row => row.number)
   let instancesVerified = false
   for (let attempt = 0; attempt < attempts; attempt++) {
     let valid = true

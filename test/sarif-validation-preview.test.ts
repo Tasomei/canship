@@ -28,12 +28,15 @@ test('preview produces repeatable synthetic reports with matching fixture locati
       const physical = results[index].locations[0].physicalLocation
       assert.equal(physical.artifactLocation.uri, item.fixture.path)
       assert.equal(item.fixture.content.split('\n')[physical.region.startLine - 1].trim(), 'allow read: if true;')
-      assert.equal(results[index].partialFingerprints.canshipFindingV3, initial[index].partialFingerprints.canshipFindingV3)
+      // reduced 只保留第二项，须与初始第二项指纹一致。
+      const source = initial[item.id === 'reduced' ? index + 1 : index]
+      assert.equal(results[index].partialFingerprints.canshipFindingV3, source.partialFingerprints.canshipFindingV3)
     }
   }
   assert.deepEqual(preview.cases[0].sarif, preview.cases[1].sarif)
   assert.notEqual(preview.cases[0].sarif.runs[0].tool.driver.version, preview.cases[3].sarif.runs[0].tool.driver.version)
-  assert.equal(preview.cases[4].fixture.content.split('\n')[13].trim(), 'allow read: if false;')
+  assert.equal(preview.cases[4].fixture.content.split('\n')[9].trim(), 'allow read: if false;')
+  assert.equal(preview.cases[4].sarif.runs[0].results[0].locations[0].physicalLocation.region.startLine, 14)
   assert.doesNotMatch(first.stdout, /[A-Z]:[\\/]Users[\\/]|LAPTOP-|@users\.noreply/)
 })
 

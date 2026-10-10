@@ -152,7 +152,7 @@ console.log(summarize(result))
 
 JSON 使用 [schemaVersion 1](../schemas/scan-report-v1.schema.json)。须独立于退出码检查 `partial`、`errors`、`skipped`、`filesScanned`。新报告提供稳定的 `errors[].code`，旧报告可能缺少该字段。CLI 失败通过标准错误输出 `[CODE]`，不破坏 JSON 标准输出。SARIF 包含证据位置和执行诊断。
 
-Canship v3 指纹用于自身基线及报告比较中的结果识别。[GitHub code scanning](https://docs.github.com/en/code-security/reference/code-scanning/sarif-files/sarif-support#result-object) 在 `partialFingerprints` 中仅使用 `primaryLocationLineHash`，由固定提交的 `upload-sarif` Action 根据检出的源码及有效行号补充；直接通过 REST 上传时，不能依靠 Canship 自定义 v3 指纹保证去重。
+Canship v3 指纹用于自身基线及报告比较中的结果识别。[GitHub code scanning](https://docs.github.com/en/code-security/reference/code-scanning/sarif-files/sarif-support#result-object) 在 `partialFingerprints` 中仅使用 `primaryLocationLineHash`，由固定提交的 `upload-sarif` Action 根据检出的源码及有效行号补充；直接通过 REST 上传时，不能依靠 Canship 自定义 v3 指纹保证去重。该哈希覆盖告警所在行及其后紧邻的代码，因此即使 Canship 指纹不变，编辑附近的行也可能使 GitHub 关闭原告警并新开一条。
 
 构建身份区分开发版、候选版和正式版；只有工作区干净且匹配版本标签时才标为发行构建，该标签不等同于发布者认证。JSON 可包含 `build` 元数据，调用方须兼容缺失元数据和未知诊断代码。`--version` 保持包版本格式。
 

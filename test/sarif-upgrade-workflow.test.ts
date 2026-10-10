@@ -12,7 +12,7 @@ test('cloud validation is branch-scoped and cannot upload ordinary scan output',
   assert.match(workflow, /npm ci --ignore-scripts/)
   assert.doesNotMatch(workflow, /assert\.equal\(readFileSync/)
   assert.match(workflow, /const prepared = prepareUpload\(preview, id\)/)
-  assert.match(workflow, /category: canship-upgrade-validation-20261009/)
+  assert.match(workflow, /category: canship-upgrade-validation-20261010/)
   // 作业超时须覆盖上传等待及两段各 10 分钟的轮询。
   assert.ok(Number(/timeout-minutes: (\d+)/.exec(workflow)?.[1]) >= 25)
   assert.match(workflow, /github\/codeql-action\/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd/)
