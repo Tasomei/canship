@@ -1,6 +1,6 @@
 {
   "name": "canship",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Pre-deployment security checks for JS/TS web apps: offline static scanning for credentials, access rules and unsafe request input, with opt-in deployment probes.",
   "keywords": [
     "security",

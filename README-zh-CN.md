@@ -6,20 +6,20 @@
 
 [English](./README.md) · [使用参考](./docs/reference-zh-CN.md) · [发布说明](https://github.com/Tasomei/canship/releases) · [npm](https://www.npmjs.com/package/canship)
 
-> 本文对应 npm `latest` 渠道的 `0.8.0`。其他版本见[发布说明](https://github.com/Tasomei/canship/releases)。
+> 本文对应 npm `latest` 渠道的 `0.8.1`。其他版本见[发布说明](https://github.com/Tasomei/canship/releases)。
 
 ## 快速开始
 
 要求 Node.js 18 及以上，无运行时依赖。
 
 ```powershell
-npx canship@0.8.0
+npx canship@0.8.1
 ```
 
 扫描指定目录：
 
 ```powershell
-npx canship@0.8.0 "./my-app"
+npx canship@0.8.1 "./my-app"
 ```
 
 合成项目的输出示例：
@@ -39,7 +39,7 @@ npx canship@0.8.0 "./my-app"
 路由分析覆盖 Next.js、SvelteKit、Nuxt、Remix / React Router、Astro、Express、Hono、Fastify 的指定入口，详见[入口及限制](./docs/reference-zh-CN.md#服务端入口)。
 
 ```powershell
-npx canship@0.8.0 --list-rules
+npx canship@0.8.1 --list-rules
 ```
 
 ## 审阅结果
@@ -47,11 +47,11 @@ npx canship@0.8.0 --list-rules
 每条结果标为 `certain`（静态证据充分）或 `likely`（需人工审阅），默认只显示 `certain`。两者都不代表凭据有效或问题可被利用。
 
 ```powershell
-npx canship@0.8.0 --all --verbose
+npx canship@0.8.1 --all --verbose
 ```
 
 ```powershell
-npx canship@0.8.0 --all --report
+npx canship@0.8.1 --all --report
 ```
 
 ![HTML 报告](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
@@ -84,7 +84,7 @@ jobs:
           persist-credentials: false
       - uses: Tasomei/canship@8ae4d5f4508fbd68fc2cf440e138c1217064a0e0
         with:
-          version: '0.8.0'
+          version: '0.8.1'
           honor-ignore-markers: false
 ```
 
