@@ -37,9 +37,10 @@ const files = {
   'lib/supabase-admin.ts': ["import { createClient } from '@supabase/supabase-js'", '',
     'export const supabaseAdmin = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)', ''].join('\n'),
   'lib/prisma.ts': ["import { PrismaClient } from '@prisma/client'", '', 'export const prisma = new PrismaClient()', ''].join('\n'),
-  'app/api/orders/[id]/route.ts': ["import { supabaseAdmin } from '@/lib/supabase-admin'", '',
-    'export async function GET(_request: Request, { params }: { params: { id: string } }) {',
-    "  const { data } = await supabaseAdmin.from('orders').select('*').eq('id', params.id)",
+  // 路由名保持简短，使人工步骤在默认 96 列内不折行。
+  'app/api/users/route.ts': ["import { supabaseAdmin } from '@/lib/supabase-admin'", '',
+    'export async function GET() {',
+    "  const { data } = await supabaseAdmin.from('profiles').select('*')",
     '  return Response.json(data)', '}', ''].join('\n'),
   'app/api/products/route.ts': ["import { NextRequest } from 'next/server'", "import { prisma } from '@/lib/prisma'", '',
     'export async function GET(request: NextRequest) {',
@@ -87,12 +88,12 @@ if (report.includes(project) || terminal.includes(project) || /canship-shots-/.t
 }
 writeFileSync(reportPath, report)
 
-// 终端截图：解析颜色码，套用与旧截图一致的窗口样式。
+// 终端截图：解析颜色码，渲染为窗口样式；页面背景透明，截图尺寸取窗口实际大小。
 const escapeHtml = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 // 字重与颜色分开跟踪：22 只结束粗体/暗色，39 只结束颜色，其余属性保持。
 const weights = { 1: 'b', 2: 'd' }, colors = { 31: 'r', 32: 'g', 33: 'y', 36: 'c', 90: 'd' }
 let weight = '', color = ''
-const body = escapeHtml(`${display} $ npx canship\n${terminal}`).replace(/\u001b\[(\d+)m/g, (_, code) => {
+const body = escapeHtml(`$ npx canship\n${terminal.replace(/\n+$/, '')}`).replace(/\u001b\[(\d+)m/g, (_, code) => {
   const n = Number(code)
   const wasOpen = weight || color
   if (weights[n]) weight = weights[n]
@@ -104,27 +105,29 @@ const body = escapeHtml(`${display} $ npx canship\n${terminal}`).replace(/\u001b
   const classes = [weight, color].filter(Boolean).join(' ')
   return (wasOpen ? '</span>' : '') + (classes ? `<span class="${classes}">` : '')
 })
-const lineCount = terminal.split('\n').length + 1
 const terminalHtml = `<!doctype html><html lang="en"><meta charset="utf-8"><style>
-body{margin:0;background:#000;padding:24px}
+html,body{margin:0;background:transparent}
 .w{background:#1c1c26;border-radius:10px;overflow:hidden;width:max-content}
 .t{height:30px;background:#151520;display:flex;gap:8px;align-items:center;padding:0 14px}
 .t i{width:12px;height:12px;border-radius:50%;background:#3a3a46;display:block}
-pre{margin:0;padding:18px 22px 22px;font:15px/1.6 "Cascadia Mono",Consolas,monospace;color:#d6d6e0}
+pre{margin:0;padding:16px 22px 20px;font:15px/1.55 "Cascadia Mono",Consolas,monospace;color:#d6d6e0}
 .b{font-weight:700}.d{color:#8a8a99}.r{color:#f0707f}.y{color:#e8b85c}.g{color:#7fcf8a}.c{color:#7fc6d6}
-</style><div class="w"><div class="t"><i></i><i></i><i></i></div><pre>${body}</pre></div></html>`
+</style><div class="w"><div class="t"><i></i><i></i><i></i></div><pre>${body}</pre></div>
+<script>const r=document.querySelector('.w').getBoundingClientRect();document.body.dataset.size=Math.ceil(r.width)+'x'+Math.ceil(r.height)</script></html>`
 const terminalPath = join(work, 'terminal.html')
 writeFileSync(terminalPath, terminalHtml)
 
 const shots = args[0] === '--write' ? join(repo, 'docs', 'images') : work
-function shoot(page, output, width, height, scheme) {
-  execFileSync(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--hide-scrollbars',
-    `--user-data-dir=${join(work, 'profile')}`, `--window-size=${width},${height}`, '--force-device-scale-factor=1.5',
-    `--blink-settings=preferredColorScheme=${scheme === 'light' ? 1 : 0}`,
-    `--screenshot=${output}`, `file:///${page.replace(/\\/g, '/')}`], { stdio: 'ignore' })
-}
-shoot(terminalPath, join(shots, 'terminal.png'), 1000, Math.ceil(lineCount * 24 + 110), 'dark')
-shoot(reportPath, join(shots, 'report.png'), 1467, 2000, 'light')
+const browser = (page, extra, scheme = 'light') => execFileSync(chrome, ['--headless=new', '--disable-gpu', '--no-first-run',
+  '--hide-scrollbars', `--user-data-dir=${join(work, 'profile')}`, `--blink-settings=preferredColorScheme=${scheme === 'light' ? 1 : 0}`,
+  ...extra, `file:///${page.replace(/\\/g, '/')}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+// 先在足够大的视口中量出终端窗口尺寸，再按该尺寸截图，避免窗口外出现留白或底色。
+const measured = /data-size="(\d+)x(\d+)"/.exec(browser(terminalPath, ['--window-size=1400,4000', '--dump-dom'], 'dark'))
+if (!measured) { process.stderr.write('Could not measure the terminal window.\n'); process.exit(3) }
+browser(terminalPath, [`--window-size=${measured[1]},${measured[2]}`, '--force-device-scale-factor=2',
+  '--default-background-color=00000000', `--screenshot=${join(shots, 'terminal.png')}`], 'dark')
+// 报告只截首屏：结论、统计、分类、人工步骤及前几条结果。
+browser(reportPath, ['--window-size=1100,1090', '--force-device-scale-factor=2', `--screenshot=${join(shots, 'report.png')}`])
 rmSync(join(work, 'profile'), { recursive: true, force: true })
 process.stdout.write(`Screenshots written to ${shots}\nScan exit status: ${scan.status}\n`)
 if (args[0] === '--write') rmSync(work, { recursive: true, force: true })
