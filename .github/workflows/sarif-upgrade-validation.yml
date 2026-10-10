@@ -17,7 +17,8 @@ jobs:
   validate:
     if: github.repository == 'Tasomei/canship' && github.ref == 'refs/heads/codex/sarif-upgrade-validation'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 上传等待约 3 分钟，处理与告警实例轮询各最多 10 分钟。
+    timeout-minutes: 25
     permissions:
       contents: read
       security-events: write

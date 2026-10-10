@@ -140,7 +140,8 @@ export async function validateCloud(preview, env, dependencies = {}) {
   const prepared = prepareUpload(preview, context.caseId)
   const fetcher = dependencies.fetch ?? globalThis.fetch
   const sleep = dependencies.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)))
-  const attempts = dependencies.attempts ?? 36
+  // 实测分支上传可能排队超过 5 分钟，每段轮询最多 10 分钟。
+  const attempts = dependencies.attempts ?? 120
   ensure(Number.isInteger(attempts) && attempts > 0 && attempts <= 120, 'INVALID_POLL_LIMIT')
   const verifyFixture = dependencies.verifyFixture ?? ((sha, fixture) => {
     const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
