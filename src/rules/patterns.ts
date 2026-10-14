@@ -224,6 +224,93 @@ export const SECRET_PATTERNS: SecretPattern[] = [
     impact: 'Anyone with this key can send email from your domain — which means they can send phishing email that passes your SPF/DKIM checks.',
     rotateAt: 'https://app.sendgrid.com/settings/api_keys',
   },
+  // 以下格式参照 gitleaks 默认规则，只收录前缀可自证提供方、无需关键字上下文的格式。
+  {
+    id: 'gitlab-token',
+    name: 'GitLab token',
+    pattern: /\b(?:glpat|gldt)-[0-9A-Za-z_-]{20,300}(?:\.[0-9a-z]{9})?(?![0-9A-Za-z_-])|\bglptt-[0-9a-f]{40}\b/g,
+    impact: 'Depending on its scope, this token can read and push to your GitLab repositories, including private ones, or trigger pipelines.',
+    rotateAt: 'your GitLab settings (personal, project or deploy tokens)',
+  },
+  {
+    id: 'shopify-token',
+    name: 'Shopify app token or secret',
+    pattern: /\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b/g,
+    impact: 'Depending on the app\'s access scopes, this can read and change your store\'s orders, customers and products.',
+    rotateAt: 'the Shopify admin or Partner Dashboard where the app was created',
+  },
+  {
+    id: 'linear-api-key',
+    name: 'Linear API key',
+    pattern: /\blin_api_[A-Za-z0-9]{40}\b/g,
+    impact: 'Anyone with this key can read and change your Linear issues, projects and comments as you.',
+    rotateAt: 'your Linear account settings (API keys)',
+  },
+  {
+    id: 'notion-token',
+    name: 'Notion integration token',
+    pattern: /\bntn_[0-9]{11}[A-Za-z0-9]{35}\b/g,
+    impact: 'Anyone with this token can read and edit every Notion page and database shared with the integration.',
+    rotateAt: 'the Notion integration settings',
+  },
+  {
+    id: 'digitalocean-token',
+    name: 'DigitalOcean personal access token',
+    pattern: /\bdop_v1_[a-f0-9]{64}\b/g,
+    impact: 'Depending on its scope, this token can create, read and destroy Droplets, databases and other billed resources in your DigitalOcean account.',
+    rotateAt: 'https://cloud.digitalocean.com/account/api/tokens',
+  },
+  {
+    id: 'sentry-user-token',
+    name: 'Sentry user auth token',
+    pattern: /\bsntryu_[a-f0-9]{64}\b/g,
+    impact: 'Depending on its scopes, this token can read your error events, which often contain user data, and change projects in your Sentry organization.',
+    rotateAt: 'your Sentry user settings (personal tokens)',
+  },
+  {
+    id: 'planetscale-credential',
+    name: 'PlanetScale token or password',
+    pattern: /\bpscale_(?:tkn|pw)_[A-Za-z0-9_=.-]{32,64}(?![A-Za-z0-9_=.-])/g,
+    impact: 'A database password gives direct access to your data; a service token can manage databases and branches in your PlanetScale organization.',
+    rotateAt: 'your PlanetScale organization (database passwords or service tokens)',
+  },
+  {
+    id: 'doppler-token',
+    name: 'Doppler personal token',
+    pattern: /\bdp\.pt\.[A-Za-z0-9]{43}\b/g,
+    impact: 'Anyone with this token can read every secret your Doppler account can access.',
+    rotateAt: 'the Doppler dashboard (personal tokens)',
+  },
+  {
+    id: 'flyio-token',
+    name: 'Fly.io access token',
+    pattern: /\bfo1_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g,
+    impact: 'Anyone with this token can deploy, read secrets of, and destroy apps in your Fly.io organization.',
+    rotateAt: 'the Fly.io dashboard or `fly tokens revoke`',
+  },
+  {
+    id: 'postman-api-key',
+    name: 'Postman API key',
+    pattern: /\bPMAK-[a-fA-F0-9]{24}-[a-fA-F0-9]{34}\b/g,
+    impact: 'Anyone with this key can read your Postman workspaces, including collections and environments that often hold other credentials.',
+    rotateAt: 'your Postman account settings (API keys)',
+  },
+  {
+    id: 'heroku-api-key',
+    name: 'Heroku API key',
+    pattern: /\bHRKU-AA[0-9A-Za-z_-]{58}(?![0-9A-Za-z_-])/g,
+    impact: 'Anyone with this key can deploy to, read config vars of, and delete your Heroku apps.',
+    rotateAt: 'your Heroku account settings (API key or authorizations)',
+  },
+  {
+    // Stripe 官方文档确认此前缀；其他 webhook 服务也可能使用，故采用中性名称。
+    id: 'webhook-signing-secret',
+    name: 'Webhook signing secret',
+    pattern: /\bwhsec_[A-Za-z0-9+/]{24,}={0,2}/g,
+    impact: 'Anyone with this secret can forge webhook events that your endpoint accepts as genuine, for example marking unpaid orders as paid.',
+    rotateLabel: 'signing secret',
+    rotateAt: 'the webhook endpoint settings of the service that issued it (Stripe: Dashboard -> Webhooks)',
+  },
   {
     id: 'supabase-secret-key',
     name: 'Supabase secret key',
@@ -315,7 +402,7 @@ export function isPlaceholder(secret: string): boolean {
   if (PLACEHOLDER_SHAPE.test(secret)) return true
 
   // 移除提供方前缀后，低字符多样性值视为模板。
-  const body = lower.replace(/^(sk-ant-|sk-proj-|sk-or-v1-|sk-|rk_live_|sk_live_|akia|aiza|sg\.|gh[pousr]_|gsk_|hf_|r8_|xai-|pplx-)/, '')
+  const body = lower.replace(/^(sk-ant-|sk-proj-|sk-or-v1-|sk-|rk_live_|sk_live_|akia|aiza|sg\.|gh[pousr]_|gsk_|hf_|r8_|xai-|pplx-|glpat-|gldt-|glptt-|shp(?:at|ca|pa|ss)_|lin_api_|ntn_|dop_v1_|sntryu_|pscale_(?:tkn|pw)_|dp\.pt\.|fo1_|pmak-|hrku-aa|whsec_)/, '')
   if (body.length >= 8) {
     const distinct = new Set(body.replace(/[^a-z0-9]/g, '')).size
     if (distinct <= 3) return true
