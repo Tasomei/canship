@@ -71,8 +71,10 @@ export const RULE_CATALOG: readonly RuleDescription[] = [
     'Server routes that branch on Stripe event types without an enforced constructEvent or awaited event-retrieval result for the handled value. Request-body handling is certain; custom signature checks remain likely.',
     'Only Stripe is recognized. Unused calls do not verify events; custom HMAC and shared-helper verification require review.'),
   ...SECRET_PATTERNS.map(pattern => ({
-    ...rule(`secrets/hardcoded/${pattern.id}`, pattern.name, 'P0', 'certain',
-      'Recognized credential formats in scanned text files.', 'Validity, revocation, and use are not checked; example contexts lower confidence.'),
+    ...rule(`secrets/hardcoded/${pattern.id}`, pattern.catalogName ?? pattern.name, 'P0', 'certain',
+      'Recognized credential formats in scanned text files.',
+      'Validity, revocation, and use are not checked; example contexts lower confidence.' +
+        (pattern.describe ? ' The format is shared by several providers; the report names one only when nearby code identifies it.' : '')),
     reportsFindings: !pattern.publicByDesign,
     ...(pattern.publicByDesign ? { limitation: 'Treated as a public identifier; this format alone does not produce a finding.' } : {}),
   })),

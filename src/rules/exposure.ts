@@ -5,7 +5,7 @@ import { redactLine, redactSecret } from '../redact.js'
 import { basename } from 'node:path'
 import { isEnvFile } from '../walker.js'
 import { MAX_FINDINGS_PER_FILE } from './limits.js'
-import { JWT_SOURCE, findKnownSecret, isPlaceholder } from './patterns.js'
+import { JWT_SOURCE, findKnownSecret, isPlaceholder, labelOf } from './patterns.js'
 import { parseEnvLine } from './envfile.js'
 import { commentsMaskedOf } from '../mask.js'
 import {
@@ -122,25 +122,27 @@ function checkEnvFile(file: ScanFile): FindingBuffer {
     if (known) {
       // 按设计公开的标识符不作为密钥泄露报告。
       if (known.publicByDesign) continue
+      // 变量名优先于文件中的其他配置判断提供方。
+      const label = labelOf(known, entry.value.trim(), { line: entry.key, text: file.content, lineIsName: true })
       findings.push({
         ruleId: 'exposure/secret-in-public-env',
         severity: 'P0',
         confidence: 'certain',
-        title: `Your ${known.name} is exposed to the browser`,
+        title: `Your ${label.name} is exposed to the browser`,
         file: file.path,
         line: entry.line,
         excerpt: `${entry.key}=${redactSecret(entry.value)}`,
         why: [
           `Variables prefixed with ${prefix} are compiled into the JavaScript your website sends to every ` +
             `visitor. This one is not a public identifier — it is a real credential.`,
-          known.impact,
+          label.impact,
         ],
         fix: [
           `Rename this variable to drop the ${prefix} prefix, so it stays on the server.`,
           `Move any code that uses it into an API route or server action.`,
         ],
         humanOnly: [
-          `Rotate this ${known.rotateLabel ?? known.name}${known.rotateAt ? ` at ${known.rotateAt}` : ''} — the current one must be considered public.`,
+          `Rotate this ${label.rotateLabel ?? label.name}${label.rotateAt ? ` at ${label.rotateAt}` : ''} — the current one must be considered public.`,
         ],
       })
       continue

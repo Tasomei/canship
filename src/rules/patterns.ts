@@ -19,7 +19,22 @@ export interface SecretPattern {
   ignoreIf?: (match: RegExpExecArray) => boolean
   /** 提供方按设计允许公开的标识符。 */
   publicByDesign?: boolean
+  /** 规则目录名称；前缀由多家共用时与报告名称不同。 */
+  catalogName?: string
+  /** 前缀由多家共用时按周边文本确定提供方；返回 null 时沿用默认描述。 */
+  describe?: (secret: string, context: SecretContext) => SecretLabel | null
 }
+
+/** 判断提供方的周边文本；行内证据优先于整个文件。 */
+export interface SecretContext {
+  line: string
+  text: string
+  /** line 仅为变量名时，其中的提供方名称直接确定归属。 */
+  lineIsName?: boolean
+}
+
+/** 报告中的凭据名称及处置说明。 */
+export type SecretLabel = Pick<SecretPattern, 'name' | 'impact' | 'rotateAt' | 'rotateLabel'>
 
 /** 排除示例域名及本地开发地址。 */
 const IRRELEVANT_HOSTS =
@@ -34,14 +49,66 @@ export const SB_SECRET_SOURCE = String.raw`sb_secret_[A-Za-z0-9_-]{8,}`
 /** PEM 私钥标头；检测与整块脱敏共用。 */
 export const PRIVATE_KEY_BEGIN_SOURCE = String.raw`-----BEGIN (?:(?:RSA|EC|DSA|OPENSSH|ENCRYPTED|PGP) )?PRIVATE KEY(?: BLOCK)?-----`
 
+/** 依次检查行内和整个文件，只有一方证据时才确定提供方。 */
+function providerIn(context: SecretContext, choose: (text: string) => SecretLabel | 'default' | null): SecretLabel | 'default' | null {
+  return choose(context.line) ?? choose(context.text)
+}
+
+/** 指向非 OpenAI 地址的 baseURL / base_url 配置。 */
+const FOREIGN_BASE_URL = /\bbase_?url\b["'`]?\s*[:=]\s*["'`]https?:\/\/(?!api\.openai\.com\b)[^\s"'`]+/i
+
+const DEEPSEEK_KEY: SecretLabel = {
+  name: 'DeepSeek API key',
+  impact: 'Anyone with this key can call DeepSeek models billed to your account.',
+  rotateAt: 'the DeepSeek platform (https://platform.deepseek.com)',
+}
+
+const COMPATIBLE_KEY: SecretLabel = {
+  name: 'API key for an OpenAI-compatible service',
+  impact: 'This sk- key is configured for a non-OpenAI endpoint. Anyone with it can call that service and spend the credit of your account there.',
+  rotateLabel: 'key',
+  rotateAt: 'the console of the service named in the base URL',
+}
+
+const SK_DASH_KEY: SecretLabel = {
+  name: 'OpenAI-style API key',
+  impact: 'This key uses the sk- format shared by OpenAI and several OpenAI-compatible providers. Anyone with it can spend the credit of the account that issued it.',
+  rotateLabel: 'key',
+  rotateAt: 'the console of the provider that issued it (OpenAI: https://platform.openai.com/api-keys)',
+}
+
+const CLERK_LIVE_KEY: SecretLabel = {
+  name: 'Clerk secret key',
+  impact: 'This is a production Clerk secret key. It grants full access to the Clerk Backend API: anyone holding it can read, create, modify and delete your users and their sessions.',
+  rotateAt: 'the Clerk Dashboard (https://dashboard.clerk.com), under API keys',
+}
+
+const SK_LIVE_KEY: SecretLabel = {
+  name: 'sk_live_ secret key',
+  impact: 'Stripe and Clerk both issue production secret keys in this format. A Stripe key can read customer records and move real money; a Clerk key gives full access to your users and sessions.',
+  rotateLabel: 'key',
+  rotateAt: 'the dashboard of the service that issued it (Stripe: https://dashboard.stripe.com/apikeys; Clerk: https://dashboard.clerk.com)',
+}
+
 export const SECRET_PATTERNS: SecretPattern[] = [
   {
     id: 'openai',
     name: 'OpenAI API key',
+    catalogName: 'OpenAI or OpenAI-compatible API key',
     // OpenRouter 密钥同样以 sk- 开头，由下方的专用格式识别。
     pattern: /\bsk-(?!ant-|or-v1-)(?:proj-)?[A-Za-z0-9_-]{20,}\b/g,
     impact: 'Anyone with this key can spend your OpenAI credit. Leaked keys are typically abused within minutes of going public.',
     rotateAt: 'https://platform.openai.com/api-keys',
+    // DeepSeek 等兼容服务同样使用 sk- 前缀；只有 OpenAI 专用前缀或标记可直接确定提供方。
+    describe: (secret, context) => {
+      if (/^sk-(?:proj|svcacct|admin)-/.test(secret) || secret.includes('T3BlbkFJ')) return null
+      // 兼容服务常用 OpenAI SDK 调用，因此代码中的 openai 字样只在没有其他服务证据时生效；变量名除外。
+      const other = (text: string) => /deepseek/i.test(text) ? DEEPSEEK_KEY : FOREIGN_BASE_URL.test(text) ? COMPATIBLE_KEY : null
+      const inLine = other(context.line)
+      if (inLine !== null) return inLine
+      if (context.lineIsName && /openai/i.test(context.line)) return null
+      return other(context.text) ?? (/openai/i.test(context.line) || /openai/i.test(context.text) ? null : SK_DASH_KEY)
+    },
   },
   {
     id: 'anthropic',
@@ -107,6 +174,16 @@ export const SECRET_PATTERNS: SecretPattern[] = [
     pattern: /\b(?:sk|rk)_live_[A-Za-z0-9]{20,}\b/g,
     impact: 'This is a LIVE key. Anyone holding it can read your customer records and move real money.',
     rotateAt: 'https://dashboard.stripe.com/apikeys',
+    catalogName: 'Stripe or Clerk live secret key',
+    // Clerk 生产私密密钥同样以 sk_live_ 开头；rk_live_ 仅为 Stripe 受限密钥。
+    describe: (secret, context) => {
+      if (secret.startsWith('rk_')) return null
+      const found = providerIn(context, text => {
+        const clerk = /clerk/i.test(text)
+        return clerk === /stripe/i.test(text) ? null : clerk ? CLERK_LIVE_KEY : 'default'
+      })
+      return found === 'default' ? null : found ?? SK_LIVE_KEY
+    },
   },
   {
     id: 'github-token',
@@ -177,6 +254,11 @@ export const SECRET_PATTERNS: SecretPattern[] = [
     impact: 'This contains your database username AND password. Anyone with it can read, modify, or delete your entire database.',
   },
 ]
+
+/** 获取报告使用的凭据名称及处置说明。 */
+export function labelOf(pat: SecretPattern, secret: string, context: SecretContext): SecretLabel {
+  return pat.describe?.(secret, context) ?? pat
+}
 
 /** 获取应参与占位符判断的秘密部分。 */
 export function secretPartOf(match: RegExpExecArray, pat: SecretPattern): string {

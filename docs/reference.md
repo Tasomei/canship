@@ -171,6 +171,7 @@ For support, start with `--doctor --json` and review the output locally. It omit
 - Static checks may miss issues or flag intentional configurations. Business authorisation, rate limiting, dependency vulnerabilities, and deployed settings are not verified.
 - Redaction covers recognised formats only. Unknown secrets may remain in excerpts; `--no-excerpts` omits excerpts. Paths, names, and baseline descriptions remain visible.
 - Google/Firebase/Maps `AIza…` keys are treated as public identifiers, not leak evidence alone. Supabase checks use local migrations and supported bucket configuration.
+- Prefixes shared by several providers (`sk_live_` for Stripe and Clerk, `sk-` for OpenAI and compatible services) are attributed from the variable name or nearby code. Without such evidence, findings name the shared format and give general rotation guidance; rule IDs are unchanged.
 - Evaluation downloads, optional SARIF uploads, and explicitly confirmed deployment probes may use the network. Static scanning stays offline.
 - Symbolic links are not followed; nested repositories and submodules need separate scans. In-scope skipped paths and analysis limits mark coverage incomplete; auth helper resolution limits are noted on the affected finding instead, because they cannot hide findings. Dependency and build directories excluded by default do not count as coverage gaps.
 

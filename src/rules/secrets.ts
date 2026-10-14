@@ -4,7 +4,7 @@ import type { Finding, Rule, ScanContext, ScanFile } from '../types.js'
 import { redactLine } from '../redact.js'
 import { basename } from 'node:path'
 import { isEnvFile } from '../walker.js'
-import { SECRET_PATTERNS, isPlaceholder, isCommentedOut, secretPartOf } from './patterns.js'
+import { SECRET_PATTERNS, isPlaceholder, isCommentedOut, labelOf, secretPartOf } from './patterns.js'
 import { isClientCode } from './framework.js'
 import { lineNumberAt, lineStartsOf } from './offsets.js'
 import { MAX_FINDINGS_PER_FILE } from './limits.js'
@@ -51,8 +51,9 @@ export const secretsRule: Rule = {
 
         // 客户端与服务端代码的暴露影响不同。
         const clientSide = isClientCode(file)
+        const label = labelOf(pat, secret, { line: rawLine, text: file.content })
 
-        const parts: string[] = [pat.impact]
+        const parts: string[] = [label.impact]
         if (clientSide) {
           parts.push(
             `This file is client-side code — it is sent to the browser in full. ` +
@@ -81,7 +82,7 @@ export const secretsRule: Rule = {
 
         // 凭据轮换归入需人工执行的步骤。
         const humanOnly = [
-          `Rotate this ${pat.rotateLabel ?? pat.name}${pat.rotateAt ? ` at ${pat.rotateAt}` : ''}. Treat the old one as compromised — ` +
+          `Rotate this ${label.rotateLabel ?? label.name}${label.rotateAt ? ` at ${label.rotateAt}` : ''}. Treat the old one as compromised — ` +
             (clientSide
               ? `if this page has ever been deployed, assume the key is already in someone else's hands.`
               : `if this file was ever pushed, assume it has already been scraped.`),
@@ -95,10 +96,10 @@ export const secretsRule: Rule = {
           severity: 'P0',
           confidence: scaffolding ? 'likely' : 'certain',
           title: scaffolding
-            ? `${pat.name} is hardcoded in a test or example file`
+            ? `${label.name} is hardcoded in a test or example file`
             : clientSide
-              ? `${pat.name} is hardcoded in code that runs in the browser`
-              : `${pat.name} is hardcoded in your source code`,
+              ? `${label.name} is hardcoded in code that runs in the browser`
+              : `${label.name} is hardcoded in your source code`,
           file: file.path,
           line,
           excerpt: redactLine(rawLine, secret),
