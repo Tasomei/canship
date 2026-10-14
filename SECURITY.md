@@ -22,7 +22,7 @@ assistant you paste into*. In scope:
 
 - **A complete credential reaching the output** — terminal, `--json`, `--report` or `--fix-prompt`.
   Redaction is pattern-based and cannot mask a format it does not recognise, which the README states
-  under Limits; a value in a format it *does* recognise arriving unmasked is this category.
+  under Limitations; a value in a format it *does* recognise arriving unmasked is this category.
 - **File content changing the shape of the output rather than appearing in it** — terminal escape
   sequences, bidirectional overrides, or anything that lets a scanned file forge report lines.
 - **canship running something from the repository it is scanning**, or reading outside the path it
