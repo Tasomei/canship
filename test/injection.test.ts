@@ -284,3 +284,76 @@ ${lines.slice(1).join('\n')}
     assert.equal(result.partial, true)
   })
 })
+
+describe('file paths built from request input', () => {
+  test('Next.js and Express reads, writes and deletes name the operation; a whole request path is certain, joined paths are likely', async () => {
+    const hits = await expectHits({
+      'app/api/files/route.ts': `import { readFile, writeFile } from 'fs/promises'
+import path from 'node:path'
+export async function GET(req) {
+  const file = req.nextUrl.searchParams.get('file')
+  return new Response(await readFile(file))
+}
+export async function POST(req) {
+  const { name, body } = await req.json()
+  await writeFile(path.join(process.cwd(), 'uploads', name), body)
+  return new Response(null, { status: 204 })
+}`,
+      'server.js': `const express = require('express')
+const fs = require('fs')
+const path = require('path')
+const app = express()
+app.get('/download', (req, res) => res.sendFile(req.query.path))
+app.get('/report/:name', (req, res) => res.download(path.join(__dirname, 'reports', req.params.name)))
+app.delete('/cache/:key', async (req, res) => { await fs.promises.unlink(\`./cache/\${req.params.key}\`); res.end() })
+app.listen(3000)
+`,
+    }, [['injection/path', 5, 'certain'], ['injection/path', 5, 'certain'], ['injection/path', 7, 'certain'],
+      ['injection/path', 9, 'likely'], ['injection/path', 6, 'likely']])
+    assert.deepEqual(hits.map(h => h.title), [
+      '/api/files reads a file at a path built from request input',
+      '/download reads a file at a path built from request input',
+      '/cache/:key deletes a file at a path built from request input',
+      '/api/files writes a file at a path built from request input',
+      '/report/:name reads a file at a path built from request input',
+    ])
+    assert.match(hits[0]!.why[0]!, /read on line 4/)
+    assert.equal(hits[0]!.severity, 'P1')
+  })
+
+  test('basename, a root option, fixed paths, numbers, lookup tables and unrelated readFile functions are not reported', async () => {
+    await expectHits({
+      'app/api/safe/route.ts': `import { readFile, writeFile } from 'node:fs/promises'
+import path from 'node:path'
+const FILES = { terms: 'terms.md', privacy: 'privacy.md' }
+export async function GET(req) {
+  const name = req.nextUrl.searchParams.get('name')
+  const safe = path.basename(name)
+  const a = await readFile(path.join(process.cwd(), 'docs', safe))
+  const b = await readFile(path.basename(name))
+  const c = await readFile(FILES[name] ?? 'terms.md')
+  const d = await readFile(\`./pages/\${Number(name)}.json\`)
+  await writeFile('/tmp/last-request.txt', name)
+  return Response.json([a, b, c, d])
+}`,
+      'app/api/other/route.ts': `async function readFile(key) { return db.get(key) }
+export async function GET(req) {
+  return Response.json(await readFile(req.nextUrl.searchParams.get('key')))
+}`,
+      'server.js': `const express = require('express')
+const app = express()
+app.get('/static/:name', (req, res) => res.sendFile(req.params.name, { root: __dirname + '/public' }))
+app.listen(3000)
+`,
+    }, [])
+  })
+
+  test('a content check before the call lowers a direct path to likely', async () => {
+    await expectHits({ 'app/api/files/route.ts': `import fs from 'node:fs'
+export async function GET(req) {
+  const file = req.nextUrl.searchParams.get('file') ?? ''
+  if (file.includes('..')) return new Response('bad', { status: 400 })
+  return new Response(fs.readFileSync(file))
+}` }, [['injection/path', 5, 'likely']])
+  })
+})

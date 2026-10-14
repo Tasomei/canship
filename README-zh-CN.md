@@ -34,7 +34,7 @@ npx canship@0.8.2 "./my-app"
 | API 访问 | `P0/P1` | 未识别到鉴权的数据库操作、服务端信任 Supabase `getSession()`、未验签的 Stripe webhook |
 | 数据库规则 | `P1/P2` | 未启用 Supabase RLS、过宽的策略、公开存储列表、开放的 Firebase 规则 |
 | CORS | `P1/P2` | 携带凭据时回显来源或使用通配符 |
-| 代码（Code） | `P1/P2` | 由请求输入拼接的 SQL 与 shell 命令；向调用方指定地址发起的服务端请求和重定向 |
+| 代码（Code） | `P1/P2` | 由请求输入拼接的 SQL、shell 命令与文件路径；向调用方指定地址发起的服务端请求和重定向 |
 
 路由分析覆盖 Next.js、SvelteKit、Nuxt、Remix / React Router、Astro、Express、Hono、Fastify 的指定入口，详见[入口及限制](./docs/reference-zh-CN.md#服务端入口)。
 

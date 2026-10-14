@@ -34,7 +34,7 @@ Example output for a synthetic project:
 | API access | `P0/P1` | Database operations without recognised authentication, server-side trust in Supabase `getSession()`, unverified Stripe webhooks |
 | Database rules | `P1/P2` | Missing Supabase RLS, permissive policies, public storage listing, open Firebase rules |
 | CORS | `P1/P2` | Reflected or wildcard origins combined with credentials |
-| Code | `P1/P2` | SQL and shell commands built from request input; server-side requests and redirects to caller-chosen URLs |
+| Code | `P1/P2` | SQL, shell commands and file paths built from request input; server-side requests and redirects to caller-chosen URLs |
 
 Route analysis covers documented entry points in Next.js, SvelteKit, Nuxt, Remix / React Router, Astro, Express, Hono and Fastify. See [entry points and limits](./docs/reference.md#server-entry-points).
 

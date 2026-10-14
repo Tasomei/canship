@@ -53,7 +53,7 @@ test('the catalog filters an exact rule without reading project configuration', 
 test('namespace, comma-separated and repeated catalog selectors are deduplicated', () => {
   const result = cli('--list-rules', '--only=injection,redirect', '--only=injection/sql', '--json')
   assert.equal(result.status, 0, result.stderr)
-  assert.deepEqual(JSON.parse(result.stdout).rules.map((rule: {id: string}) => rule.id), ['injection/command', 'injection/sql', 'redirect/open'])
+  assert.deepEqual(JSON.parse(result.stdout).rules.map((rule: {id: string}) => rule.id), ['injection/command', 'injection/path', 'injection/sql', 'redirect/open'])
 })
 
 test('catalog exclusions use the same namespace boundaries as scanning', () => {

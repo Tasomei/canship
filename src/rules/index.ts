@@ -35,6 +35,7 @@ export const RULE_IDS: readonly string[] = [
   'gitleak/env-in-history',
   'gitleak/env-tracked',
   'injection/command',
+  'injection/path',
   'injection/sql',
   'redirect/open',
   'ssrf/request-url',

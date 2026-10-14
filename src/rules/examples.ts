@@ -65,6 +65,12 @@ const examples: Readonly<Record<string, FixExample>> = {
     after: "execFile(TRUSTED_EXECUTABLE, ['--input', validatedValue], { shell: false });",
     limitation: 'Set TRUSTED_EXECUTABLE to a trusted absolute path. Validate argument meaning and filesystem access; never let the caller choose the executable.',
   },
+  'injection/path': {
+    context: 'A file name kept inside a fixed directory',
+    before: 'return readFile(path.join(UPLOAD_DIR, requestedName));',
+    after: 'const target = path.resolve(UPLOAD_DIR, path.basename(requestedName));\nif (!target.startsWith(path.resolve(UPLOAD_DIR) + path.sep)) return new Response(null, { status: 400 });\nreturn readFile(target);',
+    limitation: 'UPLOAD_DIR must be a fixed server directory. Also check that the caller may access that file; staying inside the directory is not authorisation.',
+  },
   'redirect/open': {
     context: 'Named destinations on a fixed application origin',
     before: 'return Response.redirect(requestedUrl);',

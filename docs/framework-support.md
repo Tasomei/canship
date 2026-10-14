@@ -8,7 +8,7 @@ This describes Canship's static recognition, not framework-version certification
 
 - Entry recognition, authentication evidence and request-input tracking are separate checks. A recognised entry does not mean every operation in it is understood. Unrecognised syntax can remain undiscovered even when no analysis limit is reported.
 - Authentication evidence must cover the relevant operation and reject unauthenticated requests. Request-supplied identity, middleware names, schema validation and OpenAPI security metadata alone are not proof. Indirect or unresolved evidence can retain a `likely` finding rather than suppress it.
-- Input tracking follows bounded assignments, destructuring, string construction and resolvable passthrough helpers. It feeds SQL/shell injection, outbound-request and redirect checks; it is not general data-flow or business-authorisation analysis.
+- Input tracking follows bounded assignments, destructuring, string construction and resolvable passthrough helpers. It feeds SQL/shell injection, file-path, outbound-request and redirect checks; it is not general data-flow or business-authorisation analysis.
 - Project-function database writes are followed two calls deep for Express, Hono and Fastify. File-convention routes do not use this delegated-write expansion. Auth-helper and input-helper resolution have separate bounds.
 - Credentials, public environment exposure, Firebase/Supabase configuration and CORS retain their own file/content conditions; the route list does not disable those checks in other projects.
 

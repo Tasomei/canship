@@ -1,5 +1,5 @@
 /**
- * 请求输入进入 SQL 文本或 shell 命令。只检查可被直接请求的路由与 Server Function，
+ * 请求输入进入 SQL 文本、shell 命令或文件路径。只检查可被直接请求的路由与 Server Function，
  * 只追踪同一函数内的赋值和拼接；参数化查询与带标签的模板不报告。
  */
 import type { Finding, ProjectRule, ScanContext, ScanFile } from '../types.js'
@@ -10,7 +10,7 @@ import { argumentExpressions } from './auth-values.js'
 import type { Route } from './apiauth.js'
 import { InputFlow, handlerFileOf, lowerBound, reportInputLimit, type Taint } from './request-input.js'
 
-type SinkKind = 'sql' | 'command'
+type SinkKind = 'sql' | 'command' | 'path'
 
 /** 整个参数即可构成完整查询或命令的接口，请求值直接作为参数也危险。 */
 const SQL_UNSAFE = /(?:\.\s*\$(?:queryRawUnsafe|executeRawUnsafe)|(?<![\w$.])Prisma\s*\.\s*raw|(?<![\w$.])sql\s*\.\s*(?:raw|unsafe))\s*\(/g
@@ -29,6 +29,43 @@ const SHELL_EXPORTS = new Set(['exec', 'execSync'])
 const SPAWN_EXPORTS = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSync'])
 
 interface Callees { shell: Set<string>; spawn: Set<string>; commands: Set<string>; namespaces: Set<string> }
+
+type PathOperation = 'read' | 'write' | 'delete'
+
+/** 以路径为首个实参的文件读写、删除接口，按操作分组。 */
+const FS_OPERATIONS: Record<string, PathOperation> = {
+  readFile: 'read', readFileSync: 'read', createReadStream: 'read',
+  writeFile: 'write', writeFileSync: 'write', appendFile: 'write', appendFileSync: 'write', createWriteStream: 'write',
+  unlink: 'delete', unlinkSync: 'delete', rm: 'delete', rmSync: 'delete',
+}
+const FS_MODULE = /^(?:node:)?fs(?:\/promises)?$|^fs-extra$/
+
+interface FsCallees { functions: Map<string, PathOperation>; namespaces: Set<string> }
+
+/** 本文件中来自 fs、fs/promises 或 fs-extra 的文件函数名及命名空间，含别名、require 和 promises 成员。 */
+function fsCallees(file: ScanFile): FsCallees {
+  const callees: FsCallees = { functions: new Map(), namespaces: new Set() }
+  for (const binding of bindingsOf(file).imports) {
+    if (binding.spec === undefined || !FS_MODULE.test(binding.spec)) continue
+    if (binding.imported === 'default' || binding.imported === 'promises') callees.namespaces.add(binding.local)
+    else if (FS_OPERATIONS[binding.imported]) callees.functions.set(binding.local, FS_OPERATIONS[binding.imported]!)
+  }
+  const source = commentsMaskedOf(file)
+  for (const m of source.matchAll(/\bimport\s*\*\s*as\s+([A-Za-z_$][\w$]*)\s+from\s*['"](?:node:)?fs(?:\/promises)?['"]/g)) {
+    callees.namespaces.add(m[1]!)
+  }
+  for (const m of source.matchAll(/\b(?:const|let|var)\s+(\{[^{}]{0,500}\}|[A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*['"](?:(?:node:)?fs(?:\/promises)?|fs-extra)['"]\s*\)/g)) {
+    const target = m[1]!
+    if (!target.startsWith('{')) { callees.namespaces.add(target); continue }
+    for (const part of target.slice(1, -1).split(',')) {
+      const names = /^\s*([A-Za-z_$][\w$]*)\s*(?::\s*([A-Za-z_$][\w$]*))?\s*$/.exec(part)
+      if (!names) continue
+      if (names[1] === 'promises') callees.namespaces.add(names[2] ?? names[1]!)
+      else if (FS_OPERATIONS[names[1]!]) callees.functions.set(names[2] ?? names[1]!, FS_OPERATIONS[names[1]!]!)
+    }
+  }
+  return callees
+}
 
 /** 本文件中来自 child_process 或 execa 的命令函数名，含别名、require、命名空间和 promisify。 */
 function commandCallees(file: ScanFile): Callees {
@@ -66,20 +103,34 @@ function commandCallees(file: ScanFile): Callees {
   return callees
 }
 
-interface Sink { kind: SinkKind; at: number; open: number; close: number; mode: 'unsafe' | 'fragment' | 'driver' | 'condition' | 'shell' | 'spawn' | 'execa' }
+interface Sink {
+  kind: SinkKind; at: number; open: number; close: number
+  mode: 'unsafe' | 'fragment' | 'driver' | 'condition' | 'shell' | 'spawn' | 'execa' | 'fs' | 'send'
+  operation?: PathOperation
+}
 
-function sinksIn(code: string, pairs: Map<number, number>, callees: Callees): Sink[] {
+function sinksIn(code: string, pairs: Map<number, number>, callees: Callees, files: FsCallees): Sink[] {
   const sinks = new Map<number, Sink>()
-  const add = (regex: RegExp, kind: SinkKind, mode: Sink['mode']): void => {
+  const add = (regex: RegExp, kind: SinkKind, mode: Sink['mode'], operation?: (m: RegExpMatchArray) => PathOperation): void => {
     regex.lastIndex = 0
     for (const m of code.matchAll(regex)) {
       const open = m.index + m[0].length - 1
       const close = pairs.get(open)
       // 同一位置只保留最先匹配、限制最少的接口。
       if (close === undefined || sinks.has(open)) continue
-      sinks.set(open, { kind, at: m.index, open, close, mode })
+      sinks.set(open, { kind, at: m.index, open, close, mode, ...(operation ? { operation: operation(m) } : {}) })
     }
   }
+  if (files.functions.size > 0) {
+    add(new RegExp(`(?<![\\w$.])(${namePattern(files.functions.keys())})\\s*\\(`, 'g'), 'path', 'fs', m => files.functions.get(m[1]!)!)
+  }
+  if (files.namespaces.size > 0) {
+    const methods = Object.keys(FS_OPERATIONS).join('|')
+    add(new RegExp(`(?<![\\w$.])(?:${namePattern(files.namespaces)})\\s*\\.\\s*(?:promises\\s*\\.\\s*)?(${methods})\\s*\\(`, 'g'), 'path', 'fs',
+      m => FS_OPERATIONS[m[1]!]!)
+  }
+  // Express 响应对象发送文件；带 root 选项时由 Express 拒绝越出该目录的路径，见 hitOf。
+  add(/(?<![\w$.])(?:res|response)\s*\.\s*(?:sendFile|download)\s*\(/g, 'path', 'send', () => 'read')
   if (callees.shell.size > 0) add(new RegExp(`(?<![\\w$.])(?:${namePattern(callees.shell)})\\s*\\(`, 'g'), 'command', 'shell')
   if (callees.spawn.size > 0) add(new RegExp(`(?<![\\w$.])(?:${namePattern(callees.spawn)})\\s*\\(`, 'g'), 'command', 'spawn')
   if (callees.commands.size > 0) add(new RegExp(`(?<![\\w$.])(?:${namePattern(callees.commands)})\\s*\\(`, 'g'), 'command', 'execa')
@@ -111,6 +162,29 @@ function fixedProgram(expr: string, at: number, flow: InputFlow, source: string,
   return prefix !== undefined && /^\S+\s/.test(prefix)
 }
 
+/** path.basename 只保留最后一段，结果不能再跳出目标目录；同一函数内的赋值一并检查。 */
+function takesBaseName(expr: string, at: number, flow: InputFlow, depth = 0): boolean {
+  const text = expr.trim()
+  if (/^(?:path\s*\.\s*)?basename\s*\([^()]*\)$/.test(text)) return true
+  if (depth >= 8 || !/^[A-Za-z_$][\w$]*$/.test(text)) return false
+  const assignments = flow.assignmentsFor(text, at).filter(a => !a.append)
+  return assignments.length > 0 && assignments.every(a => takesBaseName(a.expr, a.exprAt, flow, depth + 1))
+}
+
+/** 路径实参中的请求输入；basename 的结果及只由其赋值的变量换成等长字面量，模板和拼接只看逐段分析的结果。 */
+function pathTaint(expr: string, at: number, flow: InputFlow): Taint | null {
+  const masked = expr
+    .replace(/(?<![\w$.])(?:path\s*\.\s*)?basename\s*\([^()]*\)/g, call => "''".padEnd(call.length))
+    .replace(/(?<![\w$.])[A-Za-z_$][\w$]*(?![\w$])/g, (name, offset: number) =>
+      takesBaseName(name, at + offset, flow) ? "''".padEnd(name.length) : name)
+  const text = masked.trim()
+  if (/^[A-Za-z_$][\w$]*$/.test(text)) return flow.builtValue(text, at) ?? flow.taintOf(masked, at)
+  const built = flow.builtOf(masked, at)
+  // 模板与拼接中的 Number(id) 等已由逐段分析排除，整体再查会把它重新算作输入。
+  if (/^`/.test(text) || /(?<![+])\+(?![+=])/.test(text)) return built
+  return built ?? flow.taintOf(masked, at)
+}
+
 /** 判断接收位置的实参是否由请求输入构成。 */
 function hitOf(sink: Sink, code: string, source: string, pairs: Map<number, number>, flow: InputFlow): Hit | null {
   const args = argumentExpressions(code, code, sink.open + 1, sink.close, pairs)
@@ -139,6 +213,13 @@ function hitOf(sink: Sink, code: string, source: string, pairs: Map<number, numb
     return taint ? { taint, executable: !shell } : null
   }
 
+  if (sink.kind === 'path') {
+    // Express 的 root 选项会拒绝越出该目录的路径。
+    if (sink.mode === 'send' && /\broot\s*:/.test(code.slice(sink.open, sink.close))) return null
+    const taint = pathTaint(first, firstAt, flow)
+    return taint ? { taint } : null
+  }
+
   if (sink.mode === 'shell' || sink.mode === 'unsafe') {
     const taint = stringTaint ?? flow.taintOf(first, firstAt)
     return taint ? { taint } : null
@@ -153,7 +234,8 @@ function capitalised(text: string): string {
   return `${text.charAt(0).toUpperCase()}${text.slice(1)}`
 }
 
-function findingFor(kind: SinkKind, route: Route, file: ScanFile, line: number, originLine: number, certain: boolean, executable = false): Finding {
+function findingFor(kind: SinkKind, route: Route, file: ScanFile, line: number, originLine: number, certain: boolean, executable = false,
+  operation: PathOperation = 'read'): Finding {
   const lowered = certain ? [] : [
     'The value passes through other code or a check before it gets here, and the scan cannot tell whether that makes it safe. ' +
       'Confirm the value is restricted to what the query or command expects.',
@@ -174,6 +256,31 @@ function findingFor(kind: SinkKind, route: Route, file: ScanFile, line: number, 
         'Pass values as parameters instead of splicing them into the SQL text: the tagged form ' +
           '(prisma.$queryRaw`… ${id}`, sql`… ${id}`) or placeholders ($1, ?) with a separate values array.',
         'If a column name or sort direction has to vary, choose it from a fixed list in code instead of using the request value.',
+      ],
+    }
+  }
+  if (kind === 'path') {
+    const verb = operation === 'read' ? 'reads' : operation === 'write' ? 'writes' : 'deletes'
+    const reach = operation === 'read'
+      ? "read files outside the intended directory, such as source code, .env files or other users' uploads"
+      : operation === 'write'
+        ? 'write outside the intended directory and overwrite application or configuration files'
+        : 'delete files outside the intended directory'
+    return {
+      ruleId: 'injection/path', severity: 'P1', confidence: certain ? 'certain' : 'likely',
+      title: `${capitalised(route.url)} ${verb} a file at a path built from request input`,
+      file: file.path, line, excerpt,
+      why: [
+        `The file path includes a value the caller controls (read on line ${originLine}). Segments such as ../ or an ` +
+          `absolute path let whoever calls ${route.url} ${reach}.`,
+        ...(certain ? [] : [
+          'The value passes through other code or a check before it gets here, and the scan cannot tell whether that keeps the path ' +
+            'inside the intended directory. Confirm it does.',
+        ]),
+      ],
+      fix: [
+        'Map the request value to a fixed list of files in code, or keep only the file name with path.basename() before joining it to a fixed directory.',
+        'Resolve the final path and reject it unless it is still inside that directory. With Express, res.sendFile(name, { root: dir }) performs this check.',
       ],
     }
   }
@@ -207,7 +314,7 @@ export const injectionRule: ProjectRule = {
       const analysed = handlerFileOf(file, ctx.files)
       if (!analysed) continue
       const { code, source, pairs, lineStarts } = analysed
-      const sinks = sinksIn(code, pairs, commandCallees(file))
+      const sinks = sinksIn(code, pairs, commandCallees(file), fsCallees(file))
       if (sinks.length === 0) continue
       const positions = sinks.map(sink => sink.at)
       const reported = new Set<number>()
@@ -221,7 +328,7 @@ export const injectionRule: ProjectRule = {
           reported.add(sink.at)
           const certain = hit.taint.level === 'direct' && !flow.validatedBefore(hit.taint.names, sink.at)
           findings.push(findingFor(sink.kind, route, file, lineNumberAt(lineStarts, sink.at),
-            lineNumberAt(lineStarts, hit.taint.origin), certain, hit.executable))
+            lineNumberAt(lineStarts, hit.taint.origin), certain, hit.executable, sink.operation))
         }
       }
       reportInputLimit(ctx, file, analysed)
