@@ -49,6 +49,28 @@ jobs:
       - run: npm ci
       - run: npm run test:package
 
+  # 用当前 Node 构建，在 engines 声明的较旧版本上运行构建产物。
+  runtime-compat:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node scripts/runtime-smoke.mjs
+
   # 准备阶段联网获取固定快照；扫描不安装或执行样本依赖。
   public-projects:
     runs-on: ubuntu-latest
