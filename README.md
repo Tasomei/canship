@@ -82,7 +82,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@8f09ad58fca369060e5333b325765ff7870aa92f
+      - uses: Tasomei/canship@5156d3cda769d112bc2069032ef87afc7e6accd7
         with:
           version: '0.8.2'
           honor-ignore-markers: false
@@ -92,7 +92,7 @@ The commit hash pins the Action and `version` pins the npm scanner. The Action d
 
 | Input | Default in the pinned Action | Meaning |
 |---|---|---|
-| `version` | `0.8.1` | Exact npm scanner version; set explicitly as above |
+| `version` | `0.8.2` | Exact npm scanner version; set explicitly as above |
 | `fail-on` | `blocking` | `blocking`: `certain` P0/P1; `any`: all findings; `none`: report only |
 
 See all [Action inputs](https://github.com/Tasomei/canship/blob/main/action.yml).

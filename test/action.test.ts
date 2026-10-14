@@ -119,7 +119,7 @@ for (const version of ['latest', '^0.2.1', '0.2.1 & echo unsafe', 'file:../packa
   test(`a non-exact version is rejected: ${version}`, () => assert.throws(() => parseInputs(environment({ INPUT_VERSION: version }))))
 }
 test('current Action defaults and pinned README defaults are checked independently', () => {
-  const pinnedAction = { commit: '8f09ad58fca369060e5333b325765ff7870aa92f', version: '0.8.1' }
+  const pinnedAction = { commit: '5156d3cda769d112bc2069032ef87afc7e6accd7', version: '0.8.2' }
   const packageVersion = JSON.parse(readFileSync(join(repository, 'package.json'), 'utf8')).version
   const version = parseInputs(environment()).version
   assert.equal(version, '0.8.2')

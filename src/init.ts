@@ -27,7 +27,7 @@ ${matrix}\
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@8f09ad58fca369060e5333b325765ff7870aa92f
+      - uses: Tasomei/canship@5156d3cda769d112bc2069032ef87afc7e6accd7
         with:
           version: '${version}'
 ${target}\
