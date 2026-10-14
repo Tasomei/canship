@@ -71,3 +71,15 @@ test('a known new format in a public environment variable is reported as exposed
     'Your Sentry user auth token is exposed to the browser',
   ])
 })
+
+test('values in form placeholder attributes are example text, while other attributes on the same element are still reported', async () => {
+  const key = 'sk' + '-proj-' + alnum(32)
+  const result = await scan(project({ 'components/KeyInput.tsx': [
+    `export const A = () => <input name="openai" placeholder="${key}" />`,
+    `export const B = () => <input placeholder={'${key}'} />`,
+    `export const C = () => <input placeholder="Paste your key" defaultValue="${key}" />`,
+    `export const html = '<input placeholder="${'whsec' + '_' + alnum(32)}">'`,
+  ].join('\n') + '\n' }))
+  assert.deepEqual(result.findings.filter(f => f.ruleId.startsWith('secrets/')).map(f => [f.ruleId, f.line]),
+    [['secrets/hardcoded/openai', 3]])
+})

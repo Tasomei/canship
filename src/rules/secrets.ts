@@ -48,6 +48,9 @@ export const secretsRule: Rule = {
 
         const line = lineNumberAt(lineStarts, match.index)
         const rawLine = file.lines[line - 1] ?? ''
+        // 表单 placeholder 属性的值是给用户看的示例格式，不是凭据。
+        const before = file.content.slice(lineStarts[line - 1] ?? 0, match.index)
+        if (/\bplaceholder\s*=\s*\{?\s*["'`]$/i.test(before)) continue
 
         // 客户端与服务端代码的暴露影响不同。
         const clientSide = isClientCode(file)
