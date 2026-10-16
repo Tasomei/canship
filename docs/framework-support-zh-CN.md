@@ -88,7 +88,7 @@
 
 ## 解析与排除范围
 
-项目路由工厂支持返回新实例的同步无参调用。可跟进静态导入/重导出、部分路径映射及显式关联的工作区包；不推断配置继承、歧义条件导出、异步工厂、共享实例或任意包装链。识别字面量分支和简单短路，不按部署环境求值。
+项目路由工厂支持返回新实例的同步调用，包括返回局部实例的带参工厂。可跟进静态导入/重导出、部分路径映射及显式关联的工作区包；不推断配置继承、歧义条件导出、异步工厂、共享实例或任意包装链。识别字面量分支和简单短路，不按部署环境求值。
 
 详见[入口解析](./reference-zh-CN.md#服务端入口)和[资源上限](./reference-zh-CN.md#隐私与限制)。测试覆盖[工厂](https://github.com/Tasomei/canship/blob/main/test/router-factories.test.ts)、[模块映射](https://github.com/Tasomei/canship/blob/main/test/factory-modules.test.ts)及[注册上限](https://github.com/Tasomei/canship/blob/main/test/registration-context-unit.test.ts)。
 

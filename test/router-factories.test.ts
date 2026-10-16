@@ -181,6 +181,105 @@ test('request-input rules also use the newly discovered factory route', async ()
   assert.equal(result.findings.filter(item => item.ruleId === 'injection/sql').length, 1)
 })
 
+// 带参数的多语句工厂：按运行环境决定 basePath，体内注册中间件，返回局部实例。
+const PARAMETERISED = "import { Hono } from 'hono'\nexport function createApp(name: string, _version: string) {\n  let app\n" +
+  "  if (process.env.RUNTIME === 'edge') {\n    app = new Hono().basePath(`/${name}`)\n  }\n  else {\n    app = new Hono()\n  }\n" +
+  "  app.use('*', (c, next) => { c.header('X-Source', name); return next() })\n  return app\n}\n"
+const SUB_APP = "import { Hono } from 'hono'\n" + db + "export const items = new Hono()\n" +
+  "items.post('/', async (c) => { await prisma.item.create({ data: {} }); return c.json({ ok: true }) })\n"
+const ENTRY = "import { items } from '../routes/items'\nimport { createApp, serve } from '../lib/app'\n" +
+  "const app = createApp('shop', '1')\napp.route('/items', items)\nserve(app, 'shop')\n"
+
+test('parameterised factories with local instances carry mount prefixes even when the instance is passed on', async () => {
+  const found = await inspect({ 'lib/app.ts': PARAMETERISED + 'export function serve(target: unknown, label: string) {}\n',
+    'routes/items.ts': SUB_APP, 'entry/index.ts': ENTRY })
+  assert.equal(found.length, 1)
+  assert.equal(found[0]!.file, 'routes/items.ts')
+  // 只在某个运行环境生效且依赖参数的前缀不写进 URL。
+  assert.match(found[0]!.title, /^\/items writes/)
+})
+
+test('base paths agreeing across assignments are kept and differing ones are omitted', async () => {
+  for (const [second, title] of [["new Hono().basePath('/api')", /^\/api\/items writes/], ["new Hono().basePath('/v2')", /^\/items writes/]] as const) {
+    const factory = "import { Hono } from 'hono'\nexport const make = (flag: boolean) => {\n  let app = new Hono().basePath('/api')\n" +
+      `  if (flag) app = ${second}\n  return app\n}\n`
+    const found = await inspect({ 'src/factory.ts': factory, 'src/routes.ts': "import { make } from './factory'\n" + db + 'const app = make(true)\n' + route })
+    assert.equal(found.length, 1, second)
+    assert.match(found[0]!.title, title)
+  }
+})
+
+test('middleware registered inside a factory body is not accepted as protection', async () => {
+  const factory = "import { Hono } from 'hono'\nexport function make(name: string) {\n  const app = new Hono()\n" +
+    "  app.use('*', async (c, next) => { if (!c.get('user')) return c.json({}, 401); await next() })\n  return app\n}\n"
+  const found = await inspect({ 'src/factory.ts': factory, 'src/routes.ts': "import { make } from './factory'\n" + db + "const app = make('x')\n" + route })
+  assert.equal(found.length, 1)
+})
+
+test('multi-statement factories that cannot prove one fresh returned instance are not guessed', async () => {
+  for (const body of [
+    'const app = new Hono()\n  const other = new Hono()\n  if (name) return other\n  return app',
+    'let app = new Hono()\n  if (name) app = replacement()\n  return app',
+    'const app = new Hono()\n  app.fetch = replacement\n  return app',
+    'const app = new Hono()\n  Object.assign(app, replacement)\n  return app',
+    'let app = new Hono()\n  ;[app] = replacements\n  return app',
+    'let app = new Hono()\n  app ||= replacement\n  return app',
+    'const app = new Hono()\n  return app.basePath(name)',
+    'const app = arguments[0] ?? new Hono()\n  return app',
+    'return name\n  const app = new Hono()',
+    'const make2 = () => { const app = new Hono(); return app }\n  const app = replacement\n  return app',
+  ]) {
+    const factory = `import { Hono } from 'hono'\nexport function make(name: string) {\n  ${body}\n}\n`
+    assert.deepEqual(await inspect({ 'src/factory.ts': factory, 'src/routes.ts': "import { make } from './factory'\n" + db + "const app = make('x')\n" + route }), [], body)
+  }
+})
+
+test('arguments beyond the declared parameters, rest and destructured parameters are not guessed', async () => {
+  for (const [signature, call] of [['(name: string)', "make('a', 'b')"], ['(...names: string[])', "make('a')"], ['({ name }: { name: string })', "make({ name: 'a' })"]]) {
+    const factory = `import { Hono } from 'hono'\nexport function make${signature} {\n  const app = new Hono()\n  return app\n}\n`
+    assert.deepEqual(await inspect({ 'src/factory.ts': factory, 'src/routes.ts': "import { make } from './factory'\n" + db + `const app = ${call}\n` + route }), [], signature)
+  }
+})
+
+test('a factory instance used as a parameter elsewhere in the file still cannot borrow identity', async () => {
+  for (const extra of ['function setup(app) { app.get = replacement }', 'const setup = (app: unknown) => app', 'class Setup { run(app) {} }']) {
+    assert.deepEqual(await inspect({ 'src/factory.ts': "import { Hono } from 'hono'\nexport const make = () => new Hono()",
+      'src/routes.ts': "import { make } from './factory'\n" + db + 'const app = make()\n' + extra + '\n' + route }), [], extra)
+  }
+  for (const extra of ['register(app, { name: 1 })', 'if (app) { console.log(1) }']) {
+    assert.equal((await inspect({ 'src/factory.ts': "import { Hono } from 'hono'\nexport const make = () => new Hono()",
+      'src/routes.ts': "import { make } from './factory'\n" + db + 'const app = make()\n' + extra + '\n' + route })).length, 1, extra)
+  }
+})
+
+test('nine assignments to a factory instance are disclosed as a resolution limit', async () => {
+  const assignments = Array.from({ length: 9 }, (_, i) => `  if (flag === ${i}) app = new Hono()\n`).join('')
+  const result = await scanFixture({ 'src/factory.ts': `import { Hono } from 'hono'\nexport function make(flag: number) {\n  let app\n${assignments}  return app\n}\n`,
+    'src/routes.ts': "import { make } from './factory'\n" + db + 'const app = make(1)\n' + route })
+  assert.equal(result.partial, true)
+  assert.deepEqual(result.errors.map(item => [item.ruleId, item.code]), [['engine/router-factories', 'ROUTE_UNRESOLVED']])
+  assert.deepEqual(result.findings, [])
+})
+
+test('large functions returning plain objects are excluded without reporting a resolution limit', async () => {
+  const methods = Array.from({ length: 120 }, (_, i) => `  async get${i}() { return service.load(${i}) },\n`).join('')
+  for (const definition of [`export const makeHandlers = (service: any) => ({\n${methods}})\n`,
+    `export function makeHandlers(service: any) {\n  const handlers = {\n${methods}  }\n  return { ...handlers }\n}\n`]) {
+    const result = await scanFixture({ 'src/handlers.ts': definition,
+      'src/handlers.test.ts': "import { makeHandlers } from './handlers'\nconst handlers = makeHandlers({})\nhandlers.get('/items', handlers.get0)\n" })
+    assert.equal(result.partial, false, definition.slice(0, 40))
+    assert.deepEqual(result.errors, [])
+  }
+})
+
+test('an oversized factory body returning a local instance is disclosed', async () => {
+  const filler = Array.from({ length: 700 }, (_, i) => `  const value${i} = name + '${i}'\n`).join('')
+  const result = await scanFixture({ 'src/factory.ts': `import { Hono } from 'hono'\nexport function make(name: string) {\n  const app = new Hono()\n${filler}  return app\n}\n`,
+    'src/routes.ts': "import { make } from './factory'\n" + db + "const app = make('x')\n" + route })
+  assert.equal(result.partial, true)
+  assert.deepEqual(result.errors.map(item => [item.ruleId, item.code]), [['engine/router-factories', 'ROUTE_UNRESOLVED']])
+})
+
 test('JSONC path mappings override conventional alias guesses without evaluating configuration', async () => {
   const found = await inspect({
     'tsconfig.json': '{ // synthetic configuration\n "compilerOptions": { "baseUrl": ".", "paths": { "@build/*": ["shared/*"], }, }, "include": ["src"], }',

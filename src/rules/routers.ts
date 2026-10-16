@@ -227,7 +227,12 @@ function instancesOf(a: Analysed, names: FrameworkNames): Instance[] {
 /** 路由注册：路径、处理函数之前的中间件与钩子、处理函数（实参或方法简写的函数体）。 */
 interface Registration { path: string | null; middleware: Arg[]; handler: Arg | null; handlerRange: CodeRange | null; at: number; batch?: boolean }
 
-interface FactoryShape { framework: NodeFramework; prefix: string; openapi: boolean }
+/** dynamic：前缀依赖参数、运行环境或分支，无法静态确定，URL 中省略。 */
+interface FactoryShape { framework: NodeFramework; prefix: string; openapi: boolean; dynamic?: boolean }
+
+/** 多语句工厂的函数体上限，以及返回实例最多接受的赋值次数。 */
+const MAX_FACTORY_BODY = 20_000
+const MAX_FACTORY_ASSIGNMENTS = 8
 
 /** 仅接受顶层唯一绑定；遮蔽、解构和重赋值不能借用外层工厂或构造器。 */
 function factoryBindingClean(a: Analysed, name: string, initializer = -1): boolean {
@@ -237,7 +242,16 @@ function factoryBindingClean(a: Analysed, name: string, initializer = -1): boole
     const declaration = new RegExp(`\\bconst\\s+(${escaped})\\s*(?::[^=;]{0,200})?=`).exec(a.code)
     if (declaration) initializer = declaration.index + /^const\s+/.exec(declaration[0])![0].length
   }
-  if (new RegExp(`[(,]\\s*${escaped}\\s*(?=[:,)=])|(?<![\\w$.])${escaped}\\s*=>`).test(a.code)) return false
+  // 出现在形参列表（括号后接 => 或函数体）中才会遮蔽；作为调用实参传入不改变绑定。
+  for (const match of a.code.matchAll(new RegExp(`[(,]\\s*${escaped}\\s*(?=[:,)=])`, 'g'))) {
+    let open = -1
+    for (const [start, end] of a.pairs) if (a.code[start] === '(' && start <= match.index && match.index < end && start > open) open = start
+    const close = open < 0 ? undefined : a.pairs.get(open)
+    if (close === undefined) return false
+    if (/\b(?:if|while|for|switch)\s*$/.test(a.code.slice(Math.max(0, open - 12), open))) continue
+    if (/^\s*(?::[^{};=]{1,200})?\s*(?:=>|\{)/.test(a.code.slice(close + 1, close + 260))) return false
+  }
+  if (new RegExp(`(?<![\\w$.])${escaped}\\s*=>`).test(a.code)) return false
   for (const match of a.code.matchAll(/\b(?:const|let|var)\s*([\[{])/g)) {
     const open = match.index + match[0].length - 1, close = a.pairs.get(open)
     if (close !== undefined && new RegExp(`(?<![\\w$])${escaped}(?![\\w$])`).test(a.code.slice(open, close + 1))) return false
@@ -267,18 +281,22 @@ function projectFactoryResolver(files: ScanFile[], gaps: Map<ScanFile, number>):
       if (shape.framework !== 'hono') return null
       const open = close + next[0].length, end = a.pairs.get(open)
       const args = end === undefined ? [] : argsOf(a, open, end)
-      const path = args.length === 1 ? literalOf(args[0]!) : null
-      if (end === undefined || path === null) return null
-      shape = { ...shape, prefix: joinPath(shape.prefix, path) }; close = end
+      if (end === undefined || args.length !== 1) return null
+      // 非字面量前缀与直接创建的实例一致：省略而不是猜测，之后的字面量前缀也不再拼接。
+      const path = literalOf(args[0]!)
+      shape = path === null || shape.dynamic ? { ...shape, prefix: '', dynamic: true } : { ...shape, prefix: joinPath(shape.prefix, path) }
+      close = end
     }
     if (/^\s*\.\s*basePath\s*\(/.test(a.code.slice(close + 1, close + 200))) { limited = true; return null }
     return { shape, close }
   }
   const expression = (a: Analysed, arg: Arg, depth: number): FactoryShape | null => {
-    if (depth >= 8 || arg.text.length > 4000) { limited = true; return null }
+    if (depth >= 8) { limited = true; return null }
     if (arg.text[0] === '(' && a.pairs.get(arg.at) === arg.at + arg.text.length - 1) return expression(a, argAt(a, arg.at + 1, arg.at + arg.text.length - 1), depth + 1)
     const call = /^(new\s+)?([A-Za-z_$][\w$]*)(?:\s*\.\s*(Router))?\s*(?:<[^()]{0,300}>\s*)?\(/.exec(arg.text)
+    // 对象字面量等不可能是实例构造的表达式直接排除，长度上限只用于确实需要解析的调用。
     if (!call) return null
+    if (arg.text.length > 4000) { limited = true; return null }
     const [, isNew, name, member] = call
     const open = arg.at + call[0].length - 1, close = a.pairs.get(open)
     if (close === undefined || close >= arg.at + arg.text.length || !factoryBindingClean(a, name!)) return null
@@ -293,22 +311,85 @@ function projectFactoryResolver(files: ScanFile[], gaps: Map<ScanFile, number>):
       if (!isNew && imported.spec === 'express' && ((imported.imported === 'default' && (!member || member === 'Router')) || (imported.imported === 'Router' && !member))) shape = { framework: 'express', prefix: '', openapi: false }
       if (!isNew && !member && imported.spec === 'fastify' && ['default', 'fastify'].includes(imported.imported)) shape = { framework: 'fastify', prefix: '', openapi: false }
     }
-    if (!shape && !isNew && !member && !a.source.slice(open + 1, close).trim()) shape = resolve(a, name!, false, depth + 1)
+    if (!shape && !isNew && !member) shape = resolve(a, name!, false, depth + 1, argsOf(a, open, close).length)
     if (!shape) return null
     const chained = basePath(a, close, shape)
     return chained && !arg.text.slice(chained.close - arg.at + 1).trim() ? chained.shape : null
   }
-  const functionValue = (a: Analysed, value: Arg, depth: number): FactoryShape | null => {
+  // 多语句函数体：返回值只能是体内声明的同一局部变量，它的每次赋值都必须是同一框架的新实例。
+  // 体内注册的中间件与路由不作为保护证据，也不计入路由。
+  const localInstance = (a: Analysed, open: number, close: number, params: Arg[], depth: number): FactoryShape | null => {
+    const nested = a.bodies.filter(body => open < body.start && body.end <= close)
+    const own = (at: number): boolean => !nested.some(body => body.start < at && at < body.end)
+    const text = a.code.slice(open, close)
+    let name: string | undefined
+    for (const match of text.matchAll(/\breturn\b/g)) {
+      const at = open + match.index
+      if (!own(at)) continue
+      const returned = /^return[ \t]+([A-Za-z_$][\w$]*)[ \t]*(?:;|(?=[\r\n}]))/.exec(a.code.slice(at, close + 1))
+      if (!returned || (name !== undefined && returned[1] !== name)) return null
+      name = returned[1]
+    }
+    if (!name) return null
+    const escaped = name.replace(/\$/g, '\\$')
+    const word = new RegExp(`(?<![\\w$.])${escaped}(?![\\w$])`)
+    if (params.some(param => new RegExp(`^${escaped}(?![\\w$])`).test(param.text))) return null
+    const declarations = [...text.matchAll(new RegExp(`\\b(?:let|const|var|function|class)\\s+${escaped}(?![\\w$])`, 'g'))]
+    if (declarations.length !== 1 || !/^(?:let|const|var)\b/.test(declarations[0]![0])) return null
+    // 只有确实返回局部变量的函数体才计入大小上限，其他大函数直接排除。
+    if (close - open > MAX_FACTORY_BODY) { limited = true; return null }
+    const declaredAt = open + declarations[0]!.index
+    if ([...a.pairs].some(([start, end]) => a.code[start] === '{' && open < start && start < declaredAt && declaredAt < end)) return null
+    // 解构赋值、成员写入与前后置自增都可能替换或改造实例。
+    for (const [start, end] of a.pairs) {
+      if (start <= open || end >= close || !'[{'.includes(a.code[start]!)) continue
+      if (/^\s*=(?![=>])/.test(a.code.slice(end + 1, end + 20)) && word.test(a.code.slice(start, end + 1))) return null
+    }
+    if (new RegExp(`(?<![\\w$.])${escaped}(?:\\s*\\.\\s*[\\w$]+|\\s*\\[[^\\]]{0,200}\\])+\\s*=(?!=)|(?:\\+\\+|--)\\s*${escaped}(?![\\w$])|\\bObject\\s*\\.\\s*(?:assign|defineProperty|defineProperties|setPrototypeOf)\\s*\\(\\s*${escaped}(?![\\w$])`).test(text)) return null
+    const valueAt = (from: number): Arg => argAt(a, from, expressionEnd(a, from))
+    const values: Arg[] = []
+    const declaration = new RegExp(`^(?:let|const|var)\\s+${escaped}\\s*(?::[^=;]{0,200})?(=(?![=>]))?`).exec(a.code.slice(declaredAt))
+    if (!declaration) return null
+    const nameAt = declaredAt + /^(?:let|const|var)\s+/.exec(declaration[0])![0].length
+    if (declaration[1]) values.push(valueAt(declaredAt + declaration[0].length))
+    for (const match of text.matchAll(new RegExp(`(?<![\\w$.])${escaped}\\s*(=(?![=>])|[+*/%&|^-]=|\\?\\?=|&&=|\\|\\|=|\\+\\+|--)`, 'g'))) {
+      const at = open + match.index
+      if (at === nameAt) continue
+      if (match[1] !== '=') return null
+      values.push(valueAt(at + match[0].length))
+    }
+    if (values.length > MAX_FACTORY_ASSIGNMENTS) { limited = true; return null }
+    const shapes: FactoryShape[] = []
+    for (const value of values) {
+      const next = expression(a, value, depth + 1)
+      if (!next) return null
+      shapes.push(next)
+    }
+    const [first] = shapes
+    if (!first || shapes.some(other => other.framework !== first.framework || other.openapi !== first.openapi)) return null
+    // 分支间前缀不同（如只在某个运行环境调用 basePath）时无法确定，按动态前缀处理。
+    return shapes.every(other => other.prefix === first.prefix && !other.dynamic) ? first : { ...first, prefix: '', dynamic: true }
+  }
+  const functionValue = (a: Analysed, value: Arg, depth: number, arity: number): FactoryShape | null => {
     if (depth >= 8) { limited = true; return null }
-    if (/^[A-Za-z_$][\w$]*$/.test(value.text)) return resolve(a, value.text, false, depth + 1)
-    const signature = /^(?:function(?:\s+[A-Za-z_$][\w$]*)?\s*\(\s*\)\s*(?::[^{};=]{1,200})?\s*|\(\s*\)\s*(?::[^{};=]{1,200})?\s*=>\s*)/.exec(value.text)
-    if (!signature) return null
-    let body = argAt(a, value.at + signature[0].length, value.at + value.text.length)
+    if (/^[A-Za-z_$][\w$]*$/.test(value.text)) return resolve(a, value.text, false, depth + 1, arity)
+    const head = /^(?:function(?:\s+[A-Za-z_$][\w$]*)?\s*)?\(/.exec(value.text)
+    if (!head) return null
+    const open = value.at + head[0].length - 1, close = a.pairs.get(open)
+    const end = value.at + value.text.length
+    if (close === undefined || close >= end) return null
+    // 参数只接受普通标识符（可带类型与默认值）；实参多于形参、剩余参数、解构参数和 arguments 都可能改变返回值来源。
+    const params = argsOf(a, open, close)
+    if (arity > params.length || params.some(param => /^(?:\.\.\.|[{[])/.test(param.text))) return null
+    const tail = (head[0].startsWith('function') ? /^\s*(?::[^{};=]{1,200})?\s*(?=\{)/ : /^\s*(?::[^{};=]{1,200})?\s*=>\s*/).exec(a.code.slice(close + 1, end))
+    if (!tail) return null
+    let body = argAt(a, close + 1 + tail[0].length, end)
     if (body.text.startsWith('{')) {
       const end = a.pairs.get(body.at)
       if (end !== body.at + body.text.length - 1) return null
+      if (/\barguments\b/.test(a.code.slice(body.at, end))) return null
       const returned = /^\s*return\b[ \t]*/.exec(a.code.slice(body.at + 1, end))
-      if (!returned) return null
+      if (!returned) return localInstance(a, body.at, end, params, depth)
       const from = body.at + 1 + returned[0].length
       if (/[\r\n]/.test(a.code[from] ?? '')) return null
       body = argAt(a, from, end)
@@ -316,15 +397,16 @@ function projectFactoryResolver(files: ScanFile[], gaps: Map<ScanFile, number>):
     }
     return expression(a, body, depth)
   }
-  const resolve = (a: Analysed, name: string, exported: boolean, depth: number): FactoryShape | null => {
+  // arity：调用处的实参个数，工厂的形参不能少于它。
+  const resolve = (a: Analysed, name: string, exported: boolean, depth: number, arity: number): FactoryShape | null => {
     if (depth >= 8) { limited = true; return null }
-    const key = `${a.file.path}\0${name}\0${exported}\0${depth}`
+    const key = `${a.file.path}\0${name}\0${exported}\0${depth}\0${arity}`
     if (cache.has(key)) return cache.get(key)!
     const follow = (spec: string, symbol: string) => {
       const resolved = module(spec, a.file)
       if (resolved.limited) limited = true
       const target = resolved.file
-      return target ? resolve(analyse(target), symbol, true, depth + 1) : null
+      return target ? resolve(analyse(target), symbol, true, depth + 1, arity) : null
     }
     const bindings = bindingsOf(a.file), escaped = name.replace(/\$/g, '\\$')
     let result: FactoryShape | null = null
@@ -334,14 +416,14 @@ function projectFactoryResolver(files: ScanFile[], gaps: Map<ScanFile, number>):
         if (match && topLevel(a, match.index)) {
           const at = match.index + match[0].length
           const named = /^function\s+([A-Za-z_$][\w$]*)/.exec(a.code.slice(at))
-          if (!named || factoryBindingClean(a, named[1]!)) result = functionValue(a, argAt(a, at, expressionEnd(a, at)), depth)
+          if (!named || factoryBindingClean(a, named[1]!)) result = functionValue(a, argAt(a, at, expressionEnd(a, at)), depth, arity)
         }
-      } else if (new RegExp(`\\bexport\\s+(?:const|function)\\s+${escaped}(?![\\w$])`).test(a.code)) result = resolve(a, name, false, depth)
+      } else if (new RegExp(`\\bexport\\s+(?:const|function)\\s+${escaped}(?![\\w$])`).test(a.code)) result = resolve(a, name, false, depth, arity)
       else {
         const matches = bindings.exports.filter(item => item.local === name)
         if (matches.length === 1) {
           const entry = matches[0]!
-          result = entry.spec ? follow(entry.spec, entry.imported) : resolve(a, entry.imported, false, depth + 1)
+          result = entry.spec ? follow(entry.spec, entry.imported) : resolve(a, entry.imported, false, depth + 1, arity)
         } else if (!matches.length && name !== 'default' && bindings.stars.length === 1) result = follow(bindings.stars[0]!, name)
       }
     } else {
@@ -349,13 +431,13 @@ function projectFactoryResolver(files: ScanFile[], gaps: Map<ScanFile, number>):
       const declaration = declarations.length === 1 ? declarations[0] : undefined
       if (declaration && topLevel(a, declaration.index)) {
         const at = declaration.index
-        if (declaration[1] === 'function' && factoryBindingClean(a, name)) result = functionValue(a, argAt(a, at, expressionEnd(a, at)), depth)
+        if (declaration[1] === 'function' && factoryBindingClean(a, name)) result = functionValue(a, argAt(a, at, expressionEnd(a, at)), depth, arity)
         if (declaration[1] === 'const') {
           const prefix = new RegExp(`^const\\s+${escaped}\\s*(?::[^=;]{0,200})?=\\s*`).exec(a.code.slice(at))
           const nameAt = at + /^const\s+/.exec(declaration[0])![0].length
           if (prefix && factoryBindingClean(a, name, nameAt)) {
             const valueAt = at + prefix[0].length
-            result = functionValue(a, argAt(a, valueAt, expressionEnd(a, valueAt)), depth)
+            result = functionValue(a, argAt(a, valueAt, expressionEnd(a, valueAt)), depth, arity)
           }
         }
       } else if (!declarations.length && factoryBindingClean(a, name)) {
@@ -370,17 +452,16 @@ function projectFactoryResolver(files: ScanFile[], gaps: Map<ScanFile, number>):
     const found: Instance[] = []
     const receivers = new Set([...a.code.matchAll(new RegExp(`(?<![\\w$.])([A-Za-z_$][\\w$]*)\\s*\\.\\s*(?:${METHODS}|on|openapi|openapiRoutes|route|register)\\s*${GENERICS}\\(`, 'g'))].map(match => match[1]))
     let inspected = 0
-    for (const m of a.code.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*\(\s*\)/g)) {
+    for (const m of a.code.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*\(/g)) {
       const [, name, factory] = m
       if (!receivers.has(name) || known.has(name!)) continue
       if (++inspected > 256) { gaps.set(a.file, m.index); break }
-      const open = a.code.indexOf('(', m.index), close = m.index + m[0].length - 1
-      if (!topLevel(a, m.index) || a.source.slice(open + 1, close).trim() ||
-        !factoryBindingClean(a, factory!) || !factoryBindingClean(a, name!)) continue
+      const open = m.index + m[0].length - 1, close = a.pairs.get(open)
+      if (close === undefined || !topLevel(a, m.index) || !factoryBindingClean(a, factory!) || !factoryBindingClean(a, name!)) continue
       // 每个候选独立记录解析上限，避免缓存隐藏其他入口的覆盖缺口。
       limited = false
-      const shape = resolve(a, factory!, false, 0)
-      const chained = shape ? basePath(a, m.index + m[0].length - 1, shape) : null
+      const shape = resolve(a, factory!, false, 0, argsOf(a, open, close).length)
+      const chained = shape ? basePath(a, close, shape) : null
       if (limited) gaps.set(a.file, m.index)
       const end = expressionEnd(a, open)
       if (chained && !a.code.slice(chained.close + 1, end).trim()) found.push({ name: name!, ...chained.shape, weak: false, chainFrom: chained.close })

@@ -88,7 +88,7 @@ Tests: [plugins, hooks, siblings and inputs](https://github.com/Tasomei/canship/
 
 ## Resolution and exclusions
 
-Project router factories support synchronous, zero-argument calls returning fresh instances. Static imports/re-exports, selected path mappings and explicitly linked workspace packages are followed; configuration inheritance, ambiguous conditional exports, async factories, shared instances and arbitrary wrapper chains are not inferred. Literal branches and simple short circuits are recognised, not evaluated against a deployment environment.
+Project router factories support synchronous calls returning fresh instances, including parameterised factories that return a local instance. Static imports/re-exports, selected path mappings and explicitly linked workspace packages are followed; configuration inheritance, ambiguous conditional exports, async factories, shared instances and arbitrary wrapper chains are not inferred. Literal branches and simple short circuits are recognised, not evaluated against a deployment environment.
 
 See [entry resolution](./reference.md#server-entry-points) and [resource limits](./reference.md#privacy-and-limits). Tests cover [factories](https://github.com/Tasomei/canship/blob/main/test/router-factories.test.ts), [module mappings](https://github.com/Tasomei/canship/blob/main/test/factory-modules.test.ts) and [registration limits](https://github.com/Tasomei/canship/blob/main/test/registration-context-unit.test.ts).
 
