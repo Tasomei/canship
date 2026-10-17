@@ -1,36 +1,48 @@
 # Canship for VS Code
 
-[简体中文](https://github.com/Tasomei/canship/blob/main/extensions/vscode/README-zh-CN.md)
+[简体中文](https://github.com/Tasomei/canship/blob/main/extensions/vscode/README-zh-CN.md) · [CLI](https://github.com/Tasomei/canship#readme) · [Rule reference](https://github.com/Tasomei/canship/blob/main/docs/reference.md)
 
-Development extension; not a published Marketplace release. Requires VS Code 1.95 or later and a trusted local-filesystem workspace.
+Pre-deployment security checks for JavaScript and TypeScript web apps, in the editor. Finds exposed credentials, missing access controls and unsafe handling of request input, using the same scanner as the `canship` CLI.
 
-Run **Canship: Scan Workspace** to inspect saved files. Multi-root workspaces require non-overlapping roots and select one project per scan. Findings appear in Problems and hover text; **Show Scan Summary** discloses hidden findings, baselines, exclusions, and incomplete coverage.
+Preview. Requires VS Code 1.95 or later and a trusted local workspace.
 
-- Bundles its scanner; never runs a workspace's `npx`, scripts, or scanner binary.
-- Uses the selected folder's Canship configuration and configured baseline. Application-level settings can disable them or include likely findings.
-- Save-triggered scanning is opt-in and debounced. Cancellation, source edits, and settings changes invalidate pending results.
-- **Copy Finding Fix Prompt** copies one current finding. **Review Line Suppression** previews a rule-specific comment and requires confirmation; it edits the buffer without saving. Unsupported syntax or changed source must use manual review or a CLI baseline.
-- Scans saved files only. Unsaved buffers and external changes require a fresh scan. Comments in JSX, JSON, and ambiguous string contexts are not edited automatically.
+## Usage
 
-No telemetry, project uploads, or scan-time network requests. Excerpts are omitted; paths, descriptions, and copied prompts can still be sensitive. Reports describe static evidence, not proof that deployment or authorization is correct. The editor displays at most 5,000 findings per scan and discloses omitted counts.
+Run **Canship: Scan Workspace** from the Command Palette. Findings appear in the Problems panel.
+
+| Command | Purpose |
+| --- | --- |
+| Scan Workspace | Scan saved files in the selected folder |
+| Cancel Scan | Stop the running scan; no partial results are kept |
+| Clear Results | Remove Canship diagnostics |
+| Show Scan Summary | List hidden findings, baselines, exclusions and incomplete coverage |
+| Copy Finding Fix Prompt | Copy a fix prompt for one finding, for use with a coding assistant |
+| Review Line Suppression | Preview a rule-specific suppression comment; edits the buffer only after confirmation |
+
+## Settings
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `canship.scanOnSave` | `false` | Scan after saves |
+| `canship.saveDelay` | `750` | Delay in milliseconds before a save-triggered scan |
+| `canship.includeLikely` | `false` | Show likely findings as well as certain ones |
+| `canship.useProjectConfig` | `true` | Use the folder's Canship config and baseline |
+| `canship.honorIgnoreMarkers` | `true` | Honour suppression comments in source |
+
+## Notes
+
+- Scans saved files only. Rescan after unsaved or external changes.
+- Uses its bundled scanner; never runs the workspace's `npx`, scripts or binaries.
+- Multi-root workspaces must not overlap; each scan covers one project.
+- Suppression comments are not inserted in JSX, JSON or ambiguous string contexts.
+- Shows up to 5,000 findings per scan and reports any omitted.
+- Findings are static evidence, not proof that a deployment or its authorisation is correct.
+
+## Privacy
+
+No telemetry, uploads or network requests. Diagnostics omit source excerpts; file paths, descriptions and copied prompts may still be sensitive.
 
 ## Development
-
-### Local package
-
-Requires Node.js 22 or later for packaging tools only; the scanner's runtime requirement is unchanged. From the repository root:
-
-```powershell
-npm run package:extension
-```
-
-This installs locked development tools locally, builds both entry points, and verifies the VSIX file list and bytes. Tool installation may use the network. The uniquely named package is written to `.scratch/vsix/`; existing packages are not overwritten. No Marketplace login or publication occurs.
-
-The VSIX contains the manifest, two runtime files, both READMEs and the license, plus two format metadata files. Source, tests, logs and local configuration are excluded. `npm run test:extension-package` also tests rejection cases and runs the packaged worker outside the source tree.
-
-Install the generated file with **Extensions: Install from VSIX** in the target VS Code window. Installation, activation, scanning and source navigation were verified in an isolated Windows / VS Code 1.141.0 profile, without development-host flags. This does not publish the extension or verify other editor versions.
-
-### Development host
 
 From the repository root:
 
@@ -38,8 +50,10 @@ From the repository root:
 npm run build:extension
 ```
 
-Launch an isolated Extension Development Host with this directory as `--extensionDevelopmentPath`. Do not change your normal editor profile for testing. Marketplace publication and publisher registration are separate release steps.
+Builds both entry points for an Extension Development Host.
 
-Host tests use `scripts/run-editor-host.mjs` with an installed VS Code executable's absolute path. They use an isolated profile and synthetic workspace without disabling Workspace Trust. Windows / VS Code 1.141.0 passed the eight basic checks and nine workflow checks: saves off by default, enabled saves, final results after consecutive saves, disabled saves, project selection, per-project configuration, retained sibling results, cancellation without success, and clearing. VS Code 1.95 and other versions/platforms remain unverified.
+```powershell
+npm run package:extension
+```
 
-Use `--workflows` for save, cancellation and multi-root checks; follow the named project buttons and picker. `--prepare` opens manual checks; `--session=<absolute-test-directory>` reuses a validated session without overwriting results. Confirm trust in the active window. Trust timeout, incomplete selection or an unobserved cancellation window reports `blocked`, never a pass. Failures show their stage; successful tests close automatically. Temporary settings are restored and generated load files removed; session results stay local.
+Builds and verifies a VSIX in `.scratch/vsix/` (Node.js 22 or later). Nothing is published. Editor host tests use `scripts/run-editor-host.mjs` with an isolated profile; verified on Windows with VS Code 1.141.0.

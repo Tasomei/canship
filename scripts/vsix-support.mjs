@@ -8,9 +8,9 @@ import { fileURLToPath } from 'node:url'
 export const repository = dirname(dirname(fileURLToPath(import.meta.url)))
 export const toolRequire = createRequire(join(repository, 'tools/vsix/package.json'))
 export const contentBase = 'https://github.com/Tasomei/canship/blob/main/extensions/vscode'
-export const sourceFiles = ['LICENSE', 'README-zh-CN.md', 'README.md', 'dist/extension.cjs', 'dist/worker.cjs', 'package.json'].sort()
-export const archiveFiles = ['[Content_Types].xml', 'extension.vsixmanifest', 'extension/LICENSE.txt',
-  'extension/README-zh-CN.md', 'extension/readme.md', 'extension/dist/extension.cjs', 'extension/dist/worker.cjs', 'extension/package.json'].sort()
+export const sourceFiles = ['LICENSE', 'README-zh-CN.md', 'README.md', 'dist/extension.cjs', 'dist/worker.cjs', 'images/icon.png', 'package.json'].sort()
+export const archiveFiles = ['[Content_Types].xml', 'extension.vsixmanifest', 'extension/LICENSE.txt', 'extension/README-zh-CN.md',
+  'extension/readme.md', 'extension/dist/extension.cjs', 'extension/dist/worker.cjs', 'extension/images/icon.png', 'extension/package.json'].sort()
 
 export function inspectSources(root) {
   assert.ok(lstatSync(root).isDirectory() && !lstatSync(root).isSymbolicLink(), 'Expected a regular extension directory')
@@ -67,7 +67,8 @@ export async function verifyVsix(path, root) {
   const entries = await readVsix(path)
   assert.deepEqual(JSON.parse(entries.get('extension/package.json').toString()), manifest)
   for (const [packed, source] of [['extension/LICENSE.txt', 'LICENSE'], ['extension/README-zh-CN.md', 'README-zh-CN.md'],
-    ['extension/readme.md', 'README.md'], ['extension/dist/extension.cjs', 'dist/extension.cjs'], ['extension/dist/worker.cjs', 'dist/worker.cjs']]) {
+    ['extension/readme.md', 'README.md'], ['extension/dist/extension.cjs', 'dist/extension.cjs'], ['extension/dist/worker.cjs', 'dist/worker.cjs'],
+    ['extension/images/icon.png', 'images/icon.png']]) {
     assert.ok(entries.get(packed).equals(readFileSync(join(root, source))), 'Packaged bytes do not match the reviewed source')
   }
   assert.ok(entries.get('extension/readme.md').toString().includes(`${contentBase}/README-zh-CN.md`))

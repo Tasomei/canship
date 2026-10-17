@@ -3,5 +3,6 @@
 !README.md
 !README-zh-CN.md
 !LICENSE
+!images/icon.png
 !dist/extension.cjs
 !dist/worker.cjs

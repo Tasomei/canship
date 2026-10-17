@@ -22,7 +22,7 @@ export async function packageExtension(root = join(repository, 'extensions/vscod
   const temporary = mkdtempSync(join(output, 'build-'))
   const staged = join(temporary, 'review.vsix')
   try {
-    // 冻结六个输入，打包过程不再读取工作目录中的其他内容或后续修改。
+    // 冻结七个输入，打包过程不再读取工作目录中的其他内容或后续修改。
     const frozen = join(temporary, 'input')
     for (const [name, bytes] of snapshot) {
       const path = join(frozen, name)
@@ -36,7 +36,7 @@ export async function packageExtension(root = join(repository, 'extensions/vscod
     for (const [name, bytes] of snapshot) assert.ok(readFileSync(join(root, name)).equals(bytes), 'Package inputs changed during packaging')
     const path = join(output, `canship-${manifest.version}-${randomUUID()}.vsix`)
     copyFileSync(staged, path, constants.COPYFILE_EXCL)
-    return { path, version: manifest.version, files: 8, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') }
+    return { path, version: manifest.version, files: 9, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') }
   } finally {
     // 仅清理本次创建的打包中间目录，最终产物不覆盖、不删除。
     rmSync(temporary, { recursive: true, force: true })
