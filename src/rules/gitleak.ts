@@ -215,7 +215,8 @@ function historicalEvidence(
       '--no-ext-diff',
       '--no-textconv',
       '--no-renames',
-      '--diff-filter=d',
+      // 显式包含非删除类型；旧版 Git 的小写排除过滤在无 diff 输出时可能返回空历史。
+      '--diff-filter=ACMRTUXB',
       '--all',
       '--format=%H',
       `--max-count=${MAX_HISTORY_REVISIONS + 1}`,

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { projectCanaries, scanWithCanary } from './evaluation/project-canaries.js'
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const manifest = JSON.parse(readFileSync(join(root, 'test/evaluation/projects.json'), 'utf8'))
@@ -62,6 +63,46 @@ test('snapshot preparation refuses an existing directory, and this path makes no
     rmSync(target, { recursive: true, force: true })
   }
 })
+
+for (const corruptEmptyHash of [false, true]) {
+  test(`snapshot preparation ${corruptEmptyHash ? 'rejects an incorrect empty blob hash' : 'preserves empty files without requesting raw content'}`, () => {
+    const parent = mkdtempSync(join(tmpdir(), 'canship-corpus-empty-'))
+    const target = join(parent, 'snapshots')
+    const content = 'export const ready = true;\n'
+    const blobHash = (body: string): string => createHash('sha1')
+      .update(`blob ${Buffer.byteLength(body)}\0`).update(body).digest('hex')
+    // 在子进程中完全替代 fetch；空文件的 raw 请求和任何未知请求均失败。
+    const mock = `
+      const projects = ${JSON.stringify(manifest.projects)};
+      globalThis.fetch = async (url) => {
+        const source = projects.find(p => url === 'https://api.github.com/repos/' + p.repository + '/git/trees/' + p.tree + '?recursive=1');
+        if (source) return Response.json({ tree: Array.from({ length: source.sourceFiles }, (_, i) => ({
+          type: 'blob', mode: '100644', path: i === 0 ? '.gitkeep' : 'file-' + i + '.ts',
+          size: i === 0 ? 0 : ${Buffer.byteLength(content)},
+          sha: i === 0 ? ${JSON.stringify(corruptEmptyHash ? '0'.repeat(40) : blobHash(''))} : ${JSON.stringify(blobHash(content))}
+        })) });
+        if (url.startsWith('https://raw.githubusercontent.com/') && new URL(url).pathname.split('/').at(-1).startsWith('file-') && url.endsWith('.ts')) return new Response(${JSON.stringify(content)});
+        throw new Error('Unexpected network request');
+      };
+    `
+    try {
+      const result = spawnSync(process.execPath, [
+        '--import', `data:text/javascript;base64,${Buffer.from(mock).toString('base64')}`,
+        join(root, 'scripts/fetch-evaluation-projects.mjs'), target,
+      ], { cwd: root, encoding: 'utf8', timeout: 10_000 })
+      assert.equal(result.status, corruptEmptyHash ? 1 : 0, result.stderr)
+      if (corruptEmptyHash) {
+        assert.match(result.stderr, /does not match its pinned Git hash/)
+      } else {
+        for (const source of manifest.projects) {
+          assert.equal(readFileSync(join(target, source.id, '.gitkeep')).length, 0)
+          assert.equal(readFileSync(join(target, source.id, 'file-1.ts'), 'utf8'), content)
+          assert.match(result.stdout, new RegExp(`${source.id}: verified ${source.sourceFiles} files`))
+        }
+      }
+    } finally { rmSync(parent, { recursive: true, force: true }) }
+  })
+}
 
 test('an incomplete source snapshot cannot pass on empty findings', () => {
   const target = mkdtempSync(join(tmpdir(), 'canship-corpus-incomplete-'))

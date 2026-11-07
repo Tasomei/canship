@@ -64,7 +64,9 @@ async function main() {
         const path = relative(root, target)
         if (path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path) || /[\\:\r\n\0]/.test(file.path)) throw new SnapshotError('Invalid snapshot path.')
         const remote = `${source.path}/${file.path}`.split('/').map(encodeURIComponent).join('/')
-        const bytes = Buffer.from(await (await request(`https://raw.githubusercontent.com/${source.repository}/${source.revision}/${remote}`)).arrayBuffer())
+        // 空对象直接构造，避免 raw 端点对零字节文件返回 501；下方仍校验固定 Git 哈希。
+        const bytes = file.size === 0 ? Buffer.alloc(0) :
+          Buffer.from(await (await request(`https://raw.githubusercontent.com/${source.repository}/${source.revision}/${remote}`)).arrayBuffer())
         const hash = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
         if (hash !== file.sha) throw new SnapshotError('Downloaded object does not match its pinned Git hash.')
         mkdirSync(dirname(target), { recursive: true })
