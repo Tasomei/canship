@@ -7,5 +7,10 @@
   "dependencies": {
     "@vscode/vsce": "4.0.0",
     "yauzl": "3.4.0"
+  },
+  "overrides": {
+    "@vscode/vsce": {
+      "minimatch": "11.0.1"
+    }
   }
 }
