@@ -6,20 +6,20 @@ Static scans run locally: they are read-only, execute no project code and make n
 
 [简体中文](./README-zh-CN.md) · [Reference](./docs/reference.md) · [Releases](https://github.com/Tasomei/canship/releases) · [npm](https://www.npmjs.com/package/canship)
 
-> Documentation for `0.8.2` on npm `latest`. Other versions are listed under [Releases](https://github.com/Tasomei/canship/releases).
+> Documentation for `1.0.0` on npm `latest`. Other versions are listed under [Releases](https://github.com/Tasomei/canship/releases).
 
 ## Quick start
 
 Requires Node.js 18 or later; no runtime dependencies.
 
 ```powershell
-npx canship@0.8.2
+npx canship@1.0.0
 ```
 
 Scan a specific directory:
 
 ```powershell
-npx canship@0.8.2 "./my-app"
+npx canship@1.0.0 "./my-app"
 ```
 
 Example output for a synthetic project:
@@ -39,7 +39,7 @@ Example output for a synthetic project:
 Route analysis covers documented entry points in Next.js, SvelteKit, Nuxt, Remix / React Router, Astro, Express, Hono and Fastify. See [entry points and limits](./docs/reference.md#server-entry-points).
 
 ```powershell
-npx canship@0.8.2 --list-rules
+npx canship@1.0.0 --list-rules
 ```
 
 ## Reviewing findings
@@ -47,11 +47,11 @@ npx canship@0.8.2 --list-rules
 Each finding is rated `certain` (strong static evidence) or `likely` (needs review); only `certain` findings are shown by default. Neither rating proves that a credential is valid or that an issue is exploitable.
 
 ```powershell
-npx canship@0.8.2 --all --verbose
+npx canship@1.0.0 --all --verbose
 ```
 
 ```powershell
-npx canship@0.8.2 --all --report
+npx canship@1.0.0 --all --report
 ```
 
 ![HTML report](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
@@ -84,7 +84,7 @@ jobs:
           persist-credentials: false
       - uses: Tasomei/canship@5156d3cda769d112bc2069032ef87afc7e6accd7
         with:
-          version: '0.8.2'
+          version: '1.0.0'
           honor-ignore-markers: false
 ```
 

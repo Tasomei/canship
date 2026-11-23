@@ -69,7 +69,7 @@ jobs:
       - name: Evaluate source snapshots offline
         run: npm run evaluate:projects -- "$RUNNER_TEMP/canship-projects"
 
-  # 验证组合 Action 的安装、摘要和失败策略；不上传报告。
+  # 使用已发布的扫描器验证 Action，保证新版本在 npm 批准前也能跑 CI。
   action-smoke:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -97,6 +97,7 @@ jobs:
         uses: ./
         with:
           path: action-smoke/clean
+          version: '0.8.2'
           fail-on: any
       - name: Open rules fail
         id: open
@@ -104,6 +105,7 @@ jobs:
         uses: ./
         with:
           path: action-smoke/open
+          version: '0.8.2'
       - name: Check blocking outcome
         if: ${{ steps.open.outcome != 'failure' || steps.open.outputs.exit-code != '1' || steps.open.outputs.blocking != '1' }}
         shell: bash
