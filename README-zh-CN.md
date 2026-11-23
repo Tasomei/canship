@@ -1,12 +1,10 @@
 # canship
 
-面向 JavaScript / TypeScript Web 应用的发布前安全检查工具。Canship 在源码中查找凭据泄露、缺失的访问控制及不安全的请求输入处理，并可选择对你拥有的部署进行校验。
-
-静态扫描在本地运行：只读、不执行项目代码、不发起网络请求。部署校验是独立的可选模式，只访问经你确认的目标。
+面向 JavaScript / TypeScript Web 应用的上线前安全检查。查找泄露的凭据、缺失的访问控制和不安全的请求输入处理。静态扫描只读取本地文件，不执行项目代码，也不访问网络。
 
 [English](./README.md) · [使用参考](./docs/reference-zh-CN.md) · [发布说明](https://github.com/Tasomei/canship/releases) · [npm](https://www.npmjs.com/package/canship)
 
-> 本文对应 npm `latest` 渠道的 `1.0.0`。其他版本见[发布说明](https://github.com/Tasomei/canship/releases)。
+本文适用于 `1.0.0`（`latest`）。
 
 ## 快速开始
 
@@ -16,27 +14,24 @@
 npx canship@1.0.0
 ```
 
-扫描指定目录：
+也可以指定扫描目录。
 
 ```powershell
 npx canship@1.0.0 "./my-app"
 ```
 
-合成项目的输出示例：
-
 ![终端报告](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/terminal.png)
 
 ## 检测范围
 
-| 类别 | 级别 | 内容 |
-|---|:---:|---|
-| 凭据 | `P0` | 硬编码密钥、公开环境变量中的密钥、Supabase 服务密钥、被 Git 跟踪或存在于历史中的 `.env` 文件 |
-| API 访问 | `P0/P1` | 未识别到鉴权的数据库操作、服务端信任 Supabase `getSession()`、未验签的 Stripe webhook |
-| 数据库规则 | `P1/P2` | 未启用 Supabase RLS、过宽的策略、公开存储列表、开放的 Firebase 规则 |
-| CORS | `P1/P2` | 携带凭据时回显来源或使用通配符 |
-| 代码（Code） | `P1/P2` | 由请求输入拼接的 SQL、shell 命令与文件路径；向调用方指定地址发起的服务端请求和重定向 |
+| 检查项 | 示例 |
+|---|---|
+| 凭据 | 硬编码密钥、公开环境变量、Git 历史 |
+| 访问控制 | API 鉴权、Supabase RLS、Firebase 规则 |
+| 请求输入 | SQL、Shell 命令、文件路径、外部请求和重定向地址 |
+| CORS | 携带凭据时使用通配符或回显来源 |
 
-路由分析覆盖 Next.js、SvelteKit、Nuxt、Remix / React Router、Astro、Express、Hono、Fastify 的指定入口，详见[入口及限制](./docs/reference-zh-CN.md#服务端入口)。
+路由分析支持指定的 Express、Hono 和 Fastify 工厂函数，包括带参数的工厂。见[支持的框架与入口](./docs/reference-zh-CN.md#服务端入口)。
 
 ```powershell
 npx canship@1.0.0 --list-rules
@@ -44,7 +39,7 @@ npx canship@1.0.0 --list-rules
 
 ## 审阅结果
 
-每条结果标为 `certain`（静态证据充分）或 `likely`（需人工审阅），默认只显示 `certain`。两者都不代表凭据有效或问题可被利用。
+默认显示 `certain` 结果。用 `--all` 查看需要人工审阅的 `likely` 结果。
 
 ```powershell
 npx canship@1.0.0 --all --verbose
@@ -56,7 +51,7 @@ npx canship@1.0.0 --all --report
 
 ![HTML 报告](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
 
-离线 HTML 报告支持筛选和复制修复提示；`--fix-prompt` 在终端输出同样的说明。报告包含文件路径，也可能包含源码摘录：`--no-excerpts` 去除摘录，`--share-summary` 仅输出计数。可下载[合成示例报告](https://github.com/Tasomei/canship/blob/main/docs/demo.html)查看。
+详细报告可能包含路径和源码摘录。用 `--no-excerpts` 省略源码摘录，或用 `--share-summary` 只分享计数。
 
 | 退出码 | 含义 |
 |---|---|
@@ -82,37 +77,28 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@5156d3cda769d112bc2069032ef87afc7e6accd7
+      - uses: Tasomei/canship@07cd42b502108fa97eb1f341dea0252802b18f53
         with:
           version: '1.0.0'
           honor-ignore-markers: false
 ```
 
-提交哈希固定 Action 实现，`version` 固定 npm 扫描器版本。Action 不安装项目依赖，只输出计数摘要；扫描不完整或工具出错时始终失败。SARIF 上传需显式开启。
+Action 只安装指定版本的扫描器，并输出计数摘要。扫描不完整或工具出错时任务失败。SARIF 上传需显式开启。
 
 | 输入 | 固定 Action 的默认值 | 含义 |
 |---|---|---|
-| `version` | `0.8.2` | 精确的 npm 扫描器版本；请如上例显式设置 |
+| `version` | `1.0.0` | 精确的 npm 扫描器版本；请如上例显式设置 |
 | `fail-on` | `blocking` | `blocking`：`certain` 的 P0/P1；`any`：全部结果；`none`：仅报告 |
 
-完整说明见 [Action 输入](https://github.com/Tasomei/canship/blob/main/action.yml)。
+完整说明见 [Action 输入](https://github.com/Tasomei/canship/blob/07cd42b502108fa97eb1f341dea0252802b18f53/action.yml)。
 
-## 扫描之外
+## 参考
 
-- **基线**：接受已审阅的结果，可附理由和到期时间，见[基线管理](./docs/reference-zh-CN.md#配置)。
-- **报告比较**：比较两份已保存的 JSON 报告，列出新增、持续存在和不再出现的结果，见[命令参考](./docs/reference-zh-CN.md#命令行)。
-- **工作区与配置**：独立扫描 monorepo 子项目、排除路径，并用 `--explain-config` 或 `--doctor` 查看生效设置。
-- **模板**：用 `--init` 预览 CI 与 pre-commit 配置。pre-commit 钩子扫描工作区，而非暂存区快照。
-- **部署校验**：`--probe=https://…` 预览少量无认证的 HTTPS 请求，确认计划前不会发出任何请求。使用前请阅读[范围与隐私说明](./docs/reference-zh-CN.md#部署校验)。
-- **API 与编辑器**：[编程接口](./docs/reference-zh-CN.md#api-与结构化输出)及 [VS Code 插件预览版](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme)。
-
-## 限制
-
-- 静态分析可能漏报或误报有意为之的配置，不评估业务授权、限流或依赖漏洞。
-- 脱敏仅覆盖已识别的密钥格式。详细报告和基线应作为内部资料处理。
-- Google 与 Firebase 的 `AIza…` 密钥属于公开标识符，不单独作为泄露报告。
-
-详见[隐私与覆盖限制](./docs/reference-zh-CN.md#隐私与限制)。
+- [命令行选项、基线和报告比较](./docs/reference-zh-CN.md#命令行)
+- [工作区与配置](./docs/reference-zh-CN.md#配置)
+- [可选部署校验](./docs/reference-zh-CN.md#部署校验)
+- [隐私与覆盖限制](./docs/reference-zh-CN.md#隐私与限制)
+- [JavaScript API](./docs/reference-zh-CN.md#api-与结构化输出)及 [VS Code 扩展预览版](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme)
 
 ## 开发与许可
 

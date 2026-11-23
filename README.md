@@ -1,12 +1,10 @@
 # canship
 
-Pre-deployment security checks for JavaScript and TypeScript web applications. Canship finds exposed credentials, missing access controls and unsafe handling of request input in your source code, and can optionally probe a deployment you own.
-
-Static scans run locally: they are read-only, execute no project code and make no network requests. Deployment probes are a separate, opt-in mode that contacts only a target you confirm.
+Pre-deployment security checks for JavaScript and TypeScript web apps. Find exposed credentials, missing access controls, and unsafe handling of request input. Static scans read local files without running project code or accessing the network.
 
 [简体中文](./README-zh-CN.md) · [Reference](./docs/reference.md) · [Releases](https://github.com/Tasomei/canship/releases) · [npm](https://www.npmjs.com/package/canship)
 
-> Documentation for `1.0.0` on npm `latest`. Other versions are listed under [Releases](https://github.com/Tasomei/canship/releases).
+This guide covers `1.0.0` (`latest`).
 
 ## Quick start
 
@@ -16,27 +14,24 @@ Requires Node.js 18 or later; no runtime dependencies.
 npx canship@1.0.0
 ```
 
-Scan a specific directory:
+Pass a directory to scan it explicitly.
 
 ```powershell
 npx canship@1.0.0 "./my-app"
 ```
 
-Example output for a synthetic project:
-
 ![Terminal report](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/terminal.png)
 
 ## Checks
 
-| Category | Severity | Covers |
-|---|:---:|---|
-| Credentials | `P0` | Hardcoded secrets, secrets in public environment variables, Supabase service keys, `.env` files tracked by Git or present in history |
-| API access | `P0/P1` | Database operations without recognised authentication, server-side trust in Supabase `getSession()`, unverified Stripe webhooks |
-| Database rules | `P1/P2` | Missing Supabase RLS, permissive policies, public storage listing, open Firebase rules |
-| CORS | `P1/P2` | Reflected or wildcard origins combined with credentials |
-| Code | `P1/P2` | SQL, shell commands and file paths built from request input; server-side requests and redirects to caller-chosen URLs |
+| Check | Examples |
+|---|---|
+| Credentials | Hardcoded secrets, public environment variables, Git history |
+| Access control | API authentication, Supabase RLS, Firebase rules |
+| Request input | SQL, shell commands, file paths, outbound URLs and redirects |
+| CORS | Wildcard or reflected origins with credentials |
 
-Route analysis covers documented entry points in Next.js, SvelteKit, Nuxt, Remix / React Router, Astro, Express, Hono and Fastify. See [entry points and limits](./docs/reference.md#server-entry-points).
+Route analysis covers selected Express, Hono and Fastify factories, including factories with parameters. See [supported frameworks and entry points](./docs/reference.md#server-entry-points).
 
 ```powershell
 npx canship@1.0.0 --list-rules
@@ -44,7 +39,7 @@ npx canship@1.0.0 --list-rules
 
 ## Reviewing findings
 
-Each finding is rated `certain` (strong static evidence) or `likely` (needs review); only `certain` findings are shown by default. Neither rating proves that a credential is valid or that an issue is exploitable.
+The default view shows `certain` findings. Use `--all` to include `likely` findings for manual review.
 
 ```powershell
 npx canship@1.0.0 --all --verbose
@@ -56,7 +51,7 @@ npx canship@1.0.0 --all --report
 
 ![HTML report](https://raw.githubusercontent.com/Tasomei/canship/main/docs/images/report.png)
 
-The offline HTML report supports filtering and copyable repair prompts; `--fix-prompt` prints the same instructions in the terminal. Reports include file paths and may include source excerpts: use `--no-excerpts` to omit excerpts, or `--share-summary` for counts only. A [synthetic sample report](https://github.com/Tasomei/canship/blob/main/docs/demo.html) is available for download.
+Detailed reports may contain paths and source excerpts. Use `--no-excerpts` to omit source or `--share-summary` to share counts only.
 
 | Exit code | Meaning |
 |---|---|
@@ -82,37 +77,28 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: Tasomei/canship@5156d3cda769d112bc2069032ef87afc7e6accd7
+      - uses: Tasomei/canship@07cd42b502108fa97eb1f341dea0252802b18f53
         with:
           version: '1.0.0'
           honor-ignore-markers: false
 ```
 
-The commit hash pins the Action and `version` pins the npm scanner. The Action does not install project dependencies and writes a counts-only job summary; it always fails on incomplete scans or tool errors. SARIF upload is opt-in.
+The Action installs only the pinned scanner and writes a counts-only summary. Incomplete scans and tool errors fail the job. SARIF upload is opt-in.
 
 | Input | Default in the pinned Action | Meaning |
 |---|---|---|
-| `version` | `0.8.2` | Exact npm scanner version; set explicitly as above |
+| `version` | `1.0.0` | Exact npm scanner version; set explicitly as above |
 | `fail-on` | `blocking` | `blocking`: `certain` P0/P1; `any`: all findings; `none`: report only |
 
-See all [Action inputs](https://github.com/Tasomei/canship/blob/main/action.yml).
+See all [Action inputs](https://github.com/Tasomei/canship/blob/07cd42b502108fa97eb1f341dea0252802b18f53/action.yml).
 
-## Beyond scanning
+## Reference
 
-- **Baselines**: accept reviewed findings with an optional reason and expiry date. See [baseline management](./docs/reference.md#configuration).
-- **Report comparison**: compare two saved JSON reports to list added, persisting and no-longer-observed findings. See the [CLI reference](./docs/reference.md#cli).
-- **Workspaces and configuration**: scan monorepo packages independently, exclude paths, and inspect effective settings with `--explain-config` or `--doctor`.
-- **Templates**: preview CI and pre-commit setups with `--init`. The pre-commit hook scans the working tree, not the staged snapshot.
-- **Deployment probes**: `--probe=https://…` previews a small set of unauthenticated HTTPS requests; nothing is sent until you confirm the plan. Review the [scope and privacy notes](./docs/reference.md#deployment-probes) first.
-- **API and editor**: a [programmatic API](./docs/reference.md#api-and-structured-output) and a [VS Code extension preview](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme).
-
-## Limitations
-
-- Static analysis can miss issues or flag intentional configurations. It does not assess business authorisation, rate limiting or dependency vulnerabilities.
-- Redaction covers recognised secret formats only. Treat detailed reports and baselines as internal material.
-- Google and Firebase `AIza…` keys are public identifiers and are not reported as leaks on their own.
-
-See [privacy and coverage limits](./docs/reference.md#privacy-and-limits).
+- [CLI options, baselines and comparisons](./docs/reference.md#cli)
+- [Workspaces and configuration](./docs/reference.md#configuration)
+- [Opt-in deployment probes](./docs/reference.md#deployment-probes)
+- [Privacy and coverage limits](./docs/reference.md#privacy-and-limits)
+- [JavaScript API](./docs/reference.md#api-and-structured-output) and [VS Code extension preview](https://github.com/Tasomei/canship/tree/main/extensions/vscode#readme)
 
 ## Development and license
 
